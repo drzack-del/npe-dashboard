@@ -1,0 +1,9 @@
+{
+  "name": "npe-dashboard",
+  "version": "1.0.0",
+  "description": "North Tampa Braces NPE Dashboard",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel"
+  }
+}
