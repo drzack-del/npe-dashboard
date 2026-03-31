@@ -5045,15 +5045,21 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 {feedbackList.length > 0 && (
                   <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
                     {feedbackList.map(f => (
-                      <div key={f.id} style={{padding:'14px 16px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb',display:'flex',gap:'14px',alignItems:'flex-start'}}>
+                      <div key={f.id} style={{padding:'14px 16px',backgroundColor: f.needs_review ? '#fffbeb' : '#f9fafb',borderRadius:'8px',border: f.needs_review ? '2px solid #f59e0b' : '1px solid #e5e7eb',display:'flex',gap:'14px',alignItems:'flex-start'}}>
                         <div style={{flex:1}}>
                           <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'5px',flexWrap:'wrap'}}>
+                            {f.needs_review && (
+                              <span style={{fontSize:'12px',fontWeight:'700',padding:'2px 8px',backgroundColor:'#fef3c7',color:'#92400e',borderRadius:'4px',border:'1px solid #f59e0b'}}>⚠️ Needs Decision</span>
+                            )}
                             <span style={{fontSize:'12px',fontWeight:'700',padding:'2px 8px',backgroundColor: f.category==='Bug'?'#fee2e2':f.category==='Wrong Data'?'#fef3c7':'#eff6ff',color: f.category==='Bug'?'#991b1b':f.category==='Wrong Data'?'#92400e':'#1e40af',borderRadius:'4px'}}>{f.category || 'General'}</span>
                             <span style={{fontSize:'12px',color:'#6b7280',fontWeight:'600'}}>{f.tc_name}</span>
                             <span style={{fontSize:'12px',color:'#9ca3af'}}>· {f.view} ·</span>
                             <span style={{fontSize:'12px',color:'#9ca3af'}}>{new Date(f.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
                           </div>
                           <p style={{fontSize:'14px',color:'#374151',margin:0,lineHeight:1.5}}>{f.description}</p>
+                          {f.needs_review && (
+                            <p style={{fontSize:'12px',color:'#b45309',marginTop:'6px',marginBottom:0,fontStyle:'italic'}}>The auto-fix agent flagged this — it needs your input before it can be resolved.</p>
+                          )}
                         </div>
                         <button
                           onClick={() => deleteFeedback(f.id)}
