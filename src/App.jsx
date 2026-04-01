@@ -744,7 +744,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
   const dbLoadSettings = async (key) => {
     if (!supabase || currentUser?.id === 'demo') return null;
-    const { data } = await supabase.from('settings').select('value').eq('key', key).eq('practice_id', currentUser.practiceId).single();
+    const { data, error } = await supabase.from('settings').select('value').eq('key', key).eq('practice_id', currentUser.practiceId).maybeSingle();
+    if (error) { console.warn('dbLoadSettings:', key, error.message); return null; }
     return data ? data.value : null;
   };
 
