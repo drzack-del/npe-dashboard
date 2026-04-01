@@ -824,12 +824,17 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     return parseFloat(dp.toString().replace(/[^0-9.]/g, '')) || 0;
   };
 
-  // Calculate metrics
-  const calculateMetrics = (pts) => {
-    const total = pts.length;
+  // Returns the effective start date for a patient — uses startDate if set, falls back to npeDate for old SDS records
+  const effectiveStartDate = (p) => (p.startDate && p.startDate !== '') ? p.startDate : ((isSDS(p) || p.ST) ? p.npeDate : '');
 
-    const sds = pts.filter(isSDS);
-    const started = pts.filter(p => isSDS(p) || p.ST);
+  // Calculate metrics. npePts = patients filtered by NPE date (for NPE totals).
+  // startPts = patients filtered by start date (for start counts). Defaults to npePts if not provided.
+  const calculateMetrics = (pts, startPts = null) => {
+    const total = pts.length;
+    const _sp = startPts || pts;
+
+    const sds = _sp.filter(isSDS);
+    const started = _sp.filter(p => isSDS(p) || p.ST);
 
     const pending = pts.filter(p => p.PEN === true).length;
     const scheduled = pts.filter(p => p.SCH === true).length;
@@ -847,8 +852,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     // Per-office metrics
     const carPts = pts.filter(p => p.location === 'Car');
     const apoPts = pts.filter(p => p.location === 'Apo');
-    const carStarted = carPts.filter(p => isSDS(p) || p.ST).length;
-    const apoStarted = apoPts.filter(p => isSDS(p) || p.ST).length;
+    const carStarted = _sp.filter(p => p.location === 'Car' && (isSDS(p) || p.ST)).length;
+    const apoStarted = _sp.filter(p => p.location === 'Apo' && (isSDS(p) || p.ST)).length;
     const carConv = carPts.length > 0 ? Math.round((carStarted / carPts.length) * 100) : 0;
     const apoConv = apoPts.length > 0 ? Math.round((apoStarted / apoPts.length) * 100) : 0;
 
@@ -1284,7 +1289,18 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             if (effectiveTCFilter !== 'All') pts = pts.filter(p => p.tc === effectiveTCFilter);
             return pts;
           })();
-          const dash = calculateMetrics(dashPatients);
+          const dashStartPatients = (() => {
+            if (dashTimeframe !== 'month') return null; // all-time: no split needed
+            let pts = patients.filter(p => {
+              const sd = effectiveStartDate(p);
+              if (!sd) return false;
+              const d = new Date(sd + 'T12:00:00');
+              return d.getMonth() === curM && d.getFullYear() === curY;
+            });
+            if (effectiveTCFilter !== 'All') pts = pts.filter(p => p.tc === effectiveTCFilter);
+            return pts;
+          })();
+          const dash = calculateMetrics(dashPatients, dashStartPatients);
 
           // On-time follow-up rate for dashboard
           // Uses all patients (filtered by TC only) so it matches the On-Time Audit,
@@ -1862,7 +1878,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
             let tcBonus = 0;
             patients.forEach(p => {
-              if (p.tc !== tcName || !p.npeDate || !p.npeDate.startsWith(monthStr)) return;
+              if (p.tc !== tcName) return;
+              const sd = effectiveStartDate(p);
+              if (!sd || !sd.startsWith(monthStr)) return;
               if (isSDS(p)) {
                 tcBonus += bonusRates.sds;
                 if (p['R+']) tcBonus += bonusRates.ret;
@@ -3183,7 +3201,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               const monthGoals = goals.monthly[selectedMonthIdx] || goals.monthly[0];
               const monthPts = patients.filter(p => p.npeDate && p.npeDate.startsWith(currentMonthStr));
               const filteredPts = monthlyTCFilter === 'All' ? monthPts : monthPts.filter(p => p.tc === monthlyTCFilter);
-              const m = calculateMetrics(filteredPts);
+              const monthStartPts = patients.filter(p => { const sd = effectiveStartDate(p); return sd && sd.startsWith(currentMonthStr); });
+              const filteredStartPts = monthlyTCFilter === 'All' ? monthStartPts : monthStartPts.filter(p => p.tc === monthlyTCFilter);
+              const m = calculateMetrics(filteredPts, filteredStartPts);
               const monthStr = currentMonthStr;
               let onTimeCount = 0, totalTracked = 0;
               filteredPts.forEach(p => {
@@ -3404,7 +3424,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 {!bonusTCFilter && (() => {
                   const perTC = {};
                   patients.forEach(p => {
-                    if (!p.npeDate || !p.npeDate.startsWith(bonusMonthFilter)) return;
+                    const sd = effectiveStartDate(p);
+                    if (!sd || !sd.startsWith(bonusMonthFilter)) return;
                     const tc = p.tc || 'Unassigned';
                     if (!perTC[tc]) perTC[tc] = { sds: 0, ret: 0, white: 0, pif: 0, total: 0 };
                     if (isSDS(p)) {
@@ -3437,7 +3458,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           </div>
                         ))}
                       </div>
-                      <div style={{fontSize:'12px',color:'#9ca3af'}}>Based on NPE date falling in {monthLabel}. See detailed breakdown below to verify individual patients.</div>
+                      <div style={{fontSize:'12px',color:'#9ca3af'}}>Based on start date falling in {monthLabel}. See detailed breakdown below to verify individual patients.</div>
                     </div>
                   );
                 })()}
@@ -3461,17 +3482,18 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         let bonusItems = [];
 
                         patients.forEach(p => {
+                          const sd = effectiveStartDate(p);
                           if (isSDS(p)) {
-                            bonusItems.push({date: p.npeDate, patient: p.name, tc: p.tc, type: 'SDS', amount: bonusRates.sds});
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'SDS', amount: bonusRates.sds});
                           }
                           if (isSDS(p) && p['R+']) {
-                            bonusItems.push({date: p.npeDate, patient: p.name, tc: p.tc, type: 'Retainer', amount: bonusRates.ret});
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'Retainer', amount: bonusRates.ret});
                           }
                           if (isSDS(p) && p['W+']) {
-                            bonusItems.push({date: p.npeDate, patient: p.name, tc: p.tc, type: 'Whitening', amount: bonusRates.white});
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'Whitening', amount: bonusRates.white});
                           }
                           if (started.find(s => s.id === p.id) && p.PIF) {
-                            bonusItems.push({date: p.npeDate, patient: p.name, tc: p.tc, type: 'PIF', amount: bonusRates.pif});
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'PIF', amount: bonusRates.pif});
                           }
                         });
                         // Filter by month and TC role
@@ -3506,7 +3528,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         <td style={{padding:'12px',fontSize:'20px',fontWeight:'bold',textAlign:'right',color:'#10b981'}}>
                           ${patients.filter(p => (isSDS(p) || p.ST) && (!bonusTCFilter || p.tc === bonusTCFilter)).reduce((sum, p) => {
                             let amt = 0;
-                            if (p.npeDate && p.npeDate.startsWith(bonusMonthFilter)) {
+                            const sd = effectiveStartDate(p);
+                            if (sd && sd.startsWith(bonusMonthFilter)) {
                               if (isSDS(p)) amt += bonusRates.sds;
                               if (isSDS(p) && p['R+']) amt += bonusRates.ret;
                               if (isSDS(p) && p['W+']) amt += bonusRates.white;
@@ -3524,13 +3547,14 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   <button
                     onClick={() => {
                       const started = patients.filter(p => isSDS(p) || p.ST);
-                      const rows = [['Date','Patient','TC','Type','Amount']];
+                      const rows = [['Start Date','Patient','TC','Type','Amount']];
                       patients.forEach(p => {
-                        if (!p.npeDate || !p.npeDate.startsWith(bonusMonthFilter)) return;
-                        if (isSDS(p)) rows.push([p.npeDate, p.name, p.tc||'', 'SDS', bonusRates.sds]);
-                        if (isSDS(p) && p['R+']) rows.push([p.npeDate, p.name, p.tc||'', 'Retainer', bonusRates.ret]);
-                        if (isSDS(p) && p['W+']) rows.push([p.npeDate, p.name, p.tc||'', 'Whitening', bonusRates.white]);
-                        if (started.find(s=>s.id===p.id) && p.PIF) rows.push([p.npeDate, p.name, p.tc||'', 'PIF', bonusRates.pif]);
+                        const sd = effectiveStartDate(p);
+                        if (!sd || !sd.startsWith(bonusMonthFilter)) return;
+                        if (isSDS(p)) rows.push([sd, p.name, p.tc||'', 'SDS', bonusRates.sds]);
+                        if (isSDS(p) && p['R+']) rows.push([sd, p.name, p.tc||'', 'Retainer', bonusRates.ret]);
+                        if (isSDS(p) && p['W+']) rows.push([sd, p.name, p.tc||'', 'Whitening', bonusRates.white]);
+                        if (started.find(s=>s.id===p.id) && p.PIF) rows.push([sd, p.name, p.tc||'', 'PIF', bonusRates.pif]);
                       });
                       const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
                       const a = document.createElement('a');
