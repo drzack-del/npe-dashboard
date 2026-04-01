@@ -731,7 +731,15 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   // ── Settings (goals, bonus rates, TC list) ───────────────────────────
   const dbSaveSettings = async (key, value) => {
     if (!supabase || currentUser?.id === 'demo') return;
-    await supabase.from('settings').upsert({ key, value, practice_id: currentUser.practiceId });
+    const { error } = await supabase.from('settings').upsert(
+      { key, value, practice_id: currentUser.practiceId },
+      { onConflict: 'key,practice_id' }
+    );
+    if (error) {
+      console.error('dbSaveSettings error:', error);
+      setSaveError('⚠️ Settings save failed — ' + (error.message || error.code || 'unknown error'));
+      setTimeout(() => setSaveError(''), 10000);
+    }
   };
 
   const dbLoadSettings = async (key) => {
