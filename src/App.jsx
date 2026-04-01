@@ -1415,7 +1415,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   (bonus.tcFilter === 'All' || p.tc === bonus.tcFilter) &&
                   (myTC === null || p.tc === myTC)
                 );
-                const earned = qualifying.length * bonus.amount;
+                const earned = qualifying.reduce((sum, p) => sum + bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0), 0);
                 const endLabel = new Date(bonus.endDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'});
                 return (
                   <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'16px 20px',display:'flex',alignItems:'center',gap:'20px',flexWrap:'wrap'}}>
@@ -1423,7 +1423,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     <div style={{flex:1}}>
                       <div style={{fontWeight:'800',fontSize:'16px',color:'#92400e'}}>{bonus.name}</div>
                       <div style={{fontSize:'13px',color:'#92400e',marginTop:'2px'}}>
-                        <strong>${bonus.amount} bonus per start off the pending list</strong> — ends {endLabel}
+                        <strong>${bonus.amount}/start + ${bonusRates.ret} retainers + ${bonusRates.white} whitening</strong> — ends {endLabel}
                         {bonus.description && <span> · {bonus.description}</span>}
                       </div>
                     </div>
@@ -2081,7 +2081,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   (bonus.tcFilter === 'All' || p.tc === bonus.tcFilter) &&
                   (myTC === null || p.tc === myTC)
                 );
-                const earned = qualifying.length * bonus.amount;
+                const earned = qualifying.reduce((sum, p) => sum + bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0), 0);
                 const endLabel = new Date(bonus.endDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'});
                 return (
                   <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'16px 20px',display:'flex',alignItems:'center',gap:'20px',flexWrap:'wrap'}}>
@@ -2089,7 +2089,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     <div style={{flex:1}}>
                       <div style={{fontWeight:'800',fontSize:'16px',color:'#92400e'}}>{bonus.name}</div>
                       <div style={{fontSize:'13px',color:'#92400e',marginTop:'2px'}}>
-                        <strong>${bonus.amount} bonus per start off the pending list</strong> — ends {endLabel}
+                        <strong>${bonus.amount}/start + ${bonusRates.ret} retainers + ${bonusRates.white} whitening</strong> — ends {endLabel}
                         {bonus.description && <span> · {bonus.description}</span>}
                       </div>
                     </div>
@@ -3390,7 +3390,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       (!bonusTCFilter || p.tc === bonusTCFilter)
                     );
                     if (qualifying.length === 0) return null;
-                    const total = qualifying.length * bonus.amount;
+                    const total = qualifying.reduce((sum, p) => sum + bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0), 0);
                     return (
                       <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'20px 24px',marginBottom:'16px'}}>
                         <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'12px'}}>
@@ -3414,14 +3414,20 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             </tr>
                           </thead>
                           <tbody>
-                            {qualifying.map(p => (
-                              <tr key={p.id} style={{borderBottom:'1px solid #fde68a'}}>
-                                <td style={{padding:'6px 10px',color:'#374151'}}>{p.name}</td>
-                                <td style={{padding:'6px 10px',color:'#374151'}}>{p.tc}</td>
-                                <td style={{padding:'6px 10px',color:'#374151'}}>{p.startDate}</td>
-                                <td style={{padding:'6px 10px',textAlign:'right',fontWeight:'700',color:'#10b981'}}>${bonus.amount}</td>
-                              </tr>
-                            ))}
+                            {qualifying.map(p => {
+                              const rowTotal = bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0);
+                              const addons = [p['R+'] && `R+ $${bonusRates.ret}`, p['W+'] && `W+ $${bonusRates.white}`].filter(Boolean).join(', ');
+                              return (
+                                <tr key={p.id} style={{borderBottom:'1px solid #fde68a'}}>
+                                  <td style={{padding:'6px 10px',color:'#374151'}}>{p.name}</td>
+                                  <td style={{padding:'6px 10px',color:'#374151'}}>{p.tc}</td>
+                                  <td style={{padding:'6px 10px',color:'#374151'}}>{p.startDate}</td>
+                                  <td style={{padding:'6px 10px',textAlign:'right',fontWeight:'700',color:'#10b981'}}>
+                                    ${rowTotal}{addons ? <span style={{fontSize:'11px',color:'#92400e',fontWeight:'400',marginLeft:'4px'}}>({addons})</span> : null}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -4753,7 +4759,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       p.startDate >= bonus.startDate && p.startDate <= bonus.endDate &&
                       (bonus.tcFilter === 'All' || p.tc === bonus.tcFilter)
                     );
-                    const earned = qualifying.length * bonus.amount;
+                    const earned = qualifying.reduce((sum, p) => sum + bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0), 0);
                     return (
                       <div key={bonus.id} style={{display:'flex',alignItems:'center',gap:'16px',padding:'14px 16px',backgroundColor: isActive ? '#f0fdf4' : '#f9fafb',border:`1px solid ${isActive ? '#86efac' : '#e5e7eb'}`,borderRadius:'8px',flexWrap:'wrap'}}>
                         <div style={{flex:1,minWidth:'200px'}}>
@@ -4767,7 +4773,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             </span>
                           </div>
                           <div style={{fontSize:'12px',color:'#6b7280'}}>
-                            ${bonus.amount}/start · {bonus.tcFilter === 'All' ? 'All TCs' : bonus.tcFilter} · {bonus.startDate} → {bonus.endDate}
+                            ${bonus.amount}/start + ${bonusRates.ret} ret + ${bonusRates.white} whitening · {bonus.tcFilter === 'All' ? 'All TCs' : bonus.tcFilter} · {bonus.startDate} → {bonus.endDate}
                             {bonus.description && <span> · <em>{bonus.description}</em></span>}
                           </div>
                         </div>
