@@ -4631,9 +4631,17 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     <button
                       onClick={async () => {
                         localStorage.setItem('npe-bonus-rates', JSON.stringify(bonusRates));
-                        await dbSaveSettings('bonus-rates', bonusRates);
-                        setAdminMsg('✅ Bonus rates saved to cloud!');
-                        setTimeout(() => setAdminMsg(''), 3000);
+                        setAdminMsg('⏳ Saving bonus rates...');
+                        const { error } = await supabase.from('settings').upsert(
+                          { key: 'bonus-rates', value: bonusRates, practice_id: currentUser.practiceId },
+                          { onConflict: 'key,practice_id' }
+                        );
+                        if (error) {
+                          setAdminMsg('❌ Save failed: ' + error.message);
+                        } else {
+                          setAdminMsg('✅ Bonus rates saved!');
+                        }
+                        setTimeout(() => setAdminMsg(''), 4000);
                       }}
                       style={{padding:'8px 20px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'4px',cursor:'pointer',fontWeight:'600'}}
                     >
