@@ -600,7 +600,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             dp: r.dp, tc: r.tc || 'Reaghan',
             BR: r.br, INV: r.inv, PH1: r.ph1, PH2: r.ph2, LTD: r.ltd,
             'R+': r.r_plus, 'W+': r.w_plus, PIF: r.pif,
-            ST: r.st, SCH: r.sch, PEN: r.pen, OBS: r.obs, MP: r.mp, NOTX: r.notx,
+            ST: r.st, SCH: r.sch, PEN: r.pen, OBS: r.obs, MP: r.mp, NOTX: r.notx, FIN: r.fin || false,
             obstacle: r.obstacle || '', notes: r.notes || '',
             bondDate: r.bond_date || '',
             startDate: r.start_date || '',
@@ -670,7 +670,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       dp: patient.dp, tc: patient.tc || 'Reaghan',
       br: patient.BR, inv: patient.INV, ph1: patient.PH1, ph2: patient.PH2, ltd: patient.LTD,
       r_plus: patient['R+'], w_plus: patient['W+'], pif: patient.PIF,
-      st: patient.ST, sch: patient.SCH, pen: patient.PEN, obs: patient.OBS, mp: patient.MP, notx: patient.NOTX,
+      st: patient.ST, sch: patient.SCH, pen: patient.PEN, obs: patient.OBS, mp: patient.MP, notx: patient.NOTX, fin: patient.FIN || false,
       obstacle: patient.obstacle, notes: patient.notes,
       bond_date: patient.bondDate || '',
       start_date: patient.startDate || '',
@@ -833,8 +833,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     return parseFloat(dp.toString().replace(/[^0-9.]/g, '')) || 0;
   };
 
-  // Returns the effective start date for a patient — uses startDate if set, falls back to npeDate for old SDS records
-  const effectiveStartDate = (p) => (p.startDate && p.startDate !== '') ? p.startDate : ((isSDS(p) || p.ST) ? p.npeDate : '');
+  // Returns the effective start date for a patient — uses startDate if set, falls back to npeDate for old SDS/FIN records
+  const effectiveStartDate = (p) => (p.startDate && p.startDate !== '') ? p.startDate : ((isSDS(p) || p.ST || p.FIN) ? p.npeDate : '');
 
   // Calculate metrics. npePts = patients filtered by NPE date (for NPE totals).
   // startPts = patients filtered by start date (for start counts). Defaults to npePts if not provided.
@@ -851,8 +851,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     const medicaidPending = pts.filter(p => p.MP === true).length;
     const noTx = pts.filter(p => p.NOTX === true).length;
 
-    const retainers = sds.filter(p => p['R+'] === true).length;  // SDS only — no bonus when added on a pending→start
-    const whitening = sds.filter(p => p['W+'] === true).length;  // SDS only
+    const retainers = _sp.filter(p => (isSDS(p) || p.FIN) && p['R+'] === true).length;
+    const whitening = _sp.filter(p => (isSDS(p) || p.FIN) && p['W+'] === true).length;
     const pif = started.filter(p => p.PIF === true).length;
 
     const overallConv = total > 0 ? Math.round((started.length / total) * 100) : 0;
@@ -1139,6 +1139,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       OBS: isOBS,
       MP: newPatientForm.status === 'MP',
       NOTX: newPatientForm.status === 'NOTX',
+      FIN: newPatientForm.status === 'FIN',
       obstacle: newPatientForm.obstacle,
       notes: newPatientForm.notes,
       bondDate: newPatientForm.bondDate || '',
@@ -1152,7 +1153,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     await dbUpsert(patient);
     const nextInfo = patient.nextTouchDate && patient.nextTouchDate !== '__MAX__'
       ? ` — first follow-up: ${new Date(patient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'numeric',day:'numeric'})}`
-      : (isSDS(patient) || patient.ST) ? ' — added to Bonus Audit' : '';
+      : (isSDS(patient) || patient.ST) ? ' — added to Bonus Audit' : patient.FIN ? ' — added to Bonus Audit' : '';
     setAddPatientError('');
     setSaveToast('✅ ' + patient.name + ' saved!' + nextInfo);
     setTimeout(() => setSaveToast(''), 4000);
@@ -1892,6 +1893,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               if (!sd || !sd.startsWith(monthStr)) return;
               if (isSDS(p)) {
                 tcBonus += bonusRates.sds;
+              }
+              if (isSDS(p) || p.FIN) {
                 if (p['R+']) tcBonus += bonusRates.ret;
                 if (p['W+']) tcBonus += bonusRates.white;
               }
@@ -2743,6 +2746,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     {value:'OBS', label:'OBS - Observation',     sub:'6-month re-check auto-schedules', subColor:'#6b7280'},
                     {value:'MP',  label:'MP - Medicaid Pending', sub:'14-day follow-up auto-schedules', subColor:'#6b7280'},
                     {value:'NOTX',label:'NOTX - No TX',          sub:'Will not appear in any queue', subColor:'#991b1b'},
+                    {value:'FIN', label:'FIN - Finishing',       sub:'Debond / retainer / whitening visit', bg:'#f0fdf4', border:'#86efac', subColor:'#166534'},
                   ].map(opt => (
                     <label key={opt.value} style={{display:'flex',alignItems:'center',cursor:'pointer',padding:'10px',
                       backgroundColor: newPatientForm.status===opt.value ? (opt.bg||'#eff6ff') : 'white',
@@ -2939,8 +2943,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 </div>
               )}
 
-              {/* Add-ons — only for SDS or ST */}
-              {(newPatientForm.status === 'SDS' || newPatientForm.status === 'ST') && (
+              {/* Add-ons — only for SDS, ST, or FIN */}
+              {(newPatientForm.status === 'SDS' || newPatientForm.status === 'ST' || newPatientForm.status === 'FIN') && (
                 <div style={{marginBottom:'16px',padding:'14px',backgroundColor:'#f0fdf4',borderRadius:'8px',border:'1px solid #bbf7d0'}}>
                   <label style={{display:'block',fontSize:'14px',fontWeight:'600',marginBottom:'10px',color:'#166534'}}>Add-ons</label>
                   <div style={{display:'flex',gap:'12px',flexWrap:'wrap'}}>
@@ -3446,6 +3450,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     if (isSDS(p)) {
                       perTC[tc].sds++;
                       perTC[tc].total += bonusRates.sds;
+                    }
+                    if (isSDS(p) || p.FIN) {
                       if (p['R+']) { perTC[tc].ret++; perTC[tc].total += bonusRates.ret; }
                       if (p['W+']) { perTC[tc].white++; perTC[tc].total += bonusRates.white; }
                     }
@@ -3501,10 +3507,10 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           if (isSDS(p)) {
                             bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'SDS', amount: bonusRates.sds});
                           }
-                          if (isSDS(p) && p['R+']) {
+                          if ((isSDS(p) || p.FIN) && p['R+']) {
                             bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'Retainer', amount: bonusRates.ret});
                           }
-                          if (isSDS(p) && p['W+']) {
+                          if ((isSDS(p) || p.FIN) && p['W+']) {
                             bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'Whitening', amount: bonusRates.white});
                           }
                           if (started.find(s => s.id === p.id) && p.PIF) {
