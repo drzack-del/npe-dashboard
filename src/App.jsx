@@ -2925,8 +2925,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 return null;
               })()}
 
-              {/* Treatment Type — hidden for NOTX */}
-              {newPatientForm.status !== 'NOTX' && (
+              {/* Treatment Type — hidden for NOTX and DBRETS */}
+              {newPatientForm.status !== 'NOTX' && newPatientForm.status !== 'DBRETS' && (
                 <div style={{marginBottom:'16px'}}>
                   <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'8px'}}>Treatment Type</label>
                   <div style={{display:'grid',gridTemplateColumns:'repeat(3, 1fr)',gap:'8px'}}>
