@@ -5909,36 +5909,63 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
             <div style={{marginBottom:'16px'}}>
               <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'8px'}}>Status</label>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(3, 1fr)',gap:'8px'}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(4, 1fr)',gap:'8px'}}>
                 {[
-                  {value: 'ST', label: 'Started'},
-                  {value: 'SCH', label: 'Scheduled'},
-                  {value: 'PEN', label: 'Pending'},
-                  {value: 'OBS', label: 'Observation'},
-                  {value: 'MP', label: 'Medicaid Pending'},
-                  {value: 'NOTX', label: 'No TX'}
-                ].map(status => (
-                  <label key={status.value} style={{display:'flex',alignItems:'center',cursor:'pointer'}}>
-                    <input
-                      type="checkbox"
-                      checked={editForm[status.value] || false}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        const updated = {...editForm, [status.value]: checked};
-                        if (status.value === 'MP' && checked) {
-                          if (!updated.obstacle) updated.obstacle = 'Waiting to Hear from Medicaid';
-                          if (updated.npeDate) {
-                            updated.nextTouchDate = calcNextTouchDate(updated.npeDate, updated.obstacle, updated.contactAttempts || 0, updated.lastContactDate || '');
+                  {value: 'ST',     label: 'ST — Started'},
+                  {value: 'SCH',    label: 'SCH — Scheduled'},
+                  {value: 'PEN',    label: 'PEN — Pending'},
+                  {value: 'OBS',    label: 'OBS — Observation'},
+                  {value: 'MP',     label: 'MP — Medicaid'},
+                  {value: 'NOTX',   label: 'NOTX — No TX'},
+                  {value: 'DBRETS', label: 'DB/RETS'},
+                ].map(status => {
+                  const allStatuses = ['ST','SCH','PEN','OBS','MP','NOTX','DBRETS'];
+                  const isActive = editForm[status.value] || false;
+                  return (
+                    <label key={status.value} style={{display:'flex',alignItems:'center',cursor:'pointer',padding:'8px 10px',
+                      border:`2px solid ${isActive ? '#2563EB' : '#e5e7eb'}`,borderRadius:'6px',
+                      backgroundColor: isActive ? '#eff6ff' : 'white',gap:'6px'}}>
+                      <input
+                        type="radio"
+                        name="edit-status"
+                        checked={isActive}
+                        onChange={() => {
+                          // Clear all statuses then set the selected one
+                          const updated = {...editForm};
+                          allStatuses.forEach(s => { updated[s] = false; });
+                          updated[status.value] = true;
+                          if (status.value === 'MP') {
+                            if (!updated.obstacle) updated.obstacle = 'Waiting to Hear from Medicaid';
+                            if (updated.npeDate) updated.nextTouchDate = calcNextTouchDate(updated.npeDate, updated.obstacle, updated.contactAttempts || 0, updated.lastContactDate || '');
                           }
-                        }
-                        setEditForm(updated);
-                      }}
-                      style={{marginRight:'6px'}}
-                    />
-                    {status.label}
-                  </label>
-                ))}
+                          setEditForm(updated);
+                        }}
+                        style={{marginRight:'2px'}}
+                      />
+                      <span style={{fontSize:'13px',fontWeight: isActive ? '600' : '400'}}>{status.label}</span>
+                    </label>
+                  );
+                })}
               </div>
+              {/* R+/W+ add-ons when DB/RETS is selected */}
+              {editForm.DBRETS && (
+                <div style={{marginTop:'10px',padding:'12px 14px',backgroundColor:'#f0fdf4',borderRadius:'8px',border:'1px solid #bbf7d0'}}>
+                  <div style={{fontSize:'13px',fontWeight:'600',color:'#166534',marginBottom:'8px'}}>DB/RETS Add-ons</div>
+                  <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
+                    {[['R+','Retainers',`+$${bonusRates.ret}`],['W+','Whitening',`+$${bonusRates.white}`]].map(([key, label, bonus]) => (
+                      <label key={key} style={{display:'flex',alignItems:'center',cursor:'pointer',padding:'6px 12px',
+                        border:`2px solid ${editForm[key] ? '#86efac' : '#d1d5db'}`,borderRadius:'6px',
+                        backgroundColor: editForm[key] ? '#dcfce7' : 'white',gap:'6px'}}>
+                        <input type="checkbox" checked={editForm[key] || false}
+                          onChange={e => setEditForm({...editForm, [key]: e.target.checked})}
+                          style={{marginRight:'2px'}} />
+                        <span style={{fontSize:'13px',fontWeight:'500'}}>{key} ({label})</span>
+                        <span style={{color:'#16a34a',fontWeight:'700',fontSize:'13px'}}>{bonus}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div style={{display:'flex',gap:'12px'}}>
