@@ -498,6 +498,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [adminMsg, setAdminMsg] = useState('');
   const [saveToast, setSaveToast] = useState('');
   const [saveError, setSaveError] = useState('');
+  const [demoTourStep, setDemoTourStep] = useState(null);
+  const [activeHelpTip, setActiveHelpTip] = useState(null);
 
   // Support / feedback
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
@@ -783,6 +785,14 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     if (data) setTcUsers(data);
   };
   useEffect(() => { if (currentUser?.role === 'admin') loadTCUsers(); }, [currentUser]);
+
+  // Auto-start guided tour for demo users
+  useEffect(() => {
+    if (currentUser?.id === 'demo') {
+      const t = setTimeout(() => setDemoTourStep(0), 1400);
+      return () => clearTimeout(t);
+    }
+  }, []);
   // ── Practice Metrics Supabase helpers ────────────────────────────────
   const loadPracticeMetrics = async () => {
     if (!supabase) return;
@@ -1173,6 +1183,68 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     setCurrentView('patients');
   };
 
+  // ── Guided Tour Steps ────────────────────────────────────────────────
+  const TOUR_STEPS = [
+    {
+      view: 'dashboard',
+      title: '📊 Dashboard — Your Morning Check-In',
+      body: 'Every day starts here. See how many New Patient Exams (NPEs) happened this month, how many started treatment, your conversion rate, and how many calls are due today. Think of it as your practice scoreboard.',
+    },
+    {
+      view: 'followup',
+      title: '🔔 Follow-Up Queue — Where You Spend Your Day',
+      body: "This is your primary workspace. Every patient who didn't start same-day is here. The system auto-schedules calls based on each patient's obstacle — price, spouse approval, Medicaid, etc. Work through the list every day and nothing slips through.",
+    },
+    {
+      view: 'add',
+      title: '➕ Add NPE — After Every Exam',
+      body: 'After each new patient exam, add them here. Select their status:\n• SDS = Started same day (earns bonus)\n• PEN = Pending — needs follow-up calls\n• SCH = Has a bond appointment scheduled\n• OBS = Observation, not ready yet\n• MP = Waiting on Medicaid\n• NOTX = Declined treatment',
+    },
+    {
+      view: 'bonus',
+      title: '💰 Bonus Audit — Your Earnings',
+      body: 'Bonuses are calculated automatically every month. Same-day starts (SDS) earn a base amount. Retainers (R+), whitening (W+), and paid-in-full (PIF) add on top. This tab shows the full breakdown — no manual tracking needed.',
+    },
+    {
+      view: 'patients',
+      title: '👥 All Patients — Your Full List',
+      body: "Every patient you've added is here. Search by name, filter by status, and click any row to view their full contact history — every call logged, every outcome, every note.",
+    },
+    {
+      view: 'dashboard',
+      title: "🎉 You're All Set!",
+      body: "The demo is loaded with real-looking patients at every stage. Try the Follow-Up Queue, log a call, and watch how the system auto-schedules the next touch. When you're ready, sign in with your real account.",
+    },
+  ];
+
+  // ── Contextual Help Tooltip Component ───────────────────────────────
+  const HelpTip = ({ id, tip }) => (
+    <span style={{position:'relative',display:'inline-flex',alignItems:'center',verticalAlign:'middle'}}>
+      <button
+        onClick={e => { e.stopPropagation(); setActiveHelpTip(activeHelpTip === id ? null : id); }}
+        style={{width:'17px',height:'17px',borderRadius:'50%',border:'1px solid #d1d5db',backgroundColor:'#f3f4f6',
+                color:'#6b7280',fontSize:'10px',fontWeight:'800',cursor:'pointer',display:'inline-flex',
+                alignItems:'center',justifyContent:'center',flexShrink:0,marginLeft:'5px',lineHeight:1,padding:0}}
+        title="What is this?"
+      >?</button>
+      {activeHelpTip === id && (
+        <div onClick={e => e.stopPropagation()}
+          style={{position:'absolute',left:'50%',transform:'translateX(-50%)',top:'24px',zIndex:3000,
+                  backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'12px',
+                  boxShadow:'0 12px 32px rgba(0,0,0,0.14)',padding:'14px 16px',width:'270px',
+                  fontSize:'13px',color:'#374151',lineHeight:1.55,whiteSpace:'pre-line'}}>
+          {tip}
+          <button onClick={() => setActiveHelpTip(null)}
+            style={{display:'block',marginTop:'10px',fontSize:'11px',color:'#2563EB',background:'none',
+                    border:'none',cursor:'pointer',padding:0,fontWeight:'600'}}>
+            Got it ✓
+          </button>
+        </div>
+      )}
+    </span>
+  );
+  // ────────────────────────────────────────────────────────────────────
+
   if (loading) return (
     <div style={{minHeight:'100vh',backgroundColor:'#F5F5F5',display:'flex',alignItems:'center',justifyContent:'center'}}>
       <div style={{textAlign:'center'}}>
@@ -1232,7 +1304,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           {/* Right — User info + sign out */}
           <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:'16px'}}>
             {currentUser?.id === 'demo' && (
-              <div style={{padding:'4px 10px',backgroundColor:'#4A90E2',borderRadius:'6px',fontSize:'11px',fontWeight:'800',color:'white',letterSpacing:'0.08em',textTransform:'uppercase'}}>Demo Mode</div>
+              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                <div style={{padding:'4px 10px',backgroundColor:'#4A90E2',borderRadius:'6px',fontSize:'11px',fontWeight:'800',color:'white',letterSpacing:'0.08em',textTransform:'uppercase'}}>Demo Mode</div>
+                <button onClick={() => { setDemoTourStep(0); setCurrentView(TOUR_STEPS[0].view); }}
+                  style={{padding:'4px 10px',backgroundColor:'rgba(255,255,255,0.12)',border:'1px solid rgba(255,255,255,0.25)',borderRadius:'6px',fontSize:'11px',fontWeight:'700',color:'rgba(255,255,255,0.85)',cursor:'pointer',letterSpacing:'0.04em'}}>
+                  🎓 Tour
+                </button>
+              </div>
             )}
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:'13px',fontWeight:'700',color:'white'}}>{currentUser?.name}</div>
@@ -1257,17 +1335,22 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           ).map(view => (
             <button
               key={view}
+              id={`nav-btn-${view}`}
               onClick={() => setCurrentView(view)}
               style={{
                 padding:'12px 16px',
                 border:'none',
                 borderBottom: currentView === view ? '3px solid #2563EB' : '3px solid transparent',
-                backgroundColor:'transparent',
+                backgroundColor: demoTourStep !== null && TOUR_STEPS[demoTourStep]?.view === view ? 'rgba(37,99,235,0.08)' : 'transparent',
                 color: currentView === view ? '#202020' : '#6b7280',
                 fontWeight: currentView === view ? '600' : '400',
                 cursor:'pointer',
                 fontSize:'14px',
-                whiteSpace:'nowrap'
+                whiteSpace:'nowrap',
+                borderRadius: demoTourStep !== null && TOUR_STEPS[demoTourStep]?.view === view ? '6px 6px 0 0' : '0',
+                outline: demoTourStep !== null && TOUR_STEPS[demoTourStep]?.view === view ? '2px solid #2563EB' : 'none',
+                outlineOffset:'2px',
+                transition:'background-color 0.2s',
               }}
             >
               {view === 'dashboard' && '📊 Dashboard'}
@@ -1467,8 +1550,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
             {/* ── Key Metrics with goals ── */}
             <div>
-              <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>
+              <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px',display:'flex',alignItems:'center',gap:'4px'}}>
                 {dashTimeframe === 'month' ? `📅 ${monthLabel}${effectiveTCFilter !== 'All' ? ` · ${effectiveTCFilter}` : ''} — Performance vs. Goal` : `📊 All-Time Performance${effectiveTCFilter !== 'All' ? ` · ${effectiveTCFilter}` : ''}`}
+                <HelpTip id="dash-metrics" tip={"NPE = New Patient Exam (anyone who comes in for a consultation).\n\nStarted = Patients who started treatment this month (SDS + ST).\n\nConversion Rate = Started ÷ NPEs. Industry average is 55-65%. Aim for 60%+.\n\nSame-Day Start (SDS) = Patient bonded the same day as their exam. These earn the highest TC bonus.\n\nOn-Time Rate = % of your scheduled follow-up calls made on or before the due date."} />
               </div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))',gap:'14px'}}>
                 <MetricCard label="Total NPE" value={dash.total}
@@ -2072,7 +2156,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
         {/* FOLLOW-UP QUEUE */}
         {currentView === 'followup' && (
           <div style={{display:'flex',flexDirection:'column',gap:'24px'}}>
-            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020'}}>Follow-Up Queue</h2>
+            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',display:'flex',alignItems:'center',gap:'4px'}}>Follow-Up Queue <HelpTip id="followup-queue" tip={"This is where you spend most of your day. Every patient who didn't start same-day is here.\n\nPriority labels:\n• FRESH = NPE within the last 7 days\n• WARM = 8–30 days\n• HOT = over 30 days (overdue)\n\nThe system auto-schedules who's due today based on their obstacle. Work through every patient on today's list before the day ends."} /></h2>
 
             {/* Active popup bonus banner */}
             {(() => {
@@ -2742,7 +2826,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
               {/* Status */}
               <div style={{marginBottom:'16px'}}>
-                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'8px'}}>Status *</label>
+                <label style={{display:'flex',alignItems:'center',fontSize:'14px',fontWeight:'500',marginBottom:'8px'}}>Status * <HelpTip id="add-status" tip={"SDS — Same Day Start: Patient started treatment today. Earns a bonus.\n\nST — Started: Patient started on a different day than their exam.\n\nSCH — Scheduled: Bond appointment is booked. System will check in the day after.\n\nPEN — Pending: Patient needs more time. System auto-schedules follow-up calls based on their obstacle.\n\nOBS — Observation: Not ready for treatment yet. Auto-schedules a 6-month re-check.\n\nMP — Medicaid Pending: Waiting on Medicaid approval. 14-day follow-up auto-schedules.\n\nNOTX — No Treatment: Patient declined. Removed from all queues.\n\nDB/RETS — Finishing: Debond, retainer, or whitening visit. Eligible for R+ and W+ bonuses."} /></label>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(2, 1fr)',gap:'8px'}}>
                   {[
                     {value:'SDS', label:'SDS - Same Day Start', sub:`Started today (+$${bonusRates.sds} bonus)`, bg:'#fef3c7', border:'#fbbf24', subColor:'#92400e'},
@@ -2819,7 +2903,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               {/* PEN / MP: Obstacle */}
               {(newPatientForm.status === 'PEN' || newPatientForm.status === 'MP') && (
                 <div style={{marginBottom:'16px'}}>
-                  <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Obstacle</label>
+                  <label style={{display:'flex',alignItems:'center',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Obstacle <HelpTip id="add-obstacle" tip={"The obstacle is WHY the patient didn't start today. It drives the entire follow-up schedule.\n\nExamples:\n• Price / Down Payment → calls at 1, 3, 7, 14 days\n• Spouse / Partner → calls at 1, 4, 10 days\n• Getting a Second Opinion → calls at 2, 7, 21, 45 days\n• Medicaid Pending → calls every 14 days\n\nChoose the most accurate obstacle and the system handles the rest."} /></label>
                   <select value={newPatientForm.obstacle}
                     onChange={e => setNewPatientForm({...newPatientForm, obstacle: e.target.value})}
                     style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}>
@@ -3350,8 +3434,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           <div>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'24px',flexWrap:'wrap',gap:'12px'}}>
               <div>
-                <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',margin:0}}>
+                <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',margin:0,display:'flex',alignItems:'center',gap:'4px'}}>
                   {bonusTCFilter ? `${bonusTCFilter}'s Bonus` : 'TC Bonus Audit Trail'}
+                  <HelpTip id="bonus-audit" tip={"Bonuses are calculated automatically from your patient activity.\n\nBonus types:\n• SDS = Same-day start (base amount per patient)\n• R+ = Retainer add-on\n• W+ = Whitening add-on\n• PIF = Paid in full add-on\n• DB/RETS = Finishing visit (R+ and W+ bonuses apply)\n\nBonus rates are set by your practice owner in Settings."} />
                 </h2>
                 {bonusTCFilter && <div style={{fontSize:'13px',color:'#6b7280',marginTop:'3px'}}>Your personal bonus summary — only you can see this</div>}
               </div>
@@ -3651,7 +3736,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           <div>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'24px',flexWrap:'wrap',gap:'12px'}}>
               <div>
-                <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',margin:0}}>⏱️ On-Time Follow-Up Audit</h2>
+                <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',margin:0,display:'flex',alignItems:'center',gap:'4px'}}>⏱️ On-Time Follow-Up Audit <HelpTip id="ontime-audit" tip={"This tracks whether you're completing follow-up calls on time.\n\nWhen you log a call in the Follow-Up Queue, the system records both when the call was scheduled and when you actually made it. This audit compares the two.\n\n80%+ is the goal. Below 60% means patients are falling through the cracks — their follow-ups are being missed or delayed."} /></h2>
                 <div style={{fontSize:'13px',color:'#6b7280',marginTop:'3px'}}>Tracks whether follow-ups were completed on or before their scheduled date</div>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
@@ -5802,6 +5887,69 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           </div>
         </div>
       )}
+
+      {/* ── Guided Demo Tour Overlay ─────────────────────────────────── */}
+      {demoTourStep !== null && demoTourStep < TOUR_STEPS.length && (
+        <div style={{position:'fixed',bottom:'28px',right:'28px',zIndex:8000,width:'340px',backgroundColor:'white',
+                     borderRadius:'16px',boxShadow:'0 20px 60px rgba(0,0,0,0.2)',overflow:'hidden',
+                     border:'1px solid #e5e7eb'}}>
+          {/* Progress bar */}
+          <div style={{height:'4px',backgroundColor:'#f3f4f6'}}>
+            <div style={{height:'4px',backgroundColor:'#2563EB',
+                         width:`${((demoTourStep+1)/TOUR_STEPS.length)*100}%`,
+                         transition:'width 0.35s ease'}} />
+          </div>
+          <div style={{padding:'20px'}}>
+            {/* Step counter */}
+            <div style={{fontSize:'11px',fontWeight:'700',color:'#2563EB',textTransform:'uppercase',
+                         letterSpacing:'0.08em',marginBottom:'6px'}}>
+              Step {demoTourStep+1} of {TOUR_STEPS.length}
+            </div>
+            {/* Title */}
+            <div style={{fontSize:'15px',fontWeight:'800',color:'#202020',marginBottom:'10px',lineHeight:1.3}}>
+              {TOUR_STEPS[demoTourStep].title}
+            </div>
+            {/* Body */}
+            <div style={{fontSize:'13px',color:'#4b5563',lineHeight:1.65,whiteSpace:'pre-line',marginBottom:'16px'}}>
+              {TOUR_STEPS[demoTourStep].body}
+            </div>
+            {/* Buttons */}
+            <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+              {demoTourStep > 0 && (
+                <button onClick={() => { const s = demoTourStep-1; setDemoTourStep(s); setCurrentView(TOUR_STEPS[s].view); }}
+                  style={{padding:'8px 14px',backgroundColor:'#f3f4f6',border:'none',borderRadius:'8px',
+                          fontSize:'13px',fontWeight:'600',cursor:'pointer',color:'#374151'}}>
+                  ← Back
+                </button>
+              )}
+              {demoTourStep < TOUR_STEPS.length-1 ? (
+                <button onClick={() => { const s = demoTourStep+1; setDemoTourStep(s); setCurrentView(TOUR_STEPS[s].view); }}
+                  style={{flex:1,padding:'10px',backgroundColor:'#2563EB',border:'none',borderRadius:'8px',
+                          fontSize:'13px',fontWeight:'700',cursor:'pointer',color:'white'}}>
+                  Next →
+                </button>
+              ) : (
+                <button onClick={() => setDemoTourStep(null)}
+                  style={{flex:1,padding:'10px',backgroundColor:'#10b981',border:'none',borderRadius:'8px',
+                          fontSize:'13px',fontWeight:'700',cursor:'pointer',color:'white'}}>
+                  Start Exploring ✓
+                </button>
+              )}
+              <button onClick={() => setDemoTourStep(null)}
+                style={{padding:'8px 12px',backgroundColor:'transparent',border:'1px solid #e5e7eb',
+                        borderRadius:'8px',fontSize:'12px',color:'#9ca3af',cursor:'pointer'}}>
+                Skip
+              </button>
+            </div>
+          </div>
+          {/* Nav hint */}
+          <div style={{borderTop:'1px solid #f3f4f6',padding:'9px 20px',fontSize:'11px',color:'#9ca3af',
+                       display:'flex',alignItems:'center',gap:'5px',backgroundColor:'#fafafa'}}>
+            <span>☝️</span> The highlighted tab above is where this feature lives
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
