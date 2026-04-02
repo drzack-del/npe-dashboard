@@ -204,7 +204,13 @@ import { createClient } from '@supabase/supabase-js';
                 if (!data.auth_user_id) {
                     await supabase.from('tc_users').update({ auth_user_id: userId }).eq('email', userEmail);
                 }
-                return { id: userId, name: data.name, role: data.role, email: userEmail, practiceId: data.practice_id || 'miller-ortho' };
+                const practiceId = data.practice_id || 'miller-ortho';
+                let practiceName = 'Practice';
+                try {
+                    const { data: practiceData } = await supabase.from('practices').select('name').eq('id', practiceId).maybeSingle();
+                    if (practiceData?.name) practiceName = practiceData.name;
+                } catch {}
+                return { id: userId, name: data.name, role: data.role, email: userEmail, practiceId, practiceName };
             };
 
             useEffect(() => {
@@ -335,15 +341,15 @@ import { createClient } from '@supabase/supabase-js';
                         {brandHero}
                         <div style={{backgroundColor:'white',padding:'36px',borderRadius:'16px',boxShadow:'0 24px 48px rgba(0,0,0,0.4)',maxWidth:'380px',width:'100%'}}>
                             <div style={{textAlign:'center',marginBottom:'28px'}}>
-                                <div style={{fontSize:'16px',fontWeight:'700',color:'#202020',marginBottom:'3px'}}>Miller Orthodontics</div>
-                                <div style={{fontSize:'13px',color:'#9ca3af'}}>{isSignUp ? 'Create your account' : 'Treatment Coordinator Portal'}</div>
+                                <div style={{fontSize:'16px',fontWeight:'700',color:'#202020',marginBottom:'3px'}}>CadenceIQ Portal</div>
+                                <div style={{fontSize:'13px',color:'#9ca3af'}}>{isSignUp ? 'Create your account' : 'Sign in to your practice'}</div>
                             </div>
                             <form onSubmit={isSignUp ? handleSignUp : handleLogin}>
                                 <div style={{marginBottom:'14px'}}>
                                     <label style={{display:'block',fontSize:'13px',fontWeight:'600',marginBottom:'7px',color:'#374151'}}>Email</label>
                                     <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
                                         style={{width:'100%',padding:'13px',border:'2px solid #e5e7eb',borderRadius:'9px',fontSize:'15px',boxSizing:'border-box',outline:'none'}}
-                                        placeholder="you@millerortho.com" autoFocus />
+                                        placeholder="you@example.com" autoFocus />
                                 </div>
                                 <div style={{marginBottom:'20px'}}>
                                     <label style={{display:'block',fontSize:'13px',fontWeight:'600',marginBottom:'7px',color:'#374151'}}>Password</label>
@@ -1219,7 +1225,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
           {/* Practice / Client info */}
           <div>
-            <p style={{fontSize:'15px',fontWeight:'700',color:'white',margin:0}}>Miller Orthodontics</p>
+            <p style={{fontSize:'15px',fontWeight:'700',color:'white',margin:0}}>{currentUser?.practiceName || 'Practice'}</p>
             <p style={{fontSize:'11px',color:'rgba(255,255,255,0.45)',margin:'2px 0 0 0',letterSpacing:'0.03em'}}>{currentUser?.role === 'tc' ? 'Treatment Coordinator Portal' : 'Practice Owner Portal'}</p>
           </div>
 
