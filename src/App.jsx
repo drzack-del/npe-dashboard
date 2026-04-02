@@ -96,56 +96,56 @@ import { createClient } from '@supabase/supabase-js';
           });
           return [
             // Started today (SDS)
-            p({ name: 'Ethan Brown',    phone: '(813) 555-0142', npeDate: todayStr, location: 'Car', dp: '$750', tc: 'Reaghan', BR: true,  'R+': true,  startDate: todayStr }),
-            p({ name: 'Sophia Davis',   phone: '(813) 555-0293', npeDate: ago(2),   location: 'Apo', dp: '$500', tc: 'Katelyn', INV: true, PIF: true,  startDate: ago(2) }),
-            p({ name: 'Isabella Clark', phone: '(813) 555-0388', npeDate: ago(1),   location: 'Car', dp: '$500', tc: 'Reaghan', PH1: true, 'W+': true, startDate: ago(1) }),
+            p({ name: 'Ethan Brown',    phone: '(813) 555-0142', age: 14, npeDate: todayStr, location: 'Car', dp: '$750', tc: 'Reaghan', BR: true,  'R+': true,  startDate: todayStr }),
+            p({ name: 'Sophia Davis',   phone: '(813) 555-0293', age: 32, npeDate: ago(2),   location: 'Apo', dp: '$500', tc: 'Katelyn', INV: true, PIF: true,  startDate: ago(2) }),
+            p({ name: 'Isabella Clark', phone: '(813) 555-0388', age: 11, npeDate: ago(1),   location: 'Car', dp: '$500', tc: 'Reaghan', PH1: true, 'W+': true, startDate: ago(1) }),
             // ST - started but not same day
-            p({ name: 'James Nguyen',   phone: '(813) 555-0451', npeDate: ago(10),  location: 'Apo', dp: '$500', tc: 'Katelyn', BR: true, ST: true, startDate: ago(3) }),
+            p({ name: 'James Nguyen',   phone: '(813) 555-0451', age: 27, npeDate: ago(10),  location: 'Apo', dp: '$500', tc: 'Katelyn', BR: true, ST: true, startDate: ago(3) }),
             // Scheduled - bond check-in today
-            p({ name: 'Tyler Chen',     phone: '(813) 555-0371', npeDate: ago(7),   location: 'Car', dp: '$500', tc: 'Reaghan', BR: true, SCH: true,
+            p({ name: 'Tyler Chen',     phone: '(813) 555-0371', age: 16, npeDate: ago(7),   location: 'Car', dp: '$500', tc: 'Reaghan', BR: true, SCH: true,
                 bondDate: ago(1), nextTouchDate: getBondCheckDate({ SCH: true, bondDate: ago(1) }) }),
             // Pending - due today
-            p({ name: 'Sarah Johnson',  phone: '(813) 555-0182', npeDate: ago(1),   location: 'Car', dp: '$500', tc: 'Reaghan', PEN: true,
+            p({ name: 'Sarah Johnson',  phone: '(813) 555-0182', age: 38, npeDate: ago(1),   location: 'Car', dp: '$500', tc: 'Reaghan', PEN: true,
                 obstacle: 'Price / Down Payment',
                 nextTouchDate: skipWeekend(todayStr) }),
-            p({ name: 'Marcus Williams',phone: '(813) 555-0447', npeDate: ago(2),   location: 'Apo', dp: '$0',   tc: 'Katelyn', PEN: true,
+            p({ name: 'Marcus Williams',phone: '(813) 555-0447', age: 9,  npeDate: ago(2),   location: 'Apo', dp: '$0',   tc: 'Katelyn', PEN: true,
                 obstacle: 'Getting a Second Opinion',
                 nextTouchDate: skipWeekend(todayStr) }),
             // MP - due today
-            p({ name: 'Emma Rodriguez', phone: '(813) 555-0516', npeDate: ago(14),  location: 'Car', dp: '$0',   tc: 'Reaghan', MP: true,
+            p({ name: 'Emma Rodriguez', phone: '(813) 555-0516', age: 12, npeDate: ago(14),  location: 'Car', dp: '$0',   tc: 'Reaghan', MP: true,
                 obstacle: 'Waiting to Hear from Medicaid',
                 nextTouchDate: skipWeekend(todayStr) }),
             // Pending - with prior contact, due soon
-            p({ name: 'Ashley Thompson',phone: '(813) 555-0624', npeDate: ago(8),   location: 'Car', dp: '$500', tc: 'Reaghan', PEN: true,
+            p({ name: 'Ashley Thompson',phone: '(813) 555-0624', age: 44, npeDate: ago(8),   location: 'Car', dp: '$500', tc: 'Reaghan', PEN: true,
                 obstacle: 'Spouse / Partner Needs to Approve', contactAttempts: 1, lastContactDate: ago(4),
                 nextTouchDate: calcNextTouchDate(ago(8), 'Spouse / Partner Needs to Approve', 1, ago(4)),
                 contact_log: [{ date: ago(4), scheduledDate: ago(4), reachedPatient: 'Spoke with patient', outcome: 'Husband still reviewing — call back in a few days', sentText: false, notes: '' }] }),
-            p({ name: 'Madison Lee',    phone: '(813) 555-0738', npeDate: ago(5),   location: 'Apo', dp: '$500', tc: 'Katelyn', PEN: true,
+            p({ name: 'Madison Lee',    phone: '(813) 555-0738', age: 15, npeDate: ago(5),   location: 'Apo', dp: '$500', tc: 'Katelyn', PEN: true,
                 obstacle: 'Fear / Bad Experience', contactAttempts: 1, lastContactDate: ago(5),
                 nextTouchDate: calcNextTouchDate(ago(5), 'Fear / Bad Experience', 1, ago(5)),
                 contact_log: [{ date: ago(5), scheduledDate: ago(5), reachedPatient: 'Left voicemail', outcome: 'Left voicemail', sentText: true, notes: '' }] }),
             // MP - upcoming
-            p({ name: 'Ava Thompson',   phone: '(813) 555-0829', npeDate: ago(10),  location: 'Car', dp: '$0',   tc: 'Reaghan', MP: true,
+            p({ name: 'Ava Thompson',   phone: '(813) 555-0829', age: 8,  npeDate: ago(10),  location: 'Car', dp: '$0',   tc: 'Reaghan', MP: true,
                 obstacle: 'Waiting to Hear from Medicaid',
                 nextTouchDate: calcNextTouchDate(ago(10), 'Waiting to Hear from Medicaid', 0, '') }),
             // Pending - further out
-            p({ name: 'Olivia Garcia',  phone: '(813) 555-1047', npeDate: ago(23),  location: 'Apo', dp: '$500', tc: 'Katelyn', PEN: true,
+            p({ name: 'Olivia Garcia',  phone: '(813) 555-1047', age: 52, npeDate: ago(23),  location: 'Apo', dp: '$500', tc: 'Katelyn', PEN: true,
                 obstacle: 'Timing / Life Event', contactAttempts: 2, lastContactDate: ago(16),
                 nextTouchDate: calcNextTouchDate(ago(23), 'Timing / Life Event', 2, ago(16)),
                 contact_log: [
                   { date: ago(23), scheduledDate: ago(23), reachedPatient: 'No answer',  outcome: 'Left voicemail', sentText: true, notes: '' },
                   { date: ago(16), scheduledDate: ago(16), reachedPatient: 'Spoke with patient', outcome: 'Moving next month — call back in 30 days', sentText: false, notes: '' }
                 ] }),
-            p({ name: 'Luca Hernandez', phone: '(813) 555-1163', npeDate: ago(18),  location: 'Car', dp: '$500', tc: 'Reaghan', PEN: true,
+            p({ name: 'Luca Hernandez', phone: '(813) 555-1163', age: 13, npeDate: ago(18),  location: 'Car', dp: '$500', tc: 'Reaghan', PEN: true,
                 obstacle: 'Dental Work Needed First', contactAttempts: 1, lastContactDate: ago(11),
                 nextTouchDate: calcNextTouchDate(ago(18), 'Dental Work Needed First', 1, ago(11)),
                 contact_log: [{ date: ago(11), scheduledDate: ago(11), reachedPatient: 'Spoke with patient', outcome: 'Still finishing dental work — check back in a month', sentText: false, notes: '' }] }),
             // OBS
-            p({ name: 'Noah Wilson',    phone: '(813) 555-0934', npeDate: ago(182), location: 'Car', dp: '$0',   tc: 'Reaghan', OBS: true,
+            p({ name: 'Noah Wilson',    phone: '(813) 555-0934', age: 7,  npeDate: ago(182), location: 'Car', dp: '$0',   tc: 'Reaghan', OBS: true,
                 notes: 'Waiting for growth — recheck in 6 months',
                 nextTouchDate: addMonths(ago(182), 6) }),
             // NOTX
-            p({ name: 'Liam Taylor',    phone: '(813) 555-1182', npeDate: ago(5),   location: 'Car', dp: '$0',   tc: 'Reaghan', NOTX: true,
+            p({ name: 'Liam Taylor',    phone: '(813) 555-1182', age: 23, npeDate: ago(5),   location: 'Car', dp: '$0',   tc: 'Reaghan', NOTX: true,
                 notes: 'Decided not to proceed with treatment' }),
           ];
         };
@@ -461,6 +461,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [currentView, setCurrentView] = useState(currentUser?.role === 'tc' ? 'followup' : 'dashboard');
   const [dashTimeframe, setDashTimeframe] = useState('month'); // 'month' | 'all'
   const [dashTCFilter, setDashTCFilter] = useState('All');
+  const [dashMonth, setDashMonth] = useState(new Date().getMonth());
+  const [dashYear, setDashYear] = useState(new Date().getFullYear());
   const [showContactLog, setShowContactLog] = useState(null);
   const [showEditModal, setShowEditModal] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -529,7 +531,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   }, [tcList]);
 
   const [newPatientForm, setNewPatientForm] = useState({
-    name: '', phone: '', npeDate: new Date().toISOString().split('T')[0], location: 'Car', dp: '', tc: localStorage.getItem('npe-default-tc') || 'Reaghan', status: '',
+    name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: 'Car', dp: '', tc: localStorage.getItem('npe-default-tc') || 'Reaghan', status: '',
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
     'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: ''
   });
@@ -603,7 +605,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
         const { data, error } = await supabase.from('patients').select('*').eq('practice_id', currentUser.practiceId).order('npe_date', { ascending: false });
         if (!error && data) {
           setPatients(data.map(r => ({
-            id: r.id, name: r.name, phone: r.phone || '',
+            id: r.id, name: r.name, phone: r.phone || '', age: r.age || null,
             npeDate: r.npe_date, location: r.location,
             dp: r.dp, tc: r.tc || 'Reaghan',
             BR: r.br, INV: r.inv, PH1: r.ph1, PH2: r.ph2, LTD: r.ltd,
@@ -673,7 +675,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const dbUpsert = async (patient) => {
     if (!supabase || currentUser?.id === 'demo') return;
     const { error } = await supabase.from('patients').upsert({
-      id: patient.id, name: patient.name, phone: patient.phone || '',
+      id: patient.id, name: patient.name, phone: patient.phone || '', age: patient.age || null,
       npe_date: patient.npeDate, location: patient.location,
       dp: patient.dp, tc: patient.tc || 'Reaghan',
       br: patient.BR, inv: patient.INV, ph1: patient.PH1, ph2: patient.PH2, ltd: patient.LTD,
@@ -1142,6 +1144,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       id: generateId(),
       name: newPatientForm.name.trim(),
       phone: newPatientForm.phone || '',
+      age: newPatientForm.age ? parseInt(newPatientForm.age) : null,
       npeDate: newPatientForm.npeDate,
       location: newPatientForm.location,
       dp: newPatientForm.dp || '$0',
@@ -1174,7 +1177,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     setSaveToast('✅ ' + patient.name + ' saved!' + nextInfo);
     setTimeout(() => setSaveToast(''), 4000);
     setNewPatientForm({
-      name: '', phone: '', npeDate: new Date().toISOString().split('T')[0], location: 'Car', dp: '',
+      name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: 'Car', dp: '',
       tc: defaultTC || newPatientForm.tc || 'Reaghan', status: '',
       BR: false, INV: false, PH1: false, PH2: false, LTD: false,
       'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: ''
@@ -1374,15 +1377,15 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
         {/* DASHBOARD VIEW */}
         {currentView === 'dashboard' && (() => {
           // ── Time-filtered metrics ──────────────────────────────────────
-          const curM = new Date().getMonth();
-          const curY = new Date().getFullYear();
-          // TCs are always filtered to their own data
+          const nowM = new Date().getMonth();
+          const nowY = new Date().getFullYear();
+          // Use selected month/year (dashMonth/dashYear) for filtering
           const effectiveTCFilter = currentUser?.role === 'tc' ? currentUser.name : dashTCFilter;
           const dashPatients = (() => {
             let pts = dashTimeframe === 'month'
               ? patients.filter(p => {
                   const d = new Date(p.npeDate + 'T12:00:00');
-                  return d.getMonth() === curM && d.getFullYear() === curY;
+                  return d.getMonth() === dashMonth && d.getFullYear() === dashYear;
                 })
               : patients;
             if (effectiveTCFilter !== 'All') pts = pts.filter(p => p.tc === effectiveTCFilter);
@@ -1394,7 +1397,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               const sd = effectiveStartDate(p);
               if (!sd) return false;
               const d = new Date(sd + 'T12:00:00');
-              return d.getMonth() === curM && d.getFullYear() === curY;
+              return d.getMonth() === dashMonth && d.getFullYear() === dashYear;
             });
             if (effectiveTCFilter !== 'All') pts = pts.filter(p => p.tc === effectiveTCFilter);
             return pts;
@@ -1402,9 +1405,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           const dash = calculateMetrics(dashPatients, dashStartPatients);
 
           // On-time follow-up rate for dashboard
-          // Uses all patients (filtered by TC only) so it matches the On-Time Audit,
-          // which counts any contact made in the month regardless of the patient's npeDate.
-          const dashMonthStr = `${curY}-${String(curM + 1).padStart(2, '0')}`;
+          const dashMonthStr = `${dashYear}-${String(dashMonth + 1).padStart(2, '0')}`;
           const onTimePatients = effectiveTCFilter !== 'All'
             ? patients.filter(p => p.tc === effectiveTCFilter)
             : patients;
@@ -1423,8 +1424,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           const dashOnTimeRate = dashTotalTracked > 0 ? Math.round((dashOnTimeCount / dashTotalTracked) * 100) : null;
           const dashOnTimeColor = dashOnTimeRate === null ? '#9ca3af' : dashOnTimeRate >= 80 ? '#10b981' : dashOnTimeRate >= 60 ? '#f59e0b' : '#ef4444';
 
-          // Monthly goals for current month
-          const mGoal = goals.monthly[curM] || {};
+          // Monthly goals for selected month
+          const mGoal = goals.monthly[dashMonth] || {};
           const carNPEGoal = mGoal.carNPE || 0;
           const carStartedGoal = mGoal.carStarted || 0;
           const apoNPEGoal = mGoal.apoNPE || 0;
@@ -1449,7 +1450,15 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
           // Formatted date
           const dateLabel = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'});
-          const monthLabel = new Date().toLocaleDateString('en-US', {month:'long', year:'numeric'});
+          const monthLabel = new Date(dashYear, dashMonth, 1).toLocaleDateString('en-US', {month:'long', year:'numeric'});
+          const isCurrentMonth = dashMonth === nowM && dashYear === nowY;
+          const navDashMonth = (dir) => {
+            let m = dashMonth + dir, y = dashYear;
+            if (m < 0) { m = 11; y--; }
+            if (m > 11) { m = 0; y++; }
+            if (y > nowY || (y === nowY && m > nowM)) return; // don't go past current month
+            setDashMonth(m); setDashYear(y);
+          };
 
           return (
           <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
@@ -1472,19 +1481,39 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     {currentUser?.name}
                   </div>
                 )}
-                <div style={{display:'flex',border:'1px solid #d1d5db',borderRadius:'8px',overflow:'hidden'}}>
-                  <button onClick={() => setDashTimeframe('month')}
-                    style={{padding:'8px 18px',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'600',
-                      backgroundColor: dashTimeframe === 'month' ? '#202020' : 'white',
-                      color: dashTimeframe === 'month' ? 'white' : '#374151'}}>
-                    📅 This Month
-                  </button>
-                  <button onClick={() => setDashTimeframe('all')}
-                    style={{padding:'8px 18px',border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',fontSize:'13px',fontWeight:'600',
-                      backgroundColor: dashTimeframe === 'all' ? '#202020' : 'white',
-                      color: dashTimeframe === 'all' ? 'white' : '#374151'}}>
-                    All Time
-                  </button>
+                <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                  {dashTimeframe === 'month' && (
+                    <div style={{display:'flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:'8px',overflow:'hidden',backgroundColor:'white'}}>
+                      <button onClick={() => navDashMonth(-1)}
+                        style={{padding:'8px 12px',border:'none',cursor:'pointer',fontSize:'14px',fontWeight:'700',color:'#374151',backgroundColor:'transparent'}}>
+                        ◀
+                      </button>
+                      <span style={{padding:'8px 10px',fontSize:'13px',fontWeight:'700',color:'#202020',minWidth:'130px',textAlign:'center',borderLeft:'1px solid #e5e7eb',borderRight:'1px solid #e5e7eb'}}>
+                        {monthLabel}
+                      </span>
+                      <button onClick={() => navDashMonth(1)}
+                        style={{padding:'8px 12px',border:'none',cursor:'pointer',fontSize:'14px',fontWeight:'700',
+                               color: isCurrentMonth ? '#d1d5db' : '#374151',
+                               backgroundColor:'transparent'}}
+                        disabled={isCurrentMonth}>
+                        ▶
+                      </button>
+                    </div>
+                  )}
+                  <div style={{display:'flex',border:'1px solid #d1d5db',borderRadius:'8px',overflow:'hidden'}}>
+                    <button onClick={() => { setDashTimeframe('month'); setDashMonth(nowM); setDashYear(nowY); }}
+                      style={{padding:'8px 16px',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'600',
+                        backgroundColor: dashTimeframe === 'month' ? '#202020' : 'white',
+                        color: dashTimeframe === 'month' ? 'white' : '#374151'}}>
+                      📅 Month
+                    </button>
+                    <button onClick={() => setDashTimeframe('all')}
+                      style={{padding:'8px 16px',border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',fontSize:'13px',fontWeight:'600',
+                        backgroundColor: dashTimeframe === 'all' ? '#202020' : 'white',
+                        color: dashTimeframe === 'all' ? 'white' : '#374151'}}>
+                      All Time
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1598,6 +1627,46 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 </div>
               </div>
             )}
+
+            {/* ── Age Insights ── */}
+            {(() => {
+              const withAge = dashPatients.filter(p => p.age && p.age > 0);
+              if (withAge.length === 0) return null;
+              const avgAge = Math.round(withAge.reduce((s, p) => s + p.age, 0) / withAge.length);
+              const brackets = [
+                {label:'Under 10', min:0, max:9, color:'#8b5cf6'},
+                {label:'10–17',    min:10, max:17, color:'#3b82f6'},
+                {label:'18–29',    min:18, max:29, color:'#10b981'},
+                {label:'30–44',    min:30, max:44, color:'#f59e0b'},
+                {label:'45+',      min:45, max:999, color:'#ef4444'},
+              ];
+              const counts = brackets.map(b => ({...b, count: withAge.filter(p => p.age >= b.min && p.age <= b.max).length}));
+              const maxCount = Math.max(...counts.map(c => c.count), 1);
+              const topBracket = counts.reduce((a, b) => b.count > a.count ? b : a, counts[0]);
+              return (
+                <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px',flexWrap:'wrap',gap:'8px'}}>
+                    <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',margin:0}}>👤 Patient Age Insights</h3>
+                    <div style={{display:'flex',gap:'16px',fontSize:'13px',color:'#6b7280'}}>
+                      <span>Avg age: <strong style={{color:'#202020'}}>{avgAge}</strong></span>
+                      <span>Most common: <strong style={{color:topBracket.color}}>{topBracket.label}</strong></span>
+                      <span style={{color:'#9ca3af'}}>{withAge.length} of {dashPatients.length} patients have age</span>
+                    </div>
+                  </div>
+                  <div style={{display:'flex',gap:'10px',alignItems:'flex-end',height:'90px'}}>
+                    {counts.map(b => (
+                      <div key={b.label} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:'3px'}}>
+                        <div style={{fontSize:'12px',fontWeight:'700',color: b.count > 0 ? '#374151' : 'transparent'}}>{b.count}</div>
+                        <div style={{width:'100%',backgroundColor: b.count > 0 ? b.color : '#f3f4f6',
+                                     height:`${Math.max(4, Math.round((b.count / maxCount) * 56))}px`,
+                                     borderRadius:'6px 6px 0 0',transition:'height 0.3s ease',opacity: b.count > 0 ? 1 : 0.3}} />
+                        <div style={{fontSize:'10px',color:'#9ca3af',textAlign:'center',lineHeight:1.3,marginTop:'2px'}}>{b.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* ── Obstacle Intelligence ── */}
             {(() => {
@@ -2804,8 +2873,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 </div>
               </div>
 
-              {/* Down Payment + TC */}
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'16px'}}>
+              {/* Down Payment + Age + TC */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 80px 1fr',gap:'16px',marginBottom:'16px'}}>
                 <div>
                   <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Down Payment</label>
                   <input type="text"
@@ -2813,6 +2882,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     value={newPatientForm.dp}
                     onChange={e => setNewPatientForm({...newPatientForm, dp: e.target.value})}
                     style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}} />
+                </div>
+                <div>
+                  <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Age</label>
+                  <input type="number" min="1" max="99" placeholder="—"
+                    value={newPatientForm.age}
+                    onChange={e => setNewPatientForm({...newPatientForm, age: e.target.value})}
+                    style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',textAlign:'center'}} />
                 </div>
                 <div>
                   <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Coordinator</label>
@@ -5629,7 +5705,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           <div style={{backgroundColor:'white',padding:'32px',borderRadius:'12px',maxWidth:'700px',width:'100%',maxHeight:'90vh',overflowY:'auto',boxShadow:'0 20px 25px -5px rgba(0,0,0,0.3)'}}>
             <h3 style={{fontSize:'22px',fontWeight:'bold',marginBottom:'20px',color:'#202020'}}>Edit Patient: {showEditModal.name}</h3>
             
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'16px'}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 80px',gap:'16px',marginBottom:'16px'}}>
               <div>
                 <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Patient Name</label>
                 <input type="text" value={editForm.name || ''}
@@ -5641,6 +5717,12 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 <input type="tel" placeholder="(813) 555-0000" value={editForm.phone || ''}
                   onChange={(e) => setEditForm({...editForm, phone: e.target.value})}
                   style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}} />
+              </div>
+              <div>
+                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Age</label>
+                <input type="number" min="1" max="99" placeholder="—" value={editForm.age || ''}
+                  onChange={(e) => setEditForm({...editForm, age: e.target.value ? parseInt(e.target.value) : null})}
+                  style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',textAlign:'center'}} />
               </div>
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'16px'}}>
