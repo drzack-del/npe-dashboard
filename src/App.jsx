@@ -119,11 +119,11 @@ import { createClient } from '@supabase/supabase-js';
             p({ name: 'Ashley Thompson',phone: '(813) 555-0624', age: 44, npeDate: ago(8),   location: 'Car', dp: '$500', tc: 'Reaghan', PEN: true,
                 obstacle: 'Spouse / Partner Needs to Approve', contactAttempts: 1, lastContactDate: ago(4),
                 nextTouchDate: calcNextTouchDate(ago(8), 'Spouse / Partner Needs to Approve', 1, ago(4)),
-                contact_log: [{ date: ago(4), scheduledDate: ago(4), reachedPatient: 'Spoke with patient', outcome: 'Husband still reviewing — call back in a few days', sentText: false, notes: '' }] }),
+                contact_log: [{ date: ago(4), time: '14:22', scheduledDate: ago(4), reachedPatient: 'Spoke with patient', outcome: 'Husband still reviewing — call back in a few days', sentText: false, notes: '' }] }),
             p({ name: 'Madison Lee',    phone: '(813) 555-0738', age: 15, npeDate: ago(5),   location: 'Apo', dp: '$500', tc: 'Katelyn', PEN: true,
                 obstacle: 'Fear / Bad Experience', contactAttempts: 1, lastContactDate: ago(5),
                 nextTouchDate: calcNextTouchDate(ago(5), 'Fear / Bad Experience', 1, ago(5)),
-                contact_log: [{ date: ago(5), scheduledDate: ago(5), reachedPatient: 'Left voicemail', outcome: 'Left voicemail', sentText: true, notes: '' }] }),
+                contact_log: [{ date: ago(5), time: '16:05', scheduledDate: ago(5), reachedPatient: 'Left voicemail', outcome: 'Left voicemail', sentText: true, notes: '' }] }),
             // MP - upcoming
             p({ name: 'Ava Thompson',   phone: '(813) 555-0829', age: 8,  npeDate: ago(10),  location: 'Car', dp: '$0',   tc: 'Reaghan', MP: true,
                 obstacle: 'Waiting to Hear from Medicaid',
@@ -994,6 +994,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       if (p.id !== patientId) return p;
       const logEntry = {
         date: todayStr,
+        time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
         reachedPatient: contactForm.reachedPatient,
         outcome: 'Not interested — converted to No Treatment',
         sentText: contactForm.sentText,
@@ -1072,6 +1073,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     const todayStr = new Date().toISOString().split('T')[0];
     const logEntry = {
       date: todayStr,
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
       reachedPatient: 'Missed appointment',
       outcome: `Missed initial bond scheduled for ${patient.bondDate} — returned to Pending`,
       sentText: false,
@@ -1097,6 +1099,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     const newCheckDate = getBondCheckDate({ SCH: true, bondDate: newBondDate });
     const logEntry = {
       date: todayStr,
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
       reachedPatient: 'Rescheduled',
       outcome: `Bond appointment rescheduled from ${patient.bondDate} to ${newBondDate}`,
       sentText: false,
