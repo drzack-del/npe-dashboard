@@ -462,6 +462,87 @@ import { createClient } from '@supabase/supabase-js';
 
 
 
+// ── Guided Spotlight Highlight ───────────────────────────────────────────
+const GuidedHighlight = ({ highlight, onDismiss }) => {
+  const [rect, setRect] = useState(null);
+
+  useEffect(() => {
+    if (!highlight) { setRect(null); return; }
+    let cancelled = false;
+    const tryFind = (attempts) => {
+      if (cancelled) return;
+      const el = document.getElementById(highlight.elementId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(() => {
+          if (!cancelled) setRect(el.getBoundingClientRect());
+        }, 450);
+      } else if (attempts > 0) {
+        setTimeout(() => tryFind(attempts - 1), 200);
+      }
+    };
+    tryFind(10);
+    return () => { cancelled = true; };
+  }, [highlight?.elementId]);
+
+  if (!highlight || !rect) return null;
+
+  const pad = 14;
+  const t = Math.max(0, rect.top - pad);
+  const l = Math.max(0, rect.left - pad);
+  const w = rect.width + pad * 2;
+  const h = rect.height + pad * 2;
+  const spaceBelow = window.innerHeight - (t + h);
+  const tipTop = spaceBelow > 160 ? t + h + 14 : t - 14 - 160;
+  const tipLeft = Math.min(Math.max(l, 12), window.innerWidth - 360);
+
+  return (
+    <div style={{ position:'fixed', inset:0, zIndex:8500 }}>
+      {/* Spotlight cutout — 4 dark panels */}
+      <div style={{ position:'absolute', top:0, left:0, right:0, height:t, backgroundColor:'rgba(0,0,0,0.72)', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', top:t+h, left:0, right:0, bottom:0, backgroundColor:'rgba(0,0,0,0.72)', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', top:t, left:0, width:l, height:h, backgroundColor:'rgba(0,0,0,0.72)', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', top:t, left:l+w, right:0, height:h, backgroundColor:'rgba(0,0,0,0.72)', pointerEvents:'none' }} />
+      {/* Blue ring around target */}
+      <div style={{ position:'absolute', top:t, left:l, width:w, height:h, border:'3px solid #2563EB', borderRadius:'12px', boxShadow:'0 0 0 5px rgba(37,99,235,0.25), 0 0 30px rgba(37,99,235,0.3)', pointerEvents:'none' }} />
+      {/* Arrow pointing up to element */}
+      {spaceBelow > 160 && (
+        <div style={{ position:'absolute', top:t+h+2, left:l+w/2-10, width:0, height:0, borderLeft:'10px solid transparent', borderRight:'10px solid transparent', borderBottom:'12px solid #0f172a', pointerEvents:'none' }} />
+      )}
+      {/* Tooltip */}
+      <div style={{ position:'absolute', top:tipTop, left:tipLeft, backgroundColor:'#0f172a', color:'white', padding:'18px 20px', borderRadius:'14px', boxShadow:'0 16px 48px rgba(0,0,0,0.5)', maxWidth:'340px', zIndex:8600 }}>
+        <div style={{ fontSize:'15px', fontWeight:'800', color:'white', marginBottom:'7px', lineHeight:1.2 }}>{highlight.title}</div>
+        <div style={{ fontSize:'13px', color:'#94a3b8', lineHeight:'1.6', marginBottom:'16px', whiteSpace:'pre-line' }}>{highlight.message}</div>
+        {highlight.subSteps && (
+          <div style={{ marginBottom:'14px', display:'flex', flexDirection:'column', gap:'6px' }}>
+            {highlight.subSteps.map((s, i) => (
+              <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:'8px', fontSize:'12px', color:'#cbd5e1' }}>
+                <span style={{ backgroundColor:'#2563EB', color:'white', borderRadius:'50%', width:'18px', height:'18px', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:'800', fontSize:'10px', flexShrink:0, marginTop:'1px' }}>{i+1}</span>
+                <span>{s}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display:'flex', gap:'8px' }}>
+          {highlight.nextHighlight && (
+            <button onClick={() => onDismiss(highlight.nextHighlight)}
+              style={{ padding:'9px 18px', backgroundColor:'#2563EB', color:'white', border:'none', borderRadius:'8px', fontSize:'13px', fontWeight:'700', cursor:'pointer' }}>
+              Next →
+            </button>
+          )}
+          <button onClick={() => onDismiss(null)}
+            style={{ padding:'9px 18px', backgroundColor: highlight.nextHighlight ? 'transparent' : '#2563EB', color: highlight.nextHighlight ? '#94a3b8' : 'white', border: highlight.nextHighlight ? '1px solid #334155' : 'none', borderRadius:'8px', fontSize:'13px', fontWeight:'600', cursor:'pointer' }}>
+            {highlight.nextHighlight ? 'Skip' : 'Got it ✓'}
+          </button>
+        </div>
+      </div>
+      {/* Click outside to dismiss */}
+      <div style={{ position:'absolute', inset:0, zIndex:-1 }} onClick={() => onDismiss(null)} />
+    </div>
+  );
+};
+// ─────────────────────────────────────────────────────────────────────────────
+
 const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [currentView, setCurrentView] = useState(currentUser?.role === 'tc' ? 'followup' : 'dashboard');
   const [dashTimeframe, setDashTimeframe] = useState('month'); // 'month' | 'all'
@@ -581,6 +662,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [tcMgmtMsg, setTcMgmtMsg] = useState('');
   const [copiedInvite, setCopiedInvite] = useState('');
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [guidedHighlight, setGuidedHighlight] = useState(null);
   // ── Super-admin (add new practice) ────────────────────────────────────
   const [newPracticeName, setNewPracticeName] = useState('');
   const [newPracticeDocName, setNewPracticeDocName] = useState('');
@@ -2887,13 +2969,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
         {currentView === 'add' && (
           <div style={{maxWidth:'700px'}}>
             <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>Add New Patient</h2>
-            <div style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}}>
+            <div id="guide-npe-form" style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}}>
 
               {/* Name + Phone */}
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'16px'}}>
                 <div>
                   <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Patient Name *</label>
-                  <input type="text" placeholder="John Smith"
+                  <input id="guide-npe-name" type="text" placeholder="John Smith"
                     value={newPatientForm.name}
                     onChange={e => setNewPatientForm({...newPatientForm, name: e.target.value})}
                     style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}} />
@@ -4823,17 +4905,17 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     )}
 
                     {/* Add TC form */}
-                    <div style={{borderTop: tcUsers.length > 0 ? '1px solid #e5e7eb' : 'none', paddingTop: tcUsers.length > 0 ? '16px' : '0'}}>
+                    <div id="guide-team-form" style={{borderTop: tcUsers.length > 0 ? '1px solid #e5e7eb' : 'none', paddingTop: tcUsers.length > 0 ? '16px' : '0'}}>
                       <div style={{fontSize:'12px',fontWeight:'700',color:'#374151',marginBottom:'10px'}}>Add a Team Member</div>
                       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr auto auto',gap:'8px',alignItems:'end'}}>
                         <div>
                           <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Name</label>
-                          <input value={newTCName} onChange={e => setNewTCName(e.target.value)} placeholder="First name"
+                          <input id="guide-tc-name" value={newTCName} onChange={e => setNewTCName(e.target.value)} placeholder="First name"
                             style={{width:'100%',padding:'9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',boxSizing:'border-box'}} />
                         </div>
                         <div>
                           <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Email</label>
-                          <input value={newTCEmail} onChange={e => setNewTCEmail(e.target.value)} placeholder="email@example.com" type="email"
+                          <input id="guide-tc-email" value={newTCEmail} onChange={e => setNewTCEmail(e.target.value)} placeholder="email@example.com" type="email"
                             style={{width:'100%',padding:'9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',boxSizing:'border-box'}} />
                         </div>
                         <div>
@@ -4844,7 +4926,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             <option value="admin">Admin</option>
                           </select>
                         </div>
-                        <button onClick={async () => {
+                        <button id="guide-tc-add" onClick={async () => {
                           if (!newTCName.trim() || !newTCEmail.trim()) return setTcMgmtMsg('Error: Name and email are required.');
                           const { error } = await supabase.from('tc_users').insert({ name: newTCName.trim(), email: newTCEmail.trim().toLowerCase(), role: newTCRole, status: 'active', practice_id: currentUser.practiceId });
                           if (error) { setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.')); return; }
@@ -5231,7 +5313,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 const totApoNPE = goals.monthly.reduce((s,m) => s + (m.apoNPE||0), 0);
                 const totApoStarted = goals.monthly.reduce((s,m) => s + (m.apoStarted||0), 0);
                 return (
-                  <div style={{marginBottom:'32px'}}>
+                  <div id="guide-goals-section" style={{marginBottom:'32px'}}>
                     <h4 style={{fontSize:'18px',fontWeight:'bold',marginBottom:'16px',color:'#202020'}}>📅 Monthly Goals - {new Date().getFullYear()}</h4>
                     <div style={{overflowX:'auto'}}>
                       <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
@@ -6138,19 +6220,83 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             num: 1, icon: '👥', done: hasTeam,
             title: 'Add Your Treatment Coordinators',
             body: 'Your TCs need their own login. Add their name and email here and they\'ll get instructions on how to set up their account.',
-            cta: 'Go to Settings → Team', action: () => { setCurrentView('settings'); setShowOnboarding(false); },
+            cta: 'Go to Settings → Team', action: () => {
+              setCurrentView('settings');
+              setShowOnboarding(false);
+              setGuidedHighlight({
+                elementId: 'guide-team-form',
+                title: '👥 Add Your Treatment Coordinators Here',
+                message: 'Fill in each TC\'s name and email, then click Add.\n\nOnce added, they\'ll receive instructions to create their own login.',
+                subSteps: [
+                  'Type your TC\'s first name in the Name field',
+                  'Type their work email in the Email field',
+                  'Leave Role as "TC" (or set Admin for doctor/manager)',
+                  'Click the Add button — done!',
+                ],
+                nextHighlight: {
+                  elementId: 'guide-tc-name',
+                  title: '✏️ Start Here — Type the TC\'s Name',
+                  message: 'Type your treatment coordinator\'s first name here.',
+                  nextHighlight: {
+                    elementId: 'guide-tc-email',
+                    title: '📧 Now Their Email Address',
+                    message: 'Type their work email. This is what they\'ll use to log in.',
+                    nextHighlight: {
+                      elementId: 'guide-tc-add',
+                      title: '✅ Click Add to Save',
+                      message: 'Click this button to add them to your practice. They\'ll get a ready-to-send invite message you can text them.',
+                    },
+                  },
+                },
+              });
+            },
           },
           {
             num: 2, icon: '🎯', done: hasGoals,
             title: 'Set Your Monthly Goals',
             body: 'Tell CadenceIQ how many NPEs and starts you\'re targeting each month. The dashboard will track your progress against those numbers.',
-            cta: 'Go to Settings → Goals', action: () => { setCurrentView('settings'); setShowOnboarding(false); },
+            cta: 'Go to Settings → Goals', action: () => {
+              setCurrentView('settings');
+              setShowOnboarding(false);
+              setGuidedHighlight({
+                elementId: 'guide-goals-section',
+                title: '🎯 Enter Your Monthly Targets Here',
+                message: 'For each month, type in how many new patient exams (NPEs) you expect and how many you want to start treatment.\n\nThe dashboard will track your actual numbers against these goals automatically.',
+                subSteps: [
+                  'Find the current month\'s row in the table',
+                  'Type your target NPE count under "Car NPE" and "Apo NPE"',
+                  'Type your target starts under "Car Started" and "Apo Started"',
+                  'Scroll down and click Save Goals when done',
+                ],
+              });
+            },
           },
           {
             num: 3, icon: '➕', done: hasPatient,
             title: 'Add Your First New Patient Exam',
             body: 'After every exam where a patient doesn\'t start same-day, add them here. CadenceIQ will automatically build a follow-up schedule based on their obstacle.',
-            cta: 'Add First Patient', action: () => { setCurrentView('add'); setShowOnboarding(false); },
+            cta: 'Add First Patient', action: () => {
+              setCurrentView('add');
+              setShowOnboarding(false);
+              setGuidedHighlight({
+                elementId: 'guide-npe-form',
+                title: '➕ Fill Out This Form After Every Exam',
+                message: 'Any patient who didn\'t start treatment same-day gets logged here. CadenceIQ will build their follow-up schedule automatically.',
+                subSteps: [
+                  'Patient Name — the person you examined',
+                  'Phone — their number so your TC can call',
+                  'NPE Date — today\'s date (pre-filled)',
+                  'Location — which office the exam was at',
+                  'Status — what happened (Pending, Scheduled, etc.)',
+                  'Obstacle — why they didn\'t start (if pending)',
+                ],
+                nextHighlight: {
+                  elementId: 'guide-npe-name',
+                  title: '✏️ Start Here — Patient\'s Name',
+                  message: 'Type the patient\'s full name. This is how they\'ll appear in your follow-up queue.',
+                },
+              });
+            },
           },
         ];
         const allDone = hasTeam && hasGoals && hasPatient;
@@ -6225,6 +6371,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           </div>
         );
       })()}
+
+      {/* ── Guided Spotlight ─────────────────────────────────────────── */}
+      <GuidedHighlight highlight={guidedHighlight} onDismiss={(next) => setGuidedHighlight(next || null)} />
 
       {/* ── Guided Demo Tour Overlay ─────────────────────────────────── */}
       {demoTourStep !== null && demoTourStep < TOUR_STEPS.length && (
