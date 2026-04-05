@@ -1407,6 +1407,16 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       body: "Every patient you've added is here. Search by name, filter by status, and click any row to view their full contact history — every call logged, every outcome, every note.",
     },
     {
+      view: 'metrics',
+      title: '📈 Practice Metrics — The Business View',
+      body: "Track net production, collections, show-up rate, starts, and conversion month by month. Set production and start goals and see exactly how you're tracking against them. Export to CSV for your CPA or accountant.",
+    },
+    {
+      view: 'benchmarks',
+      title: '🏆 Benchmarks — How Do You Compare?',
+      body: "See how your practice stacks up against the CadenceIQ network on conversion rate, same-day start rate, on-time follow-up, and average down payment. Identify exactly where your biggest growth opportunity is.",
+    },
+    {
       view: 'dashboard',
       title: "🎉 You're All Set!",
       body: "The demo is loaded with real-looking patients at every stage. Try the Follow-Up Queue, log a call, and watch how the system auto-schedules the next touch. When you're ready, sign in with your real account.",
