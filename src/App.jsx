@@ -366,9 +366,14 @@ import { createClient } from '@supabase/supabase-js';
                             <div style={{textAlign:'center',marginTop:'18px'}}>
                                 <button onClick={() => { setIsSignUp(!isSignUp); setLoginError(''); }}
                                     style={{fontSize:'13px',color:'#2563EB',background:'none',border:'none',cursor:'pointer',fontWeight:'600'}}>
-                                    {isSignUp ? 'Already have an account? Sign In' : 'First time? Set up your account'}
+                                    {isSignUp ? 'Already have an account? Sign In' : 'New to CadenceIQ? Set up your account →'}
                                 </button>
                             </div>
+                            {!isSignUp && (
+                              <div style={{marginTop:'10px',padding:'10px 12px',backgroundColor:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'8px',fontSize:'12px',color:'#64748b',textAlign:'center',lineHeight:'1.5'}}>
+                                <strong style={{color:'#374151'}}>First time here?</strong> Click "Set up your account" above — don't use Sign In until your account is created.
+                              </div>
+                            )}
                             <div style={{margin:'20px 0 4px',display:'flex',alignItems:'center',gap:'10px'}}>
                                 <div style={{flex:1,height:'1px',backgroundColor:'#e5e7eb'}}/>
                                 <span style={{fontSize:'11px',color:'#9ca3af',fontWeight:'600',letterSpacing:'0.05em'}}>OR</span>
@@ -574,6 +579,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [newTCEmail, setNewTCEmail] = useState('');
   const [newTCRole, setNewTCRole] = useState('tc');
   const [tcMgmtMsg, setTcMgmtMsg] = useState('');
+  const [copiedInvite, setCopiedInvite] = useState('');
+  // ── Super-admin (add new practice) ────────────────────────────────────
+  const [newPracticeName, setNewPracticeName] = useState('');
+  const [newPracticeDocName, setNewPracticeDocName] = useState('');
+  const [newPracticeDocEmail, setNewPracticeDocEmail] = useState('');
+  const [addPracticeMsg, setAddPracticeMsg] = useState(null); // null | { type, text, invite }
+  const [addPracticeLoading, setAddPracticeLoading] = useState(false);
   // ─────────────────────────────────────────────────────────────────────
 
   const defaultGoalsData = {
@@ -787,6 +799,36 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     if (data) setTcUsers(data);
   };
   useEffect(() => { if (currentUser?.role === 'admin') loadTCUsers(); }, [currentUser]);
+
+  const APP_URL = 'https://npe-dashboard.vercel.app';
+
+  const handleAddPractice = async () => {
+    if (!newPracticeName.trim() || !newPracticeDocName.trim() || !newPracticeDocEmail.trim()) {
+      setAddPracticeMsg({ type: 'error', text: 'All fields are required.' });
+      return;
+    }
+    setAddPracticeLoading(true);
+    setAddPracticeMsg(null);
+    try {
+      const practiceId = newPracticeName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const { error: pErr } = await supabase.from('practices').insert({ id: practiceId, name: newPracticeName.trim() });
+      if (pErr && !pErr.message?.includes('duplicate')) throw pErr;
+      const { error: uErr } = await supabase.from('tc_users').insert({
+        name: newPracticeDocName.trim(),
+        email: newPracticeDocEmail.trim().toLowerCase(),
+        role: 'admin',
+        status: 'active',
+        practice_id: practiceId,
+      });
+      if (uErr) throw uErr;
+      const invite = `Hi ${newPracticeDocName.trim().split(' ')[0]}! Your CadenceIQ account is ready.\n\n1️⃣ Go to: ${APP_URL}\n2️⃣ Click "Set up your account"\n3️⃣ Enter your email (${newPracticeDocEmail.trim().toLowerCase()}) and create a password\n\nYou're in. Reach out with any questions!`;
+      setAddPracticeMsg({ type: 'success', text: `${newPracticeDocName.trim()} at ${newPracticeName.trim()} added!`, invite });
+      setNewPracticeName(''); setNewPracticeDocName(''); setNewPracticeDocEmail('');
+    } catch (err) {
+      setAddPracticeMsg({ type: 'error', text: err.message || 'Something went wrong.' });
+    }
+    setAddPracticeLoading(false);
+  };
 
   // Auto-start guided tour for demo users
   useEffect(() => {
@@ -1465,6 +1507,36 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
           return (
           <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
+
+            {/* ── Getting Started — shown only when practice has no patients yet ── */}
+            {patients.length === 0 && !loading && currentUser?.id !== 'demo' && (
+              <div style={{backgroundColor:'#0f172a',borderRadius:'12px',padding:'28px 32px',border:'1px solid #1e293b'}}>
+                <div style={{fontSize:'22px',fontWeight:'900',color:'white',marginBottom:'4px'}}>
+                  👋 Welcome to CadenceIQ!
+                </div>
+                <div style={{fontSize:'14px',color:'#64748b',marginBottom:'24px'}}>
+                  Get your practice set up in 3 quick steps.
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'16px'}}>
+                  {[
+                    { step:'1', icon:'👥', title:'Add Your Team', body:"Add your Treatment Coordinators so they can log in with their own account.", cta:'Go to Settings', view:'settings' },
+                    { step:'2', icon:'🎯', title:'Set Monthly Goals', body:'Set your NPE and start goals for the month so the dashboard tracks progress.', cta:'Go to Settings', view:'settings' },
+                    { step:'3', icon:'➕', title:'Add Your First NPE', body:'After every new patient exam, add them here. This is the heart of the system.', cta:'Add NPE', view:'add' },
+                  ].map(({ step, icon, title, body, cta, view }) => (
+                    <div key={step} style={{backgroundColor:'#1e293b',borderRadius:'10px',padding:'20px',border:'1px solid #334155'}}>
+                      <div style={{fontSize:'11px',fontWeight:'800',color:'#4A90E2',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:'8px'}}>Step {step}</div>
+                      <div style={{fontSize:'22px',marginBottom:'6px'}}>{icon}</div>
+                      <div style={{fontSize:'15px',fontWeight:'700',color:'white',marginBottom:'6px'}}>{title}</div>
+                      <div style={{fontSize:'12px',color:'#94a3b8',lineHeight:'1.5',marginBottom:'14px'}}>{body}</div>
+                      <button onClick={() => setCurrentView(view)}
+                        style={{padding:'8px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'7px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
+                        {cta} →
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* ── Header row: date + timeframe toggle ── */}
             <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',flexWrap:'wrap',gap:'12px'}}>
@@ -4637,6 +4709,65 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           <div style={{maxWidth:'1200px'}}>
             <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>Goals & Settings</h2>
 
+            {/* ── SUPER-ADMIN: Add New Practice ── only visible to miller-ortho */}
+            {currentUser?.practiceId === 'miller-ortho' && (
+              <div style={{backgroundColor:'#0f172a',border:'2px solid #334155',padding:'24px',borderRadius:'10px',marginBottom:'24px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'20px'}}>
+                  <span style={{fontSize:'18px'}}>🔑</span>
+                  <div>
+                    <h3 style={{fontSize:'16px',fontWeight:'800',color:'white',margin:0}}>CadenceIQ Admin — Add New Practice</h3>
+                    <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px'}}>Only visible to you. Creates the practice and admin user in Supabase.</div>
+                  </div>
+                </div>
+
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'12px',marginBottom:'16px'}}>
+                  <div>
+                    <label style={{display:'block',fontSize:'11px',fontWeight:'700',color:'#94a3b8',marginBottom:'5px',textTransform:'uppercase',letterSpacing:'0.06em'}}>Practice Name</label>
+                    <input value={newPracticeName} onChange={e => setNewPracticeName(e.target.value)}
+                      placeholder="e.g. Smile Bliss Orthodontics"
+                      style={{width:'100%',padding:'10px 12px',backgroundColor:'#1e293b',border:'1px solid #334155',borderRadius:'7px',fontSize:'13px',color:'white',boxSizing:'border-box'}} />
+                  </div>
+                  <div>
+                    <label style={{display:'block',fontSize:'11px',fontWeight:'700',color:'#94a3b8',marginBottom:'5px',textTransform:'uppercase',letterSpacing:'0.06em'}}>Doctor Name</label>
+                    <input value={newPracticeDocName} onChange={e => setNewPracticeDocName(e.target.value)}
+                      placeholder="e.g. Dr. Alejandro Arango"
+                      style={{width:'100%',padding:'10px 12px',backgroundColor:'#1e293b',border:'1px solid #334155',borderRadius:'7px',fontSize:'13px',color:'white',boxSizing:'border-box'}} />
+                  </div>
+                  <div>
+                    <label style={{display:'block',fontSize:'11px',fontWeight:'700',color:'#94a3b8',marginBottom:'5px',textTransform:'uppercase',letterSpacing:'0.06em'}}>Doctor Email</label>
+                    <input value={newPracticeDocEmail} onChange={e => setNewPracticeDocEmail(e.target.value)}
+                      placeholder="doctor@example.com" type="email"
+                      style={{width:'100%',padding:'10px 12px',backgroundColor:'#1e293b',border:'1px solid #334155',borderRadius:'7px',fontSize:'13px',color:'white',boxSizing:'border-box'}} />
+                  </div>
+                </div>
+
+                <button onClick={handleAddPractice} disabled={addPracticeLoading}
+                  style={{padding:'10px 24px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'700',cursor:addPracticeLoading?'not-allowed':'pointer',opacity:addPracticeLoading?0.6:1}}>
+                  {addPracticeLoading ? 'Adding...' : '+ Add Practice'}
+                </button>
+
+                {addPracticeMsg && (
+                  <div style={{marginTop:'16px',padding:'14px 16px',backgroundColor: addPracticeMsg.type==='error'?'#450a0a':'#052e16',border:`1px solid ${addPracticeMsg.type==='error'?'#dc2626':'#16a34a'}`,borderRadius:'8px'}}>
+                    <div style={{fontSize:'13px',fontWeight:'700',color: addPracticeMsg.type==='error'?'#fca5a5':'#86efac',marginBottom: addPracticeMsg.invite?'12px':'0'}}>
+                      {addPracticeMsg.type==='error'?'❌':'✅'} {addPracticeMsg.text}
+                    </div>
+                    {addPracticeMsg.invite && (
+                      <div>
+                        <div style={{fontSize:'11px',fontWeight:'700',color:'#64748b',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'8px'}}>Ready-to-send invite — copy and text this:</div>
+                        <div style={{backgroundColor:'#0f172a',border:'1px solid #334155',borderRadius:'6px',padding:'12px',fontFamily:'monospace',fontSize:'12px',color:'#e2e8f0',whiteSpace:'pre-wrap',lineHeight:'1.6',marginBottom:'10px'}}>
+                          {addPracticeMsg.invite}
+                        </div>
+                        <button onClick={() => { navigator.clipboard.writeText(addPracticeMsg.invite); setCopiedInvite('practice'); setTimeout(() => setCopiedInvite(''), 2500); }}
+                          style={{padding:'7px 16px',backgroundColor: copiedInvite==='practice'?'#16a34a':'#334155',color:'white',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
+                          {copiedInvite==='practice' ? '✓ Copied!' : '📋 Copy Invite'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* ADMIN PANEL */}
             <div style={{backgroundColor:'white',border:'2px solid #202020',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'24px'}}>
               <h3 style={{fontSize:'20px',fontWeight:'bold',color:'#202020',marginBottom:'16px'}}>⚙️ Admin Panel</h3>
@@ -4651,7 +4782,22 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>Team Management</h4>
                     <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Add TCs and manage their access. Each person signs in with their own email and password.</p>
-                    {tcMgmtMsg && <div style={{padding:'8px 12px',borderRadius:'6px',marginBottom:'12px',fontSize:'13px',fontWeight:'600',backgroundColor: tcMgmtMsg.startsWith('Error') ? '#fef2f2' : '#f0fdf4',color: tcMgmtMsg.startsWith('Error') ? '#ef4444' : '#166534'}}>{tcMgmtMsg}</div>}
+                    {tcMgmtMsg && (
+                      tcMgmtMsg.startsWith('Error') ? (
+                        <div style={{padding:'8px 12px',borderRadius:'6px',marginBottom:'12px',fontSize:'13px',fontWeight:'600',backgroundColor:'#fef2f2',color:'#ef4444'}}>{tcMgmtMsg}</div>
+                      ) : (
+                        <div style={{marginBottom:'12px',padding:'14px',backgroundColor:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px'}}>
+                          <div style={{fontSize:'12px',fontWeight:'700',color:'#166534',marginBottom:'8px'}}>✅ Team member added — text them this:</div>
+                          <div style={{backgroundColor:'white',border:'1px solid #d1fae5',borderRadius:'6px',padding:'10px',fontFamily:'monospace',fontSize:'12px',color:'#374151',whiteSpace:'pre-wrap',lineHeight:'1.6',marginBottom:'8px'}}>
+                            {tcMgmtMsg}
+                          </div>
+                          <button onClick={() => { navigator.clipboard.writeText(tcMgmtMsg); setCopiedInvite('tc'); setTimeout(() => setCopiedInvite(''), 2500); }}
+                            style={{padding:'6px 14px',backgroundColor: copiedInvite==='tc'?'#16a34a':'#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
+                            {copiedInvite==='tc' ? '✓ Copied!' : '📋 Copy Message'}
+                          </button>
+                        </div>
+                      )
+                    )}
 
                     {/* Existing users table */}
                     {tcUsers.length > 0 && (
@@ -4723,10 +4869,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           if (!newTCName.trim() || !newTCEmail.trim()) return setTcMgmtMsg('Error: Name and email are required.');
                           const { error } = await supabase.from('tc_users').insert({ name: newTCName.trim(), email: newTCEmail.trim().toLowerCase(), role: newTCRole, status: 'active', practice_id: currentUser.practiceId });
                           if (error) { setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.')); return; }
+                          const addedName = newTCName.trim();
+                          const addedEmail = newTCEmail.trim().toLowerCase();
                           setNewTCName(''); setNewTCEmail(''); setNewTCRole('tc');
                           await loadTCUsers();
-                          setTcMgmtMsg(`${newTCName} added. Ask them to visit the dashboard and click "Set up your account" using ${newTCEmail}.`);
-                          setTimeout(() => setTcMgmtMsg(''), 8000);
+                          const tcInvite = `Hi ${addedName.split(' ')[0]}! You've been added to CadenceIQ.\n\n1️⃣ Go to: ${APP_URL}\n2️⃣ Click "Set up your account"\n3️⃣ Enter your email (${addedEmail}) and create a password\n\nSee you in there!`;
+                          setTcMgmtMsg(tcInvite);
+                          setTimeout(() => setTcMgmtMsg(''), 30000);
                         }} style={{padding:'9px 16px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
                           Add
                         </button>
