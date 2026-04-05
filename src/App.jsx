@@ -481,7 +481,7 @@ import { createClient } from '@supabase/supabase-js';
 
 
 // ── Guided Spotlight Highlight ───────────────────────────────────────────
-const GuidedHighlight = ({ highlight, onDismiss }) => {
+const GuidedHighlight = ({ highlight, onDismiss, onComplete }) => {
   const [rect, setRect] = useState(null);
 
   useEffect(() => {
@@ -515,20 +515,21 @@ const GuidedHighlight = ({ highlight, onDismiss }) => {
   const tipLeft = Math.min(Math.max(l, 12), window.innerWidth - 360);
 
   return (
-    <div style={{ position:'fixed', inset:0, zIndex:8500 }}>
+    // pointerEvents:none on outer so clicks in the spotlight pass through to the page
+    <div style={{ position:'fixed', inset:0, zIndex:8500, pointerEvents:'none' }}>
       {/* Spotlight cutout — 4 dark panels */}
-      <div style={{ position:'absolute', top:0, left:0, right:0, height:t, backgroundColor:'rgba(0,0,0,0.72)', pointerEvents:'none' }} />
-      <div style={{ position:'absolute', top:t+h, left:0, right:0, bottom:0, backgroundColor:'rgba(0,0,0,0.72)', pointerEvents:'none' }} />
-      <div style={{ position:'absolute', top:t, left:0, width:l, height:h, backgroundColor:'rgba(0,0,0,0.72)', pointerEvents:'none' }} />
-      <div style={{ position:'absolute', top:t, left:l+w, right:0, height:h, backgroundColor:'rgba(0,0,0,0.72)', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', top:0, left:0, right:0, height:t, backgroundColor:'rgba(0,0,0,0.72)' }} />
+      <div style={{ position:'absolute', top:t+h, left:0, right:0, bottom:0, backgroundColor:'rgba(0,0,0,0.72)' }} />
+      <div style={{ position:'absolute', top:t, left:0, width:l, height:h, backgroundColor:'rgba(0,0,0,0.72)' }} />
+      <div style={{ position:'absolute', top:t, left:l+w, right:0, height:h, backgroundColor:'rgba(0,0,0,0.72)' }} />
       {/* Blue ring around target */}
-      <div style={{ position:'absolute', top:t, left:l, width:w, height:h, border:'3px solid #2563EB', borderRadius:'12px', boxShadow:'0 0 0 5px rgba(37,99,235,0.25), 0 0 30px rgba(37,99,235,0.3)', pointerEvents:'none' }} />
-      {/* Arrow pointing up to element */}
+      <div style={{ position:'absolute', top:t, left:l, width:w, height:h, border:'3px solid #2563EB', borderRadius:'12px', boxShadow:'0 0 0 5px rgba(37,99,235,0.25), 0 0 30px rgba(37,99,235,0.3)' }} />
+      {/* Arrow */}
       {spaceBelow > 160 && (
-        <div style={{ position:'absolute', top:t+h+2, left:l+w/2-10, width:0, height:0, borderLeft:'10px solid transparent', borderRight:'10px solid transparent', borderBottom:'12px solid #0f172a', pointerEvents:'none' }} />
+        <div style={{ position:'absolute', top:t+h+2, left:l+w/2-10, width:0, height:0, borderLeft:'10px solid transparent', borderRight:'10px solid transparent', borderBottom:'12px solid #0f172a' }} />
       )}
-      {/* Tooltip */}
-      <div style={{ position:'absolute', top:tipTop, left:tipLeft, backgroundColor:'#0f172a', color:'white', padding:'18px 20px', borderRadius:'14px', boxShadow:'0 16px 48px rgba(0,0,0,0.5)', maxWidth:'340px', zIndex:8600 }}>
+      {/* Tooltip — re-enable pointer events so buttons are clickable */}
+      <div style={{ position:'absolute', top:tipTop, left:tipLeft, backgroundColor:'#0f172a', color:'white', padding:'18px 20px', borderRadius:'14px', boxShadow:'0 16px 48px rgba(0,0,0,0.5)', maxWidth:'340px', zIndex:8600, pointerEvents:'auto' }}>
         <div style={{ fontSize:'15px', fontWeight:'800', color:'white', marginBottom:'7px', lineHeight:1.2 }}>{highlight.title}</div>
         <div style={{ fontSize:'13px', color:'#94a3b8', lineHeight:'1.6', marginBottom:'16px', whiteSpace:'pre-line' }}>{highlight.message}</div>
         {highlight.subSteps && (
@@ -548,14 +549,15 @@ const GuidedHighlight = ({ highlight, onDismiss }) => {
               Next →
             </button>
           )}
-          <button onClick={() => onDismiss(null)}
+          <button onClick={() => { onDismiss(null); onComplete?.(); }}
             style={{ padding:'9px 18px', backgroundColor: highlight.nextHighlight ? 'transparent' : '#2563EB', color: highlight.nextHighlight ? '#94a3b8' : 'white', border: highlight.nextHighlight ? '1px solid #334155' : 'none', borderRadius:'8px', fontSize:'13px', fontWeight:'600', cursor:'pointer' }}>
             {highlight.nextHighlight ? 'Skip' : 'Got it ✓'}
           </button>
         </div>
+        <div style={{ fontSize:'11px', color:'#475569', marginTop:'10px' }}>
+          Fill in the field above, then click Next → to continue
+        </div>
       </div>
-      {/* Click outside to dismiss */}
-      <div style={{ position:'absolute', inset:0, zIndex:-1 }} onClick={() => onDismiss(null)} />
     </div>
   );
 };
@@ -6440,7 +6442,11 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       })()}
 
       {/* ── Guided Spotlight ─────────────────────────────────────────── */}
-      <GuidedHighlight highlight={guidedHighlight} onDismiss={(next) => setGuidedHighlight(next || null)} />
+      <GuidedHighlight
+        highlight={guidedHighlight}
+        onDismiss={(next) => setGuidedHighlight(next || null)}
+        onComplete={() => { setGuidedHighlight(null); setShowOnboarding(true); }}
+      />
 
       {/* ── Guided Demo Tour Overlay ─────────────────────────────────── */}
       {demoTourStep !== null && demoTourStep < TOUR_STEPS.length && (
