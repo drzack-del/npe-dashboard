@@ -930,6 +930,45 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   }, [loading, patients.length]);
   // ── Practice Metrics Supabase helpers ────────────────────────────────
   const loadPracticeMetrics = async () => {
+    if (currentUser?.id === 'demo') {
+      // Realistic demo data for a 2-location ortho practice
+      const dm = (year, month, net_production, collections, npe_scheduled, npe_showed, starts, obs_added, notes='') => ({
+        year, month, net_production, collections, npe_scheduled, npe_showed, starts, obs_added, notes,
+        conversion_rate: npe_showed > 0 ? starts / npe_showed : null,
+        show_up_rate: npe_scheduled > 0 ? npe_showed / npe_scheduled : null,
+        avg_case_fee: starts > 0 ? Math.round(net_production / starts) : null,
+        practice_id: 'demo-ortho',
+      });
+      const dg = (year, month, production_goal, start_goal) => ({ year, month, production_goal, start_goal, practice_id: 'demo-ortho' });
+      setPracticeMetrics([
+        // 2025
+        dm(2025,  1, 312000, 298000, 118, 94,  58, 12),
+        dm(2025,  2, 287000, 271000, 104, 82,  51,  9, 'Short month — Valentine promo helped'),
+        dm(2025,  3, 341000, 325000, 131, 107, 67, 14),
+        dm(2025,  4, 328000, 312000, 124, 101, 63, 11),
+        dm(2025,  5, 356000, 339000, 138, 112, 70, 15, 'Strong spring — school physicals referrals'),
+        dm(2025,  6, 369000, 351000, 142, 118, 74, 13),
+        dm(2025,  7, 298000, 283000, 108, 86,  54, 10, 'Summer slowdown as expected'),
+        dm(2025,  8, 374000, 356000, 145, 120, 76, 16, 'Back-to-school surge'),
+        dm(2025,  9, 361000, 344000, 137, 111, 70, 14),
+        dm(2025, 10, 348000, 331000, 130, 106, 66, 12),
+        dm(2025, 11, 318000, 302000, 115, 91,  57, 10, 'Holiday softness — Thanksgiving week'),
+        dm(2025, 12, 294000, 280000, 105, 83,  52,  8, 'Holiday break — office closed Dec 24–Jan 1'),
+        // 2026
+        dm(2026,  1, 339000, 322000, 128, 104, 65, 13, 'Strong January — New Year resolutions'),
+        dm(2026,  2, 321000, 305000, 119, 96,  60, 11),
+        dm(2026,  3, 358000, 340000, 136, 110, 69, 14, 'March Madness promo — $0 down'),
+      ]);
+      setPracticeGoals([
+        dg(2025,  1, 320000, 60), dg(2025,  2, 300000, 55), dg(2025,  3, 340000, 65),
+        dg(2025,  4, 330000, 63), dg(2025,  5, 350000, 68), dg(2025,  6, 360000, 70),
+        dg(2025,  7, 310000, 58), dg(2025,  8, 365000, 72), dg(2025,  9, 355000, 68),
+        dg(2025, 10, 345000, 65), dg(2025, 11, 320000, 60), dg(2025, 12, 295000, 54),
+        dg(2026,  1, 335000, 63), dg(2026,  2, 315000, 58), dg(2026,  3, 350000, 66),
+        dg(2026,  4, 355000, 67), dg(2026,  5, 365000, 70), dg(2026,  6, 375000, 72),
+      ]);
+      return;
+    }
     if (!supabase) return;
     const [{ data: metrics }, { data: goals }] = await Promise.all([
       supabase.from('practice_metrics').select('*').eq('practice_id', currentUser.practiceId).order('year', { ascending: true }).order('month', { ascending: true }),
