@@ -580,6 +580,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [newTCRole, setNewTCRole] = useState('tc');
   const [tcMgmtMsg, setTcMgmtMsg] = useState('');
   const [copiedInvite, setCopiedInvite] = useState('');
+  const [showOnboarding, setShowOnboarding] = useState(false);
   // ── Super-admin (add new practice) ────────────────────────────────────
   const [newPracticeName, setNewPracticeName] = useState('');
   const [newPracticeDocName, setNewPracticeDocName] = useState('');
@@ -837,6 +838,14 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       return () => clearTimeout(t);
     }
   }, []);
+
+  // Show onboarding modal for new real practices with no patients
+  useEffect(() => {
+    if (!loading && currentUser?.id !== 'demo' && patients.length === 0) {
+      const dismissed = localStorage.getItem(`onboarding-dismissed-${currentUser?.practiceId}`);
+      if (!dismissed) setShowOnboarding(true);
+    }
+  }, [loading, patients.length]);
   // ── Practice Metrics Supabase helpers ────────────────────────────────
   const loadPracticeMetrics = async () => {
     if (!supabase) return;
@@ -1507,36 +1516,6 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
           return (
           <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
-
-            {/* ── Getting Started — shown only when practice has no patients yet ── */}
-            {patients.length === 0 && !loading && currentUser?.id !== 'demo' && (
-              <div style={{backgroundColor:'#0f172a',borderRadius:'12px',padding:'28px 32px',border:'1px solid #1e293b'}}>
-                <div style={{fontSize:'22px',fontWeight:'900',color:'white',marginBottom:'4px'}}>
-                  👋 Welcome to CadenceIQ!
-                </div>
-                <div style={{fontSize:'14px',color:'#64748b',marginBottom:'24px'}}>
-                  Get your practice set up in 3 quick steps.
-                </div>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'16px'}}>
-                  {[
-                    { step:'1', icon:'👥', title:'Add Your Team', body:"Add your Treatment Coordinators so they can log in with their own account.", cta:'Go to Settings', view:'settings' },
-                    { step:'2', icon:'🎯', title:'Set Monthly Goals', body:'Set your NPE and start goals for the month so the dashboard tracks progress.', cta:'Go to Settings', view:'settings' },
-                    { step:'3', icon:'➕', title:'Add Your First NPE', body:'After every new patient exam, add them here. This is the heart of the system.', cta:'Add NPE', view:'add' },
-                  ].map(({ step, icon, title, body, cta, view }) => (
-                    <div key={step} style={{backgroundColor:'#1e293b',borderRadius:'10px',padding:'20px',border:'1px solid #334155'}}>
-                      <div style={{fontSize:'11px',fontWeight:'800',color:'#4A90E2',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:'8px'}}>Step {step}</div>
-                      <div style={{fontSize:'22px',marginBottom:'6px'}}>{icon}</div>
-                      <div style={{fontSize:'15px',fontWeight:'700',color:'white',marginBottom:'6px'}}>{title}</div>
-                      <div style={{fontSize:'12px',color:'#94a3b8',lineHeight:'1.5',marginBottom:'14px'}}>{body}</div>
-                      <button onClick={() => setCurrentView(view)}
-                        style={{padding:'8px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'7px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
-                        {cta} →
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {/* ── Header row: date + timeframe toggle ── */}
             <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',flexWrap:'wrap',gap:'12px'}}>
@@ -6148,6 +6127,104 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           </div>
         </div>
       )}
+
+      {/* ── Onboarding Modal — first-time real practices ─────────────── */}
+      {showOnboarding && currentUser?.id !== 'demo' && (() => {
+        const hasTeam    = tcUsers.filter(u => u.email !== currentUser?.email).length > 0;
+        const hasGoals   = goals.monthly.some(m => (m.carNPE||0) + (m.apoNPE||0) + (m.carStarted||0) + (m.apoStarted||0) > 0);
+        const hasPatient = patients.length > 0;
+        const steps = [
+          {
+            num: 1, icon: '👥', done: hasTeam,
+            title: 'Add Your Treatment Coordinators',
+            body: 'Your TCs need their own login. Add their name and email here and they\'ll get instructions on how to set up their account.',
+            cta: 'Go to Settings → Team', action: () => { setCurrentView('settings'); setShowOnboarding(false); },
+          },
+          {
+            num: 2, icon: '🎯', done: hasGoals,
+            title: 'Set Your Monthly Goals',
+            body: 'Tell CadenceIQ how many NPEs and starts you\'re targeting each month. The dashboard will track your progress against those numbers.',
+            cta: 'Go to Settings → Goals', action: () => { setCurrentView('settings'); setShowOnboarding(false); },
+          },
+          {
+            num: 3, icon: '➕', done: hasPatient,
+            title: 'Add Your First New Patient Exam',
+            body: 'After every exam where a patient doesn\'t start same-day, add them here. CadenceIQ will automatically build a follow-up schedule based on their obstacle.',
+            cta: 'Add First Patient', action: () => { setCurrentView('add'); setShowOnboarding(false); },
+          },
+        ];
+        const allDone = hasTeam && hasGoals && hasPatient;
+        return (
+          <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.75)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}}>
+            <div style={{backgroundColor:'white',borderRadius:'20px',maxWidth:'580px',width:'100%',overflow:'hidden',boxShadow:'0 32px 80px rgba(0,0,0,0.4)'}}>
+
+              {/* Header */}
+              <div style={{background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)',padding:'28px 32px 24px'}}>
+                <div style={{fontSize:'13px',fontWeight:'700',color:'#4A90E2',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:'8px'}}>Welcome to CadenceIQ</div>
+                <div style={{fontSize:'22px',fontWeight:'900',color:'white',lineHeight:1.2,marginBottom:'8px'}}>
+                  {allDone ? "🎉 You're all set!" : "Let's get your practice set up"}
+                </div>
+                <div style={{fontSize:'13px',color:'#94a3b8',lineHeight:1.5}}>
+                  {allDone
+                    ? "Everything is in place. Your follow-up system is ready to go."
+                    : "CadenceIQ tracks every new patient exam and tells your TCs exactly who to call each day — so nothing falls through the cracks. Complete these 3 steps to get started."}
+                </div>
+              </div>
+
+              {/* Steps */}
+              <div style={{padding:'24px 32px',display:'flex',flexDirection:'column',gap:'12px'}}>
+                {steps.map(s => (
+                  <div key={s.num} style={{
+                    display:'flex',gap:'16px',alignItems:'flex-start',
+                    padding:'16px',borderRadius:'12px',
+                    backgroundColor: s.done ? '#f0fdf4' : '#f8fafc',
+                    border: `1px solid ${s.done ? '#bbf7d0' : '#e2e8f0'}`,
+                    opacity: s.done ? 0.85 : 1,
+                  }}>
+                    {/* Check / number */}
+                    <div style={{
+                      width:'32px',height:'32px',borderRadius:'50%',flexShrink:0,
+                      display:'flex',alignItems:'center',justifyContent:'center',
+                      backgroundColor: s.done ? '#10b981' : '#2563EB',
+                      fontSize: s.done ? '16px' : '13px',
+                      fontWeight:'800',color:'white',
+                    }}>
+                      {s.done ? '✓' : s.num}
+                    </div>
+                    {/* Content */}
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'3px'}}>
+                        <span style={{fontSize:'14px',fontWeight:'700',color: s.done ? '#166534' : '#111827'}}>{s.title}</span>
+                        {s.done && <span style={{fontSize:'11px',fontWeight:'700',color:'#16a34a',backgroundColor:'#dcfce7',padding:'2px 7px',borderRadius:'10px'}}>Done ✓</span>}
+                      </div>
+                      <div style={{fontSize:'12px',color:'#6b7280',lineHeight:'1.55',marginBottom: s.done ? 0 : '10px'}}>{s.body}</div>
+                      {!s.done && (
+                        <button onClick={s.action}
+                          style={{padding:'7px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'7px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
+                          {s.cta} →
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Footer */}
+              <div style={{padding:'16px 32px 24px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',borderTop:'1px solid #f1f5f9'}}>
+                <button onClick={() => { setDemoTourStep(0); setCurrentView(TOUR_STEPS[0].view); setShowOnboarding(false); }}
+                  style={{padding:'9px 18px',backgroundColor:'#f1f5f9',color:'#374151',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'600',cursor:'pointer'}}>
+                  🎓 Take a Quick Tour
+                </button>
+                <button onClick={() => { localStorage.setItem(`onboarding-dismissed-${currentUser?.practiceId}`, '1'); setShowOnboarding(false); }}
+                  style={{padding:'9px 20px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
+                  {allDone ? 'Go to Dashboard →' : 'I\'ll do this later'}
+                </button>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Guided Demo Tour Overlay ─────────────────────────────────── */}
       {demoTourStep !== null && demoTourStep < TOUR_STEPS.length && (
