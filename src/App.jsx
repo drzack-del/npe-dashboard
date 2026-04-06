@@ -685,7 +685,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [goalAdjust, setGoalAdjust] = useState({ production: 0, npe: 0, starts: 0, conversion: 0, case_fee: 0 });
   const [metricsSaveMsg, setMetricsSaveMsg] = useState('');
   const [showDetailedMetricsCols, setShowDetailedMetricsCols] = useState(false);
-  const [inlineGoalEdit, setInlineGoalEdit] = useState(null); // { year, month, field:'prod'|'starts', value:'' }
+  const [inlineGoalEdit, setInlineGoalEdit] = useState(null); // { year, month, field:'prod'|'starts'|'npe'|'conv', value:'' }
+  const [quickAdjustPct, setQuickAdjustPct] = useState('');
   // ── Team Management ───────────────────────────────────────────────────
   const [tcUsers, setTcUsers] = useState([]);
   const [newTCName, setNewTCName] = useState('');
@@ -1193,7 +1194,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     let updatedPatient = null;
     const updated = patients.map(p => {
       if (p.id !== patientId) return p;
-      const newAttempts = p.OBS ? p.contactAttempts : p.contactAttempts + 1;
+      const isSkipMedicaid = contactForm.reachedPatient === "Waiting on Medicaid — didn't call";
+      const newAttempts = (p.OBS || isSkipMedicaid) ? p.contactAttempts : p.contactAttempts + 1;
       const logEntry = {
         date: todayStr,
         time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
@@ -1205,8 +1207,11 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       };
       const updatedObstacle = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
       const effectiveObstacle = updatedObstacle || (p.MP ? 'Waiting to Hear from Medicaid' : '');
-      let nextDate = (contactForm.nextTouchDate ? skipWeekend(contactForm.nextTouchDate) : null)
-        || (p.OBS ? addMonths(todayStr, 6) : calcNextTouchDate(p.npeDate, effectiveObstacle, newAttempts, todayStr));
+      const d14 = new Date(todayStr + 'T12:00:00'); d14.setDate(d14.getDate() + 14);
+      let nextDate = isSkipMedicaid
+        ? skipWeekend(d14.toISOString().split('T')[0])
+        : (contactForm.nextTouchDate ? skipWeekend(contactForm.nextTouchDate) : null)
+          || (p.OBS ? addMonths(todayStr, 6) : calcNextTouchDate(p.npeDate, effectiveObstacle, newAttempts, todayStr));
       const result = {
         ...p,
         obstacle: updatedObstacle,
@@ -1951,6 +1956,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               tcPts.forEach(p => {
                 (p.contact_log || []).forEach(entry => {
                   if (!entry.reachedPatient) return;
+                  if (entry.reachedPatient === "Waiting on Medicaid — didn't call") return;
                   totalContacts++;
                   if (entry.reachedPatient === 'Spoke with patient') reachedCount++;
                   else if (entry.reachedPatient === 'Left voicemail') voicemailCount++;
@@ -2815,7 +2821,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       {/* #2: relabeled to "Contact result:" */}
                       <div style={{marginBottom:'12px'}}>
                         <div style={{fontSize:'13px',fontWeight:'500',marginBottom:'8px'}}>Contact result:</div>
-                        {['Left voicemail', 'No answer', 'Spoke with patient'].map(option => (
+                        {['Left voicemail', 'No answer', 'Spoke with patient', "Waiting on Medicaid — didn't call"].map(option => (
                           <label key={option} style={{display:'block',marginBottom:'4px',cursor:'pointer'}}>
                             <input
                               type="radio"
@@ -4310,14 +4316,32 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             const existing = practiceGoals.find(g => g.year === edit.year && g.month === edit.month);
             await supabase.from('practice_goals').upsert({
               year: edit.year, month: edit.month, practice_id: currentUser.practiceId,
-              production_goal: edit.field === 'prod'   ? num : (existing?.production_goal || 0),
-              start_goal:      edit.field === 'starts' ? num : (existing?.start_goal || 0),
-              npe_goal:        existing?.npe_goal || 0,
-              conversion_goal: existing?.conversion_goal || 0,
+              production_goal:   edit.field === 'prod'   ? num                  : (existing?.production_goal || 0),
+              start_goal:        edit.field === 'starts' ? num                  : (existing?.start_goal || 0),
+              npe_goal:          edit.field === 'npe'    ? num                  : (existing?.npe_goal || 0),
+              conversion_goal:   edit.field === 'conv'   ? num / 100            : (existing?.conversion_goal || 0),
               avg_case_fee_goal: existing?.avg_case_fee_goal || 0,
             }, { onConflict: 'year,month,practice_id' });
             await loadPracticeMetrics();
             setInlineGoalEdit(null);
+          };
+
+          const applyQuickAdjust = async (pct) => {
+            if (!supabase || !yearGoals.length) return;
+            const factor = 1 + pct / 100;
+            const updates = yearGoals.map(g => ({
+              year: g.year, month: g.month, practice_id: currentUser.practiceId,
+              production_goal:   g.production_goal ? Math.round(g.production_goal * factor / 100) * 100 : 0,
+              start_goal:        g.start_goal       ? Math.round(g.start_goal * factor)              : 0,
+              npe_goal:          g.npe_goal         ? Math.round(g.npe_goal * factor)                : 0,
+              conversion_goal:   g.conversion_goal  || 0,
+              avg_case_fee_goal: g.avg_case_fee_goal || 0,
+            }));
+            await Promise.all(updates.map(u => supabase.from('practice_goals').upsert(u, { onConflict: 'year,month,practice_id' })));
+            await loadPracticeMetrics();
+            setQuickAdjustPct('');
+            setMetricsSaveMsg(`✅ All ${metricsYear} goals adjusted ${pct > 0 ? '+' : ''}${pct}%`);
+            setTimeout(() => setMetricsSaveMsg(''), 3000);
           };
 
           // ── AI suggestions ───────────────────────────────────────────
@@ -4567,7 +4591,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               {metricsViewMode === 'monthly' && (
                 <div style={{backgroundColor:'white',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',overflow:'hidden'}}>
                   {/* Table controls */}
-                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 14px',borderBottom:'1px solid #f3f4f6'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 14px',borderBottom:'1px solid #f3f4f6',flexWrap:'wrap',gap:'8px'}}>
                     <div style={{fontSize:'11px',color:'#9ca3af'}}>
                       Conversion = Starts ÷ (Shows − Observations). <span style={{color:'#6b7280'}}>Observation patients are excluded from the denominator.</span>
                     </div>
@@ -4576,6 +4600,31 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       {showDetailedMetricsCols ? 'Hide Details' : 'Show Details'}
                     </button>
                   </div>
+                  {/* Quick Adjust Goals bar */}
+                  {yearGoals.length > 0 && (
+                    <div style={{display:'flex',alignItems:'center',gap:'8px',padding:'8px 14px',borderBottom:'1px solid #f3f4f6',backgroundColor:'#fafafa',flexWrap:'wrap'}}>
+                      <span style={{fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em'}}>Adjust All Goals:</span>
+                      {[-10, -5, 5, 10].map(pct => (
+                        <button key={pct} onClick={() => applyQuickAdjust(pct)}
+                          style={{fontSize:'11px',fontWeight:'700',padding:'3px 10px',borderRadius:'5px',cursor:'pointer',border:'1px solid',
+                            borderColor: pct > 0 ? '#bbf7d0' : '#fecaca',
+                            backgroundColor: pct > 0 ? '#f0fdf4' : '#fff1f2',
+                            color: pct > 0 ? '#15803d' : '#b91c1c'}}>
+                          {pct > 0 ? `+${pct}%` : `${pct}%`}
+                        </button>
+                      ))}
+                      <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+                        <input type="number" placeholder="Custom %" value={quickAdjustPct}
+                          onChange={e => setQuickAdjustPct(e.target.value)}
+                          style={{width:'72px',padding:'3px 7px',border:'1px solid #e5e7eb',borderRadius:'5px',fontSize:'11px',fontWeight:'700'}} />
+                        <button onClick={() => { const p = parseFloat(quickAdjustPct); if(!isNaN(p) && p !== 0) applyQuickAdjust(p); }}
+                          style={{fontSize:'11px',fontWeight:'700',padding:'3px 10px',borderRadius:'5px',cursor:'pointer',border:'1px solid #bfdbfe',backgroundColor:'#eff6ff',color:'#2563EB'}}>
+                          Apply
+                        </button>
+                      </div>
+                      {metricsSaveMsg && <span style={{fontSize:'11px',fontWeight:'700',color:'#10b981'}}>{metricsSaveMsg}</span>}
+                    </div>
+                  )}
 
                   <div style={{overflowX:'auto'}}>
                     <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
@@ -4652,7 +4701,37 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                 {collRateMo!=null && <div style={{fontSize:'11px',fontWeight:'700',color:collRateMo>=0.98?'#10b981':collRateMo>=0.95?'#f59e0b':'#ef4444'}}>{Math.round(collRateMo*100)}%</div>}
                               </td>
                               {showDetailedMetricsCols && <td style={{padding:'10px 13px',color:'#6b7280'}}>{m?.npe_scheduled??'—'}</td>}
-                              <td style={{padding:'10px 13px',color:'#374151'}}>{m?.npe_showed??'—'}</td>
+                              <td style={{padding:'10px 13px'}}>
+                                <div style={{fontWeight:'600',color:'#374151'}}>{m?.npe_showed??'—'}</div>
+                                {(() => {
+                                  const isEditing = inlineGoalEdit?.year===metricsYear && inlineGoalEdit?.month===mo && inlineGoalEdit?.field==='npe';
+                                  if (isEditing) return (
+                                    <div style={{display:'flex',alignItems:'center',gap:'4px',marginTop:'4px'}}>
+                                      <input autoFocus type="number" min="0" value={inlineGoalEdit.value}
+                                        onChange={e => setInlineGoalEdit(v=>({...v,value:e.target.value}))}
+                                        onBlur={() => saveInlineGoal(inlineGoalEdit)}
+                                        onKeyDown={e => { if(e.key==='Enter') saveInlineGoal(inlineGoalEdit); if(e.key==='Escape') setInlineGoalEdit(null); }}
+                                        style={{width:'55px',padding:'3px 6px',border:'2px solid #2563EB',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}} />
+                                    </div>
+                                  );
+                                  if (g?.npe_goal) return (
+                                    <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
+                                      padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
+                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:String(g.npe_goal)})}>
+                                      <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{g.npe_goal}</strong>
+                                      {m?.npe_showed!=null ? <span style={{fontWeight:'700',color:vsColor(m.npe_showed,g.npe_goal)}}>{Math.round(m.npe_showed/g.npe_goal*100)}%</span> : null}
+                                      <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
+                                    </div>
+                                  );
+                                  return (
+                                    <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
+                                      padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
+                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:''})}>
+                                      ＋ Set goal
+                                    </div>
+                                  );
+                                })()}
+                              </td>
                               {showDetailedMetricsCols && <td style={{padding:'10px 13px',color:'#6b7280'}}>{m?.obs_added??'—'}</td>}
                               <td style={{padding:'10px 13px'}}>
                                 <span style={{fontWeight:'700',color:vsColor(m?.show_up_rate,0.70)}}>
@@ -4692,7 +4771,35 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                               </td>
                               <td style={{padding:'10px 13px'}}>
                                 <div style={{fontWeight:'700',color:vsColor(m?.conversion_rate,g?.conversion_goal||0.50)}}>{m?.conversion_rate!=null?fmtPct(m.conversion_rate):'—'}</div>
-                                {g?.conversion_goal && <div style={{fontSize:'11px',color:'#9ca3af'}}>Goal: {fmtPct(g.conversion_goal)}</div>}
+                                {(() => {
+                                  const isEditing = inlineGoalEdit?.year===metricsYear && inlineGoalEdit?.month===mo && inlineGoalEdit?.field==='conv';
+                                  if (isEditing) return (
+                                    <div style={{display:'flex',alignItems:'center',gap:'2px',marginTop:'4px'}}>
+                                      <input autoFocus type="number" min="0" max="100" step="1" value={inlineGoalEdit.value}
+                                        onChange={e => setInlineGoalEdit(v=>({...v,value:e.target.value}))}
+                                        onBlur={() => saveInlineGoal(inlineGoalEdit)}
+                                        onKeyDown={e => { if(e.key==='Enter') saveInlineGoal(inlineGoalEdit); if(e.key==='Escape') setInlineGoalEdit(null); }}
+                                        style={{width:'50px',padding:'3px 6px',border:'2px solid #2563EB',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}} />
+                                      <span style={{fontSize:'11px',color:'#6b7280'}}>%</span>
+                                    </div>
+                                  );
+                                  if (g?.conversion_goal) return (
+                                    <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
+                                      padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
+                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:String(Math.round(g.conversion_goal*100))})}>
+                                      <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{fmtPct(g.conversion_goal)}</strong>
+                                      {m?.conversion_rate!=null ? <span style={{fontWeight:'700',color:vsColor(m.conversion_rate,g.conversion_goal)}}>{Math.round(m.conversion_rate/g.conversion_goal*100)}%</span> : null}
+                                      <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
+                                    </div>
+                                  );
+                                  return (
+                                    <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
+                                      padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
+                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:''})}>
+                                      ＋ Set goal
+                                    </div>
+                                  );
+                                })()}
                               </td>
                               <td style={{padding:'10px 13px'}}>
                                 <div style={{fontWeight:'700',color:vsColor(m?.avg_case_fee,5800)}}>{m?.avg_case_fee?fmt$(m.avg_case_fee):'—'}</div>
@@ -4722,6 +4829,62 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             </tr>
                           );
                         })}
+                        {/* ── YTD Totals Row ── */}
+                        {yearMetrics.length > 0 && (() => {
+                          const ytdNpe    = yearMetrics.reduce((s, m) => s + (m.npe_showed || 0), 0);
+                          const ytdNpeSch = yearMetrics.reduce((s, m) => s + (m.npe_scheduled || 0), 0);
+                          const ytdObs    = yearMetrics.reduce((s, m) => s + (m.obs_added || 0), 0);
+                          const ytdConvData = yearMetrics.filter(m => m.conversion_rate != null);
+                          const ytdAvgConv  = ytdConvData.length ? ytdConvData.reduce((s,m)=>s+m.conversion_rate,0)/ytdConvData.length : null;
+                          const ytdShowData = yearMetrics.filter(m => m.show_up_rate != null);
+                          const ytdAvgShow  = ytdShowData.length ? ytdShowData.reduce((s,m)=>s+m.show_up_rate,0)/ytdShowData.length : null;
+                          const ytdFee      = ytdStarts > 0 ? ytdProd / ytdStarts : null;
+                          const ytdGoalNpe  = yearGoals.filter(g => enteredMonths.has(g.month)).reduce((s,g)=>s+(g.npe_goal||0),0);
+                          const fullGoalProd   = yearGoals.reduce((s,g)=>s+(g.production_goal||0),0);
+                          const fullGoalStarts = yearGoals.reduce((s,g)=>s+(g.start_goal||0),0);
+                          const fullGoalNpe    = yearGoals.reduce((s,g)=>s+(g.npe_goal||0),0);
+                          const tdS = {padding:'10px 13px',fontWeight:'800',color:'#1e3a5f',backgroundColor:'#e0f2fe',fontSize:'13px'};
+                          return (
+                            <tr style={{borderTop:'2px solid #2563EB'}}>
+                              <td style={{...tdS,whiteSpace:'nowrap',color:'#2563EB'}}>YTD {metricsYear}</td>
+                              <td style={tdS}>
+                                <div style={{color:ytdGoalProd>0&&ytdProd>=ytdGoalProd?'#10b981':ytdGoalProd>0?'#ef4444':'#1e3a5f'}}>{fmt$(ytdProd)}</div>
+                                {ytdGoalProd > 0 && <div style={{fontSize:'11px',fontWeight:'700',color:'#6b7280'}}>Goal: {fmt$(ytdGoalProd)} <span style={{color:ytdProd>=ytdGoalProd?'#10b981':'#ef4444'}}>{Math.round(ytdProd/ytdGoalProd*100)}%</span></div>}
+                                {fullGoalProd > 0 && <div style={{fontSize:'10px',color:'#9ca3af'}}>Full year: {fmt$(fullGoalProd)}</div>}
+                              </td>
+                              <td style={tdS}>{fmt$(ytdColl)}</td>
+                              {showDetailedMetricsCols && <td style={tdS}>{ytdNpeSch||'—'}</td>}
+                              <td style={tdS}>
+                                <div>{ytdNpe||'—'}</div>
+                                {ytdGoalNpe > 0 && <div style={{fontSize:'11px',fontWeight:'700',color:'#6b7280'}}>Goal: {ytdGoalNpe} <span style={{color:ytdNpe>=ytdGoalNpe?'#10b981':'#ef4444'}}>{Math.round(ytdNpe/ytdGoalNpe*100)}%</span></div>}
+                                {fullGoalNpe > 0 && <div style={{fontSize:'10px',color:'#9ca3af'}}>Full year: {fullGoalNpe}</div>}
+                              </td>
+                              {showDetailedMetricsCols && <td style={tdS}>{ytdObs||'—'}</td>}
+                              <td style={tdS}>
+                                <span style={{color:ytdAvgShow>=0.70?'#10b981':ytdAvgShow>=0.50?'#f59e0b':ytdAvgShow?'#ef4444':'#9ca3af'}}>
+                                  {ytdAvgShow!=null?fmtPct(ytdAvgShow):'—'}
+                                </span>
+                                {ytdAvgShow!=null && <div style={{fontSize:'10px',color:'#9ca3af'}}>avg</div>}
+                              </td>
+                              <td style={tdS}>
+                                <div style={{color:ytdGoalStarts>0&&ytdStarts>=ytdGoalStarts?'#10b981':ytdGoalStarts>0?'#ef4444':'#1e3a5f'}}>{ytdStarts||'—'}</div>
+                                {ytdGoalStarts > 0 && <div style={{fontSize:'11px',fontWeight:'700',color:'#6b7280'}}>Goal: {ytdGoalStarts} <span style={{color:ytdStarts>=ytdGoalStarts?'#10b981':'#ef4444'}}>{Math.round(ytdStarts/ytdGoalStarts*100)}%</span></div>}
+                                {fullGoalStarts > 0 && <div style={{fontSize:'10px',color:'#9ca3af'}}>Full year: {fullGoalStarts}</div>}
+                              </td>
+                              <td style={tdS}>
+                                <span style={{color:ytdAvgConv>=0.50?'#10b981':ytdAvgConv>=0.35?'#f59e0b':ytdAvgConv?'#ef4444':'#9ca3af'}}>
+                                  {ytdAvgConv!=null?fmtPct(ytdAvgConv):'—'}
+                                </span>
+                                {ytdAvgConv!=null && <div style={{fontSize:'10px',color:'#9ca3af'}}>avg</div>}
+                              </td>
+                              <td style={tdS}>
+                                <span style={{color:ytdFee>=5800?'#10b981':ytdFee?'#f59e0b':'#9ca3af'}}>{ytdFee?fmt$(ytdFee):'—'}</span>
+                                {ytdFee!=null && <div style={{fontSize:'10px',color:'#9ca3af'}}>avg</div>}
+                              </td>
+                              <td style={tdS}></td>
+                            </tr>
+                          );
+                        })()}
                       </tbody>
                     </table>
                   </div>
