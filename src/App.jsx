@@ -1022,13 +1022,23 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
   // Pull shows, starts, OBS for a given month directly from patient data
   const getDashboardMonthData = (year, month) => {
-    const pts = patients.filter(p => {
-      const d = new Date(p.npeDate + 'T12:00:00');
+    const inMonth = (dateStr) => {
+      if (!dateStr) return false;
+      const d = new Date(dateStr + 'T12:00:00');
       return d.getFullYear() === year && d.getMonth() + 1 === month;
-    });
+    };
+    // Consults = patients whose NPE was this month
+    const pts        = patients.filter(p => inMonth(p.npeDate));
     const npe_showed = pts.length;
-    const starts     = pts.filter(p => isSDS(p) || p.ST).length;
     const obs_added  = pts.filter(p => p.OBS).length;
+    // Starts = patients who actually started treatment this month (by startDate, not npeDate)
+    // Inline effectiveStartDate logic since isSDS/effectiveStartDate are defined later in scope
+    const starts = patients.filter(p => {
+      const hasTreatment = p.BR || p.INV || p.PH1 || p.PH2 || p.LTD;
+      const isSDSp = hasTreatment && !p.PEN && !p.SCH && !p.OBS && !p.MP && !p.NOTX && !p.ST;
+      const sd = (p.startDate && p.startDate !== '') ? p.startDate : ((isSDSp || p.ST || p.DBRETS) ? p.npeDate : '');
+      return inMonth(sd);
+    }).length;
     return { npe_showed, starts, obs_added };
   };
   // ─────────────────────────────────────────────────────────────────────
