@@ -4196,7 +4196,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
           // ── Export CSV ───────────────────────────────────────────────
           const exportCSV = () => {
-            const headers = ['Month','Net Production','Collections','Collection Rate','NPE Scheduled','Shows','OBS Added','Show Up %','Starts','Conversion','Avg Case Fee','Notes'];
+            const headers = ['Month','Net Production','Collections','Collection Rate','NPE Scheduled','Consults Completed','OBS Added','Show Up %','Starts','Conversion','Avg Case Fee','Notes'];
             const rows = Array.from({length:12},(_,i)=>i+1).map(mo => {
               const m = getMetric(mo);
               if (!m) return [MONTHS[mo-1],'','','','','','','','','','',''];
@@ -4464,7 +4464,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   {/* Table controls */}
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 14px',borderBottom:'1px solid #f3f4f6',flexWrap:'wrap',gap:'8px'}}>
                     <div style={{fontSize:'11px',color:'#9ca3af'}}>
-                      Conversion = Starts ÷ (Shows − Observations). <span style={{color:'#6b7280'}}>Observation patients are excluded from the denominator.</span>
+                      Conversion = Starts ÷ (Consults Completed − Observations). <span style={{color:'#6b7280'}}>Observation patients are excluded from the denominator.</span>
                     </div>
                     <button onClick={() => setShowDetailedMetricsCols(!showDetailedMetricsCols)}
                       style={{fontSize:'11px',fontWeight:'700',color:'#6b7280',background:'none',border:'1px solid #e5e7eb',borderRadius:'6px',padding:'4px 10px',cursor:'pointer',whiteSpace:'nowrap'}}>
@@ -4505,7 +4505,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Net Production</th>
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Collections</th>
                           {showDetailedMetricsCols && <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Sched</th>}
-                          <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Shows</th>
+                          <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Consults Completed</th>
                           {showDetailedMetricsCols && <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Obs</th>}
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Show Rate<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target 70%+</div></th>
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Starts</th>
@@ -4814,7 +4814,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             { label:'Net Production',   key:'net_production',  fmt:v=>fmt$(v),       sum:true  },
                             { label:'Collections',      key:'collections',     fmt:v=>fmt$(v),       sum:true  },
                             { label:'NPE Scheduled',    key:'npe_scheduled',   fmt:v=>v?.toLocaleString()??'—', sum:true  },
-                            { label:'Shows',            key:'npe_showed',      fmt:v=>v?.toLocaleString()??'—', sum:true  },
+                            { label:'Consults Completed', key:'npe_showed',    fmt:v=>v?.toLocaleString()??'—', sum:true  },
                             { label:'OBS Added',        key:'obs_added',       fmt:v=>v??'—',        sum:true  },
                             { label:'Starts',           key:'starts',          fmt:v=>v??'—',        sum:true  },
                             { label:'Avg Show Up Rate', key:'show_up_rate',    fmt:v=>fmtPct(v),     avg:true  },
@@ -4985,7 +4985,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       {/* Month / Year */}
                       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'16px'}}>
                         {[
-                          {field:'year', label:'Year', type:'select', options:[2025,2026,2027,2028]},
+                          {field:'year', label:'Year', type:'select', options:[2024,2025,2026,2027,2028]},
                           {field:'month',label:'Month',type:'select', options:MONTHS.map((n,i)=>({v:i+1,l:n}))},
                         ].map(f => (
                           <div key={f.field}>
@@ -4994,8 +4994,21 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                               const newForm = {...metricsForm, [f.field]: e.target.value};
                               const newY  = parseInt(f.field==='year'  ? e.target.value : metricsForm.year);
                               const newMo = parseInt(f.field==='month' ? e.target.value : metricsForm.month);
+                              const existing = practiceMetrics.find(m => m.year === newY && m.month === newMo);
                               const dash = getDashboardMonthData(newY, newMo);
-                              setMetricsForm({...newForm, npe_showed: String(dash.npe_showed), starts: String(dash.starts), obs_added: String(dash.obs_added)});
+                              const rowGoal = practiceGoals.find(g => g.year === newY && g.month === newMo);
+                              setMetricsForm({
+                                ...newForm,
+                                net_production: existing ? String(existing.net_production ?? '') : '',
+                                collections:    existing ? String(existing.collections ?? '')    : '',
+                                npe_scheduled:  existing ? String(existing.npe_scheduled ?? '')  : '',
+                                npe_showed:     existing ? String(existing.npe_showed ?? '')     : String(dash.npe_showed),
+                                starts:         existing ? String(existing.starts ?? '')         : String(dash.starts),
+                                obs_added:      existing ? String(existing.obs_added ?? '')      : String(dash.obs_added),
+                                notes:          existing?.notes || '',
+                                prod_goal:      rowGoal?.production_goal ? String(rowGoal.production_goal) : '',
+                                starts_goal:    rowGoal?.start_goal      ? String(rowGoal.start_goal)      : '',
+                              });
                             }} style={{width:'100%',padding:'10px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px'}}>
                               {f.options.map(o => typeof o === 'object'
                                 ? <option key={o.v} value={o.v}>{o.l}</option>
@@ -5045,7 +5058,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Auto-pulled from NPE dashboard — override if needed</div>
                       <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'16px'}}>
                         {[
-                          {key:'npe_showed', label:'Shows (patients entered in dashboard)'},
+                          {key:'npe_showed', label:'Consults Completed (patients entered in dashboard)'},
                           {key:'starts',     label:'Starts'},
                           {key:'obs_added',  label:'OBS Added (excluded from conversion denominator)'},
                         ].map(f => (
@@ -5071,7 +5084,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         ))}
                       </div>
                       <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'16px'}}>
-                        Conversion = Starts ÷ (Shows − OBS). OBS patients attended but are not yet treatment candidates.
+                        Conversion = Starts ÷ (Consults Completed − OBS). OBS patients attended but are not yet treatment candidates.
                       </div>
 
                       {/* Notes */}
