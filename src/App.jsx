@@ -511,8 +511,16 @@ const GuidedHighlight = ({ highlight, onDismiss, onComplete }) => {
   const w = rect.width + pad * 2;
   const h = rect.height + pad * 2;
   const spaceBelow = window.innerHeight - (t + h);
-  const tipTop = spaceBelow > 160 ? t + h + 14 : t - 14 - 160;
-  const tipLeft = Math.min(Math.max(l, 12), window.innerWidth - 360);
+  const spaceRight = window.innerWidth - (l + w);
+  const useRight = highlight.tooltipSide === 'right' && spaceRight > 340;
+
+  // Tooltip position
+  const tipTop = useRight
+    ? Math.min(Math.max(t, 12), window.innerHeight - 320)
+    : (spaceBelow > 160 ? t + h + 14 : t - 14 - 160);
+  const tipLeft = useRight
+    ? l + w + 16
+    : Math.min(Math.max(l, 12), window.innerWidth - 360);
 
   return (
     // pointerEvents:none on outer so clicks in the spotlight pass through to the page
@@ -524,10 +532,12 @@ const GuidedHighlight = ({ highlight, onDismiss, onComplete }) => {
       <div style={{ position:'absolute', top:t, left:l+w, right:0, height:h, backgroundColor:'rgba(0,0,0,0.72)' }} />
       {/* Blue ring around target */}
       <div style={{ position:'absolute', top:t, left:l, width:w, height:h, border:'3px solid #2563EB', borderRadius:'12px', boxShadow:'0 0 0 5px rgba(37,99,235,0.25), 0 0 30px rgba(37,99,235,0.3)' }} />
-      {/* Arrow */}
-      {spaceBelow > 160 && (
+      {/* Arrow — below element (default) or pointing left (right-side tooltip) */}
+      {useRight ? (
+        <div style={{ position:'absolute', top:tipTop+20, left:l+w+4, width:0, height:0, borderTop:'10px solid transparent', borderBottom:'10px solid transparent', borderRight:'12px solid #0f172a' }} />
+      ) : spaceBelow > 160 ? (
         <div style={{ position:'absolute', top:t+h+2, left:l+w/2-10, width:0, height:0, borderLeft:'10px solid transparent', borderRight:'10px solid transparent', borderBottom:'12px solid #0f172a' }} />
-      )}
+      ) : null}
       {/* Tooltip — re-enable pointer events so buttons are clickable */}
       <div style={{ position:'absolute', top:tipTop, left:tipLeft, backgroundColor:'#0f172a', color:'white', padding:'18px 20px', borderRadius:'14px', boxShadow:'0 16px 48px rgba(0,0,0,0.5)', maxWidth:'340px', zIndex:8600, pointerEvents:'auto' }}>
         <div style={{ fontSize:'15px', fontWeight:'800', color:'white', marginBottom:'7px', lineHeight:1.2 }}>{highlight.title}</div>
@@ -668,7 +678,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [metricsForm, setMetricsForm] = useState({
     year: new Date().getFullYear(), month: new Date().getMonth() + 1,
     net_production: '', collections: '', npe_scheduled: '',
-    npe_showed: '', starts: '', obs_added: '', notes: ''
+    npe_showed: '', starts: '', obs_added: '', notes: '',
+    prod_goal: '', starts_goal: ''
   });
   const [showAIGoals, setShowAIGoals] = useState(false);
   const [goalAdjust, setGoalAdjust] = useState({ production: 0, npe: 0, starts: 0, conversion: 0, case_fee: 0 });
@@ -682,6 +693,12 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [tcMgmtMsg, setTcMgmtMsg] = useState('');
   const [copiedInvite, setCopiedInvite] = useState('');
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [locations, setLocations] = useState(() => {
+    const saved = localStorage.getItem('npe-locations');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [newLocationName, setNewLocationName] = useState('');
+  const [locationMsg, setLocationMsg] = useState('');
   const [guidedHighlight, setGuidedHighlight] = useState(null);
   // ── Super-admin (add new practice) ────────────────────────────────────
   const [newPracticeName, setNewPracticeName] = useState('');
@@ -878,18 +895,20 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   useEffect(() => {
     const loadSettings = async () => {
       if (currentUser?.id === 'demo') return;
-      const [cloudGoals, cloudBonusRates, cloudTCList, cloudAdminPw, cloudPopupBonuses] = await Promise.all([
+      const [cloudGoals, cloudBonusRates, cloudTCList, cloudAdminPw, cloudPopupBonuses, cloudLocations] = await Promise.all([
         dbLoadSettings('goals'),
         dbLoadSettings('bonus-rates'),
         dbLoadSettings('tc-list'),
         dbLoadSettings('admin-password'),
-        dbLoadSettings('popup-bonuses')
+        dbLoadSettings('popup-bonuses'),
+        dbLoadSettings('locations'),
       ]);
       if (cloudGoals) setGoals(cloudGoals);
       if (cloudBonusRates) setBonusRates(cloudBonusRates);
       if (cloudTCList && Array.isArray(cloudTCList)) setTcList(cloudTCList);
       if (cloudAdminPw) localStorage.setItem('npe-admin-password', cloudAdminPw);
       if (cloudPopupBonuses && Array.isArray(cloudPopupBonuses)) setPopupBonuses(cloudPopupBonuses);
+      if (cloudLocations && Array.isArray(cloudLocations)) { setLocations(cloudLocations); localStorage.setItem('npe-locations', JSON.stringify(cloudLocations)); }
     };
     loadSettings();
   }, []);
@@ -3072,8 +3091,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   <select value={newPatientForm.location}
                     onChange={e => setNewPatientForm({...newPatientForm, location: e.target.value})}
                     style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}>
-                    <option value="Car">Carrollwood</option>
-                    <option value="Apo">Apollo Beach</option>
+                    {(locations.length > 0 ? locations : ['Car', 'Apo']).map(loc => (
+                      <option key={loc} value={loc}>{loc === 'Car' ? 'Carrollwood' : loc === 'Apo' ? 'Apollo Beach' : loc}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -4221,6 +4241,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             const net_prod     = parseFloat(metricsForm.net_production.toString().replace(/[^0-9.]/g,'')) || 0;
             const collections  = parseFloat(metricsForm.collections.toString().replace(/[^0-9.]/g,'')) || 0;
             const npe_sched    = parseInt(metricsForm.npe_scheduled) || 0;
+            const prod_goal    = parseFloat(metricsForm.prod_goal?.toString().replace(/[^0-9.]/g,'')) || 0;
+            const starts_goal  = parseInt(metricsForm.starts_goal) || 0;
             const show_up_rate = npe_sched > 0 ? npe_showed / npe_sched : null;
             const denom        = npe_showed - obs_added;
             const conv_rate    = denom > 0 ? starts / denom : null;
@@ -4233,6 +4255,17 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 show_up_rate, conversion_rate: conv_rate, avg_case_fee: avg_fee,
                 notes: metricsForm.notes, updated_at: new Date().toISOString()
               }, { onConflict: 'year,month,practice_id' });
+              if (prod_goal > 0 || starts_goal > 0) {
+                const existingGoal = practiceGoals.find(g => g.year === y && g.month === mo);
+                await supabase.from('practice_goals').upsert({
+                  year: y, month: mo, practice_id: currentUser.practiceId,
+                  production_goal: prod_goal > 0 ? prod_goal : (existingGoal?.production_goal || 0),
+                  start_goal: starts_goal > 0 ? starts_goal : (existingGoal?.start_goal || 0),
+                  npe_goal: existingGoal?.npe_goal || 0,
+                  conversion_goal: existingGoal?.conversion_goal || 0,
+                  avg_case_fee_goal: existingGoal?.avg_case_fee_goal || 0,
+                }, { onConflict: 'year,month,practice_id' });
+              }
               await loadPracticeMetrics();
             }
             setShowMetricsEntry(false);
@@ -4303,8 +4336,11 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   </div>
                   <button onClick={() => {
                     const dash = getDashboardMonthData(metricsYear, new Date().getMonth()+1);
+                    const curGoal = getGoal(new Date().getMonth()+1);
                     setMetricsForm({ year: metricsYear, month: new Date().getMonth()+1, net_production: '', collections: '', npe_scheduled: '',
-                      npe_showed: String(dash.npe_showed), starts: String(dash.starts), obs_added: String(dash.obs_added), notes: '' });
+                      npe_showed: String(dash.npe_showed), starts: String(dash.starts), obs_added: String(dash.obs_added), notes: '',
+                      prod_goal: curGoal?.production_goal ? String(curGoal.production_goal) : '',
+                      starts_goal: curGoal?.start_goal ? String(curGoal.start_goal) : '' });
                     setShowMetricsEntry(true);
                   }} style={{padding:'9px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
                     + Enter Monthly Data
@@ -4335,8 +4371,11 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       {!hasData && (
                         <button onClick={() => {
                           const dash = getDashboardMonthData(metricsYear, todayMo);
+                          const curGoal = getGoal(todayMo);
                           setMetricsForm({ year: metricsYear, month: todayMo, net_production:'', collections:'', npe_scheduled:'',
-                            npe_showed: String(dash.npe_showed), starts: String(dash.starts), obs_added: String(dash.obs_added), notes:'' });
+                            npe_showed: String(dash.npe_showed), starts: String(dash.starts), obs_added: String(dash.obs_added), notes:'',
+                            prod_goal: curGoal?.production_goal ? String(curGoal.production_goal) : '',
+                            starts_goal: curGoal?.start_goal ? String(curGoal.start_goal) : '' });
                           setShowMetricsEntry(true);
                         }} style={{padding:'9px 18px',backgroundColor:'#4A90E2',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
                           + Enter This Month's Data
@@ -4496,6 +4535,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                               <td style={{padding:'10px 13px'}}>
                                 <button onClick={() => {
                                   const dash = getDashboardMonthData(metricsYear, mo);
+                                  const rowGoal = yearGoals.find(g => g.month === mo);
                                   setMetricsForm({
                                     year: metricsYear, month: mo,
                                     net_production: m?.net_production?String(m.net_production):'',
@@ -4504,7 +4544,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                     npe_showed:     m?.npe_showed!=null?String(m.npe_showed):String(dash.npe_showed),
                                     starts:         m?.starts!=null?String(m.starts):String(dash.starts),
                                     obs_added:      m?.obs_added!=null?String(m.obs_added):String(dash.obs_added),
-                                    notes:          m?.notes||''
+                                    notes:          m?.notes||'',
+                                    prod_goal:      rowGoal?.production_goal ? String(rowGoal.production_goal) : '',
+                                    starts_goal:    rowGoal?.start_goal ? String(rowGoal.start_goal) : ''
                                   });
                                   setShowMetricsEntry(true);
                                 }} style={{padding:'5px 10px',border:'1px solid #e5e7eb',borderRadius:'6px',backgroundColor:'white',fontSize:'12px',cursor:'pointer',color:'#374151',whiteSpace:'nowrap'}}>
@@ -4756,6 +4798,24 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         ))}
                       </div>
 
+                      {/* Monthly Goals */}
+                      <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Monthly Goals (optional)</div>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'16px',padding:'14px',backgroundColor:'#f0fdf4',borderRadius:'8px',border:'1px solid #bbf7d0'}}>
+                        <div>
+                          <label style={{display:'block',fontSize:'12px',fontWeight:'600',color:'#374151',marginBottom:'3px'}}>Production Goal</label>
+                          <input value={metricsForm.prod_goal} onChange={e => setMetricsForm({...metricsForm, prod_goal: e.target.value})}
+                            placeholder="$0"
+                            style={{width:'100%',padding:'10px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',boxSizing:'border-box'}} />
+                        </div>
+                        <div>
+                          <label style={{display:'block',fontSize:'12px',fontWeight:'600',color:'#374151',marginBottom:'3px'}}>Start Goal</label>
+                          <input value={metricsForm.starts_goal} onChange={e => setMetricsForm({...metricsForm, starts_goal: e.target.value})}
+                            placeholder="0"
+                            style={{width:'100%',padding:'10px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',boxSizing:'border-box'}} />
+                        </div>
+                        <div style={{gridColumn:'1/-1',fontSize:'11px',color:'#6b7280'}}>These show as targets on your Practice Metrics charts and table. Leave blank to keep existing goals.</div>
+                      </div>
+
                       {/* Manual entry */}
                       <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>From your practice management system</div>
                       <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'16px'}}>
@@ -4915,6 +4975,53 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     </div>
                   )}
 
+                  {/* Locations */}
+                  <div id="guide-locations-section" style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
+                    <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>📍 Office Locations</h4>
+                    <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Add each office location. These appear in the dropdown when logging a new patient exam.</p>
+                    {locationMsg && <div style={{padding:'8px 12px',borderRadius:'6px',marginBottom:'12px',fontSize:'13px',fontWeight:'600',backgroundColor: locationMsg.startsWith('Error')?'#fef2f2':'#f0fdf4',color: locationMsg.startsWith('Error')?'#ef4444':'#166534'}}>{locationMsg}</div>}
+                    {locations.length > 0 && (
+                      <div style={{display:'flex',flexWrap:'wrap',gap:'8px',marginBottom:'14px'}}>
+                        {locations.map((loc, i) => (
+                          <div key={i} style={{display:'flex',alignItems:'center',gap:'6px',padding:'5px 10px',backgroundColor:'white',border:'1px solid #d1d5db',borderRadius:'20px',fontSize:'13px',fontWeight:'600',color:'#374151'}}>
+                            📍 {loc}
+                            <button onClick={async () => {
+                              const updated = locations.filter((_,j) => j !== i);
+                              setLocations(updated);
+                              localStorage.setItem('npe-locations', JSON.stringify(updated));
+                              await supabase.from('settings').upsert({ key:'locations', value: updated, practice_id: currentUser.practiceId }, { onConflict:'key,practice_id' });
+                              setLocationMsg('Location removed.');
+                              setTimeout(() => setLocationMsg(''), 2000);
+                            }} style={{background:'none',border:'none',cursor:'pointer',color:'#9ca3af',fontSize:'14px',lineHeight:1,padding:'0 2px'}}>×</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {locations.length === 0 && (
+                      <div style={{fontSize:'13px',color:'#9ca3af',fontStyle:'italic',marginBottom:'12px'}}>No locations added yet. Add at least one to get started.</div>
+                    )}
+                    <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+                      <input id="guide-location-input" value={newLocationName} onChange={e => setNewLocationName(e.target.value)}
+                        placeholder="e.g. Carrollwood, Apollo Beach, Main Office"
+                        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.nextSibling?.click(); }}
+                        style={{flex:1,padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}} />
+                      <button onClick={async () => {
+                        const name = newLocationName.trim();
+                        if (!name) return setLocationMsg('Error: Enter a location name.');
+                        if (locations.includes(name)) return setLocationMsg('Error: That location already exists.');
+                        const updated = [...locations, name];
+                        setLocations(updated);
+                        localStorage.setItem('npe-locations', JSON.stringify(updated));
+                        setNewLocationName('');
+                        await supabase.from('settings').upsert({ key:'locations', value: updated, practice_id: currentUser.practiceId }, { onConflict:'key,practice_id' });
+                        setLocationMsg(`"${name}" added.`);
+                        setTimeout(() => setLocationMsg(''), 3000);
+                      }} style={{padding:'9px 18px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
+                        Add Location
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Team Management */}
                   <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>Team Management</h4>
@@ -5010,6 +5117,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           const addedEmail = newTCEmail.trim().toLowerCase();
                           setNewTCName(''); setNewTCEmail(''); setNewTCRole('tc');
                           await loadTCUsers();
+                          // Clear spotlight so the invite copy box is visible, then reopen checklist
+                          setGuidedHighlight(null);
+                          setShowOnboarding(true);
                           const tcInvite = `Hi ${addedName.split(' ')[0]}! You've been added to CadenceIQ.\n\n1️⃣ Go to: ${APP_URL}\n2️⃣ Click "Set up your account"\n3️⃣ Enter your email (${addedEmail}) and create a password\n\nSee you in there!`;
                           setTcMgmtMsg(tcInvite);
                           setTimeout(() => setTcMgmtMsg(''), 30000);
@@ -6288,12 +6398,42 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
       {/* ── Onboarding Modal — first-time real practices ─────────────── */}
       {showOnboarding && currentUser?.id !== 'demo' && (() => {
+        const hasLocations = locations.length > 0;
         const hasTeam    = tcUsers.filter(u => u.email !== currentUser?.email).length > 0;
-        const hasGoals   = goals.monthly.some(m => (m.carNPE||0) + (m.apoNPE||0) + (m.carStarted||0) + (m.apoStarted||0) > 0);
+        // Goals count as set only if user has explicitly saved them (different from defaults)
+        const defaultMonthly = Array.from({length:12},(_,i)=>({carNPE:i===1?40:35,carStarted:i===1?20:18,apoNPE:i===1?15:12,apoStarted:i===1?8:6,convGoal:50}));
+        const hasGoals   = goals.monthly.some((m, i) => {
+          const d = defaultMonthly[i];
+          return m.carNPE !== d.carNPE || m.carStarted !== d.carStarted || m.apoNPE !== d.apoNPE || m.apoStarted !== d.apoStarted;
+        });
         const hasPatient = patients.length > 0;
         const steps = [
           {
-            num: 1, icon: '👥', done: hasTeam,
+            num: 1, icon: '📍', done: hasLocations,
+            title: 'Add Your Office Locations',
+            body: 'Tell CadenceIQ which offices you have. Every new patient exam is tied to a location so you can track performance per office.',
+            cta: 'Go to Settings → Locations', action: () => {
+              setCurrentView('settings');
+              setShowOnboarding(false);
+              setGuidedHighlight({
+                elementId: 'guide-locations-section',
+                title: '📍 Add Your Office Locations Here',
+                message: 'Type the name of each office and click Add.\n\nEvery NPE will be assigned to a location so you can compare performance across offices.',
+                subSteps: [
+                  'Type your first office name (e.g. "Main Office" or "Downtown")',
+                  'Click Add Location',
+                  'Repeat for each office you have',
+                ],
+                nextHighlight: {
+                  elementId: 'guide-location-input',
+                  title: '✏️ Type Your First Location Name',
+                  message: 'Enter the name of your first office here, then click Add Location.',
+                },
+              });
+            },
+          },
+          {
+            num: 2, icon: '👥', done: hasTeam,
             title: 'Add Your Treatment Coordinators',
             body: 'Your TCs need their own login. Add their name and email here and they\'ll get instructions on how to set up their account.',
             cta: 'Go to Settings → Team', action: () => {
@@ -6328,7 +6468,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             },
           },
           {
-            num: 2, icon: '🎯', done: hasGoals,
+            num: 3, icon: '🎯', done: hasGoals,
             title: 'Set Your Monthly Goals',
             body: 'Tell CadenceIQ how many NPEs and starts you\'re targeting each month. The dashboard will track your progress against those numbers.',
             cta: 'Go to Settings → Goals', action: () => {
@@ -6348,7 +6488,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             },
           },
           {
-            num: 3, icon: '➕', done: hasPatient,
+            num: 4, icon: '➕', done: hasPatient,
             title: 'Add Your First New Patient Exam',
             body: 'After every exam where a patient doesn\'t start same-day, add them here. CadenceIQ will automatically build a follow-up schedule based on their obstacle.',
             cta: 'Add First Patient', action: () => {
@@ -6356,6 +6496,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               setShowOnboarding(false);
               setGuidedHighlight({
                 elementId: 'guide-npe-form',
+                tooltipSide: 'right',
                 title: '➕ Fill Out This Form After Every Exam',
                 message: 'Any patient who didn\'t start treatment same-day gets logged here. CadenceIQ will build their follow-up schedule automatically.',
                 subSteps: [
@@ -6363,7 +6504,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   'Phone — their number so your TC can call',
                   'NPE Date — today\'s date (pre-filled)',
                   'Location — which office the exam was at',
-                  'Status — what happened (Pending, Scheduled, etc.)',
+                  'Status — what happened (see descriptions below each option)',
                   'Obstacle — why they didn\'t start (if pending)',
                 ],
                 nextHighlight: {
@@ -6375,7 +6516,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             },
           },
         ];
-        const allDone = hasTeam && hasGoals && hasPatient;
+        const allDone = hasLocations && hasTeam && hasGoals && hasPatient;
         return (
           <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.75)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}}>
             <div style={{backgroundColor:'white',borderRadius:'20px',maxWidth:'580px',width:'100%',overflow:'hidden',boxShadow:'0 32px 80px rgba(0,0,0,0.4)'}}>
@@ -6389,7 +6530,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 <div style={{fontSize:'13px',color:'#94a3b8',lineHeight:1.5}}>
                   {allDone
                     ? "Everything is in place. Your follow-up system is ready to go."
-                    : "CadenceIQ tracks every new patient exam and tells your TCs exactly who to call each day — so nothing falls through the cracks. Complete these 3 steps to get started."}
+                    : "CadenceIQ tracks every new patient exam and tells your TCs exactly who to call each day — so nothing falls through the cracks. Complete these 4 steps to get started."}
                 </div>
               </div>
 
