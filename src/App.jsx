@@ -610,7 +610,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     return saved ? JSON.parse(saved) : { sds: 20, ret: 5, white: 5, pif: 5 };
   });
   const [popupBonuses, setPopupBonuses] = useState([]);
-  const [popupBonusForm, setPopupBonusForm] = useState({ name: '', amount: 10, startDate: '', endDate: '', description: '', tcFilter: 'All' });
+  const [popupBonusForm, setPopupBonusForm] = useState({ name: '', startDate: '', endDate: '', description: '', tcFilter: 'All', amtSDS: 0, amtPending: 0, amtScheduled: 0, amtRetainer: 0, amtWhitening: 0 });
 
   const adminMsg_placeholder = null; // keep line ref stable
   const [adminMsg, setAdminMsg] = useState('');
@@ -1064,6 +1064,31 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
   // Returns the effective start date for a patient — uses startDate if set, falls back to npeDate for old SDS/DBRETS records
   const effectiveStartDate = (p) => (p.startDate && p.startDate !== '') ? p.startDate : ((isSDS(p) || p.ST || p.DBRETS) ? p.npeDate : '');
+
+  // Calculate how much a patient earns under a popup bonus campaign (0 = doesn't qualify)
+  const popupBonusEarnings = (p, bonus, tcOverride) => {
+    const sd = effectiveStartDate(p);
+    if (!sd || sd < bonus.startDate || sd > bonus.endDate) return 0;
+    if (bonus.tcFilter !== 'All' && p.tc !== bonus.tcFilter) return 0;
+    if (tcOverride && p.tc !== tcOverride) return 0;
+    // New-style campaign with per-type amounts
+    if (bonus.amtSDS !== undefined) {
+      const pIsSDS      = isSDS(p);
+      const pIsPending  = p.fromPending;
+      const pIsST       = p.ST && !pIsSDS;
+      const pIsDBRETS   = p.DBRETS;
+      let total = 0;
+      if (pIsSDS    && bonus.amtSDS       > 0) total += bonus.amtSDS;
+      if (pIsPending && bonus.amtPending  > 0) total += bonus.amtPending;
+      if (pIsST && !pIsPending && bonus.amtScheduled > 0) total += bonus.amtScheduled;
+      if ((p['R+']) && bonus.amtRetainer  > 0) total += bonus.amtRetainer;
+      if ((p['W+']) && bonus.amtWhitening > 0) total += bonus.amtWhitening;
+      return total;
+    }
+    // Legacy fallback (old campaigns only had `amount` per fromPending/ST start)
+    if (!(p.fromPending || p.ST)) return 0;
+    return (bonus.amount || 0) + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0);
+  };
 
   // Calculate metrics. npePts = patients filtered by NPE date (for NPE totals).
   // startPts = patients filtered by start date (for start counts). Defaults to npePts if not provided.
@@ -1752,27 +1777,25 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               );
               if (activeBonuses.length === 0) return null;
               return activeBonuses.map(bonus => {
-                const qualifying = patients.filter(p =>
-                  (p.fromPending || p.ST) &&
-                  p.startDate >= bonus.startDate && p.startDate <= bonus.endDate &&
-                  (bonus.tcFilter === 'All' || p.tc === bonus.tcFilter) &&
-                  (myTC === null || p.tc === myTC)
-                );
-                const earned = qualifying.reduce((sum, p) => sum + bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0), 0);
+                const qualifying = patients.filter(p => popupBonusEarnings(p, bonus, myTC) > 0);
+                const earned = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, myTC), 0);
                 const endLabel = new Date(bonus.endDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'});
+                const typeLabels = bonus.amtSDS !== undefined
+                  ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
+                  : `$${bonus.amount}/start + $${bonusRates.ret} ret + $${bonusRates.white} whitening`;
                 return (
                   <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'16px 20px',display:'flex',alignItems:'center',gap:'20px',flexWrap:'wrap'}}>
                     <div style={{fontSize:'28px'}}>🎯</div>
                     <div style={{flex:1}}>
                       <div style={{fontWeight:'800',fontSize:'16px',color:'#92400e'}}>{bonus.name}</div>
                       <div style={{fontSize:'13px',color:'#92400e',marginTop:'2px'}}>
-                        <strong>${bonus.amount}/start + ${bonusRates.ret} retainers + ${bonusRates.white} whitening</strong> — ends {endLabel}
+                        <strong>{typeLabels}</strong> — ends {endLabel}
                         {bonus.description && <span> · {bonus.description}</span>}
                       </div>
                     </div>
                     <div style={{textAlign:'center',backgroundColor:'white',padding:'10px 18px',borderRadius:'8px',border:'1px solid #fde68a'}}>
                       <div style={{fontSize:'26px',fontWeight:'900',color:'#10b981',lineHeight:1}}>${earned}</div>
-                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px'}}>{qualifying.length} starts so far</div>
+                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px'}}>{qualifying.length} qualifying so far</div>
                     </div>
                   </div>
                 );
@@ -2461,27 +2484,25 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               );
               if (activeBonuses.length === 0) return null;
               return activeBonuses.map(bonus => {
-                const qualifying = patients.filter(p =>
-                  (p.fromPending || p.ST) &&
-                  p.startDate >= bonus.startDate && p.startDate <= bonus.endDate &&
-                  (bonus.tcFilter === 'All' || p.tc === bonus.tcFilter) &&
-                  (myTC === null || p.tc === myTC)
-                );
-                const earned = qualifying.reduce((sum, p) => sum + bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0), 0);
+                const qualifying = patients.filter(p => popupBonusEarnings(p, bonus, myTC) > 0);
+                const earned = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, myTC), 0);
                 const endLabel = new Date(bonus.endDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'});
+                const typeLabels = bonus.amtSDS !== undefined
+                  ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
+                  : `$${bonus.amount}/start + $${bonusRates.ret} ret + $${bonusRates.white} whitening`;
                 return (
                   <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'16px 20px',display:'flex',alignItems:'center',gap:'20px',flexWrap:'wrap'}}>
                     <div style={{fontSize:'28px'}}>🎯</div>
                     <div style={{flex:1}}>
                       <div style={{fontWeight:'800',fontSize:'16px',color:'#92400e'}}>{bonus.name}</div>
                       <div style={{fontSize:'13px',color:'#92400e',marginTop:'2px'}}>
-                        <strong>${bonus.amount}/start + ${bonusRates.ret} retainers + ${bonusRates.white} whitening</strong> — ends {endLabel}
+                        <strong>{typeLabels}</strong> — ends {endLabel}
                         {bonus.description && <span> · {bonus.description}</span>}
                       </div>
                     </div>
                     <div style={{textAlign:'center',backgroundColor:'white',padding:'10px 18px',borderRadius:'8px',border:'1px solid #fde68a'}}>
                       <div style={{fontSize:'26px',fontWeight:'900',color:'#10b981',lineHeight:1}}>${earned}</div>
-                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px'}}>{qualifying.length} starts so far</div>
+                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px'}}>{qualifying.length} qualifying so far</div>
                     </div>
                   </div>
                 );
@@ -3779,25 +3800,23 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   });
                   if (relevantBonuses.length === 0) return null;
                   return relevantBonuses.map(bonus => {
-                    const qualifying = patients.filter(p =>
-                      (p.fromPending || p.ST) &&
-                      p.startDate >= bonus.startDate && p.startDate <= bonus.endDate &&
-                      (bonus.tcFilter === 'All' || p.tc === bonus.tcFilter) &&
-                      (!bonusTCFilter || p.tc === bonusTCFilter)
-                    );
+                    const qualifying = patients.filter(p => popupBonusEarnings(p, bonus, bonusTCFilter || null) > 0);
                     if (qualifying.length === 0) return null;
-                    const total = qualifying.reduce((sum, p) => sum + bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0), 0);
+                    const total = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, bonusTCFilter || null), 0);
+                    const typeLabels = bonus.amtSDS !== undefined
+                      ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
+                      : `$${bonus.amount}/start`;
                     return (
                       <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'20px 24px',marginBottom:'16px'}}>
                         <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'12px'}}>
                           <span style={{fontSize:'22px'}}>🎯</span>
                           <div>
                             <div style={{fontWeight:'800',fontSize:'16px',color:'#92400e'}}>{bonus.name}</div>
-                            <div style={{fontSize:'12px',color:'#92400e'}}>${bonus.amount}/start · {bonus.startDate} → {bonus.endDate}</div>
+                            <div style={{fontSize:'12px',color:'#92400e'}}>{typeLabels} · {bonus.startDate} → {bonus.endDate}</div>
                           </div>
                           <div style={{marginLeft:'auto',textAlign:'right'}}>
                             <div style={{fontSize:'28px',fontWeight:'900',color:'#10b981',lineHeight:1}}>${total}</div>
-                            <div style={{fontSize:'12px',color:'#9ca3af'}}>{qualifying.length} qualifying starts</div>
+                            <div style={{fontSize:'12px',color:'#9ca3af'}}>{qualifying.length} qualifying events</div>
                           </div>
                         </div>
                         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
@@ -3811,15 +3830,23 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           </thead>
                           <tbody>
                             {qualifying.map(p => {
-                              const rowTotal = bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0);
-                              const addons = [p['R+'] && `R+ $${bonusRates.ret}`, p['W+'] && `W+ $${bonusRates.white}`].filter(Boolean).join(', ');
+                              const rowTotal = popupBonusEarnings(p, bonus, bonusTCFilter || null);
+                              const breakdown = bonus.amtSDS !== undefined ? (() => {
+                                const parts = [];
+                                if (isSDS(p) && bonus.amtSDS > 0) parts.push(`SDS $${bonus.amtSDS}`);
+                                if (p.fromPending && bonus.amtPending > 0) parts.push(`Off Pending $${bonus.amtPending}`);
+                                if (p.ST && !isSDS(p) && !p.fromPending && bonus.amtScheduled > 0) parts.push(`ST $${bonus.amtScheduled}`);
+                                if (p['R+'] && bonus.amtRetainer > 0) parts.push(`R+ $${bonus.amtRetainer}`);
+                                if (p['W+'] && bonus.amtWhitening > 0) parts.push(`W+ $${bonus.amtWhitening}`);
+                                return parts.join(', ');
+                              })() : [p['R+'] && `R+ $${bonusRates.ret}`, p['W+'] && `W+ $${bonusRates.white}`].filter(Boolean).join(', ');
                               return (
                                 <tr key={p.id} style={{borderBottom:'1px solid #fde68a'}}>
                                   <td style={{padding:'6px 10px',color:'#374151'}}>{p.name}</td>
                                   <td style={{padding:'6px 10px',color:'#374151'}}>{p.tc}</td>
                                   <td style={{padding:'6px 10px',color:'#374151'}}>{p.startDate}</td>
                                   <td style={{padding:'6px 10px',textAlign:'right',fontWeight:'700',color:'#10b981'}}>
-                                    ${rowTotal}{addons ? <span style={{fontSize:'11px',color:'#92400e',fontWeight:'400',marginLeft:'4px'}}>({addons})</span> : null}
+                                    ${rowTotal}{breakdown ? <span style={{fontSize:'11px',color:'#92400e',fontWeight:'400',marginLeft:'4px'}}>({breakdown})</span> : null}
                                   </td>
                                 </tr>
                               );
@@ -5233,88 +5260,111 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'24px'}}>
               <h3 style={{fontSize:'20px',fontWeight:'bold',color:'#202020',marginBottom:'4px'}}>🎯 Popup Bonus Campaigns</h3>
               <p style={{fontSize:'13px',color:'#6b7280',marginBottom:'20px'}}>
-                Run a time-limited bonus for starts off the pending list. TCs will see the active campaign in their Follow-Up Queue.
+                Run a time-limited bonus campaign. Choose which actions qualify and set the dollar amount for each — TCs will see the active campaign in their Follow-Up Queue and Bonus Audit.
               </p>
 
               {/* Create form */}
               <div style={{backgroundColor:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'8px',padding:'20px',marginBottom:'24px'}}>
                 <h4 style={{fontSize:'15px',fontWeight:'700',color:'#374151',marginBottom:'16px',marginTop:0}}>Create New Campaign</h4>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'12px'}}>
-                  <div>
+
+                {/* Name + Dates + TC + Note */}
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'16px'}}>
+                  <div style={{gridColumn:'1/-1'}}>
                     <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'4px'}}>Campaign Name *</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. April Pending Push"
-                      value={popupBonusForm.name}
+                    <input type="text" placeholder="e.g. April SDS Push" value={popupBonusForm.name}
                       onChange={e => setPopupBonusForm(f => ({...f, name: e.target.value}))}
-                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
-                    />
-                  </div>
-                  <div>
-                    <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'4px'}}>$ Per Start *</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={popupBonusForm.amount}
-                      onChange={e => setPopupBonusForm(f => ({...f, amount: Number(e.target.value)}))}
-                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
-                    />
+                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}} />
                   </div>
                   <div>
                     <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'4px'}}>Start Date *</label>
-                    <input
-                      type="date"
-                      value={popupBonusForm.startDate}
+                    <input type="date" value={popupBonusForm.startDate}
                       onChange={e => setPopupBonusForm(f => ({...f, startDate: e.target.value}))}
-                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
-                    />
+                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}} />
                   </div>
                   <div>
                     <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'4px'}}>End Date *</label>
-                    <input
-                      type="date"
-                      value={popupBonusForm.endDate}
+                    <input type="date" value={popupBonusForm.endDate}
                       onChange={e => setPopupBonusForm(f => ({...f, endDate: e.target.value}))}
-                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
-                    />
+                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}} />
                   </div>
                   <div>
                     <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'4px'}}>TC (or All)</label>
-                    <select
-                      value={popupBonusForm.tcFilter}
+                    <select value={popupBonusForm.tcFilter}
                       onChange={e => setPopupBonusForm(f => ({...f, tcFilter: e.target.value}))}
-                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
-                    >
+                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}>
                       <option value="All">All TCs</option>
                       {tcList.map(tc => <option key={tc} value={tc}>{tc}</option>)}
                     </select>
                   </div>
                   <div>
                     <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'4px'}}>Note for TC (optional)</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Patients from PMS pending report"
+                    <input type="text" placeholder="e.g. Double bonus week!"
                       value={popupBonusForm.description}
                       onChange={e => setPopupBonusForm(f => ({...f, description: e.target.value}))}
-                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
-                    />
+                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}} />
                   </div>
                 </div>
-                <button
-                  disabled={!popupBonusForm.name || !popupBonusForm.startDate || !popupBonusForm.endDate}
-                  onClick={async () => {
-                    const newBonus = { ...popupBonusForm, id: Date.now().toString(), createdAt: new Date().toISOString() };
-                    const updated = [...popupBonuses, newBonus];
-                    setPopupBonuses(updated);
-                    await dbSaveSettings('popup-bonuses', updated);
-                    setPopupBonusForm({ name: '', amount: 10, startDate: '', endDate: '', description: '', tcFilter: 'All' });
-                    setSaveToast('🎯 Popup bonus campaign created!');
-                    setTimeout(() => setSaveToast(''), 3000);
-                  }}
-                  style={{padding:'10px 24px',backgroundColor: (!popupBonusForm.name || !popupBonusForm.startDate || !popupBonusForm.endDate) ? '#d1d5db' : '#2563EB',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor: (!popupBonusForm.name || !popupBonusForm.startDate || !popupBonusForm.endDate) ? 'not-allowed' : 'pointer',fontSize:'14px'}}
-                >
-                  Launch Campaign
-                </button>
+
+                {/* Per-type amounts */}
+                <div style={{marginBottom:'16px'}}>
+                  <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'8px'}}>
+                    Bonus Amounts by Type <span style={{fontWeight:'400',color:'#9ca3af'}}>— set $0 to exclude a type</span>
+                  </label>
+                  <div style={{border:'1px solid #e2e8f0',borderRadius:'6px',overflow:'hidden'}}>
+                    {[
+                      { key:'amtSDS',       icon:'💛', label:'SDS — Same Day Start',      hint:'Patient started on the day of their exam' },
+                      { key:'amtPending',   icon:'🔵', label:'Starts — Off Pending',       hint:'Patient was pending and committed to start' },
+                      { key:'amtScheduled', icon:'⚪', label:'Starts — Scheduled (ST)',    hint:'Patient had a bond date and started as scheduled' },
+                      { key:'amtRetainer',  icon:'🟢', label:'Retainers (R+)',             hint:'Retainer add-on was included with the case' },
+                      { key:'amtWhitening', icon:'🟣', label:'Whitening (W+)',             hint:'Whitening add-on was included with the case' },
+                    ].map((row, i) => (
+                      <div key={row.key} style={{display:'flex',alignItems:'center',gap:'12px',padding:'10px 14px',
+                        backgroundColor: popupBonusForm[row.key] > 0 ? '#f0fdf4' : 'white',
+                        borderBottom: i < 4 ? '1px solid #f3f4f6' : 'none',
+                        transition:'background-color 0.15s'}}>
+                        <span style={{fontSize:'16px',width:'20px',textAlign:'center'}}>{row.icon}</span>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>{row.label}</div>
+                          <div style={{fontSize:'11px',color:'#9ca3af'}}>{row.hint}</div>
+                        </div>
+                        <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+                          <span style={{fontSize:'13px',color:'#6b7280',fontWeight:'600'}}>$</span>
+                          <input
+                            type="number" min="0" step="1"
+                            value={popupBonusForm[row.key]}
+                            onChange={e => setPopupBonusForm(f => ({...f, [row.key]: Number(e.target.value)}))}
+                            style={{width:'60px',padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px',textAlign:'center',
+                              borderColor: popupBonusForm[row.key] > 0 ? '#86efac' : '#d1d5db',
+                              backgroundColor: popupBonusForm[row.key] > 0 ? '#f0fdf4' : 'white'}}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {[popupBonusForm.amtSDS, popupBonusForm.amtPending, popupBonusForm.amtScheduled, popupBonusForm.amtRetainer, popupBonusForm.amtWhitening].every(v => !v) && (
+                    <div style={{fontSize:'12px',color:'#f59e0b',marginTop:'6px'}}>⚠️ Set at least one type above $0 to create a campaign.</div>
+                  )}
+                </div>
+
+                {(() => {
+                  const hasAmounts = [popupBonusForm.amtSDS, popupBonusForm.amtPending, popupBonusForm.amtScheduled, popupBonusForm.amtRetainer, popupBonusForm.amtWhitening].some(v => v > 0);
+                  const canSubmit = popupBonusForm.name && popupBonusForm.startDate && popupBonusForm.endDate && hasAmounts;
+                  return (
+                    <button disabled={!canSubmit}
+                      onClick={async () => {
+                        const newBonus = { ...popupBonusForm, id: Date.now().toString(), createdAt: new Date().toISOString() };
+                        const updated = [...popupBonuses, newBonus];
+                        setPopupBonuses(updated);
+                        await dbSaveSettings('popup-bonuses', updated);
+                        setPopupBonusForm({ name: '', startDate: '', endDate: '', description: '', tcFilter: 'All', amtSDS: 0, amtPending: 0, amtScheduled: 0, amtRetainer: 0, amtWhitening: 0 });
+                        setSaveToast('🎯 Popup bonus campaign created!');
+                        setTimeout(() => setSaveToast(''), 3000);
+                      }}
+                      style={{padding:'10px 24px',backgroundColor: canSubmit ? '#2563EB' : '#d1d5db',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor: canSubmit ? 'pointer' : 'not-allowed',fontSize:'14px'}}>
+                      Launch Campaign
+                    </button>
+                  );
+                })()}
               </div>
 
               {/* Existing campaigns */}
@@ -5326,12 +5376,11 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     const todayStr = new Date().toISOString().split('T')[0];
                     const isActive = todayStr >= bonus.startDate && todayStr <= bonus.endDate;
                     const isEnded = todayStr > bonus.endDate;
-                    const qualifying = patients.filter(p =>
-                      (p.fromPending || p.ST) &&
-                      p.startDate >= bonus.startDate && p.startDate <= bonus.endDate &&
-                      (bonus.tcFilter === 'All' || p.tc === bonus.tcFilter)
-                    );
-                    const earned = qualifying.reduce((sum, p) => sum + bonus.amount + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0), 0);
+                    const qualifying = patients.filter(p => popupBonusEarnings(p, bonus, null) > 0);
+                    const earned = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, null), 0);
+                    const typeLabels = bonus.amtSDS !== undefined
+                      ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
+                      : `$${bonus.amount}/start + $${bonusRates.ret} ret + $${bonusRates.white} whitening`;
                     return (
                       <div key={bonus.id} style={{display:'flex',alignItems:'center',gap:'16px',padding:'14px 16px',backgroundColor: isActive ? '#f0fdf4' : '#f9fafb',border:`1px solid ${isActive ? '#86efac' : '#e5e7eb'}`,borderRadius:'8px',flexWrap:'wrap'}}>
                         <div style={{flex:1,minWidth:'200px'}}>
@@ -5345,13 +5394,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             </span>
                           </div>
                           <div style={{fontSize:'12px',color:'#6b7280'}}>
-                            ${bonus.amount}/start + ${bonusRates.ret} ret + ${bonusRates.white} whitening · {bonus.tcFilter === 'All' ? 'All TCs' : bonus.tcFilter} · {bonus.startDate} → {bonus.endDate}
+                            {typeLabels} · {bonus.tcFilter === 'All' ? 'All TCs' : bonus.tcFilter} · {bonus.startDate} → {bonus.endDate}
                             {bonus.description && <span> · <em>{bonus.description}</em></span>}
                           </div>
                         </div>
                         <div style={{textAlign:'center'}}>
                           <div style={{fontSize:'20px',fontWeight:'800',color:'#10b981'}}>${earned}</div>
-                          <div style={{fontSize:'11px',color:'#9ca3af'}}>{qualifying.length} starts</div>
+                          <div style={{fontSize:'11px',color:'#9ca3af'}}>{qualifying.length} qualifying</div>
                         </div>
                         <button
                           onClick={async () => {
