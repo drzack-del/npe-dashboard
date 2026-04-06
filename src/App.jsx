@@ -1037,7 +1037,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       const hasTreatment = p.BR || p.INV || p.PH1 || p.PH2 || p.LTD;
       const isSDSp = hasTreatment && !p.PEN && !p.SCH && !p.OBS && !p.MP && !p.NOTX && !p.ST;
       const sd = (p.startDate && p.startDate !== '') ? p.startDate : ((isSDSp || p.ST || p.DBRETS) ? p.npeDate : '');
-      return inMonth(sd) && (isSDSp || p.ST || p.DBRETS);
+      return inMonth(sd) && (isSDSp || p.ST);
     }).length;
     return { npe_showed, starts, obs_added };
   };
@@ -1109,7 +1109,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     const _sp = startPts || pts;
 
     const sds = _sp.filter(isSDS);
-    const started = _sp.filter(p => isSDS(p) || p.ST || p.DBRETS);
+    const started = _sp.filter(p => isSDS(p) || p.ST);
 
     const pending = pts.filter(p => p.PEN === true).length;
     const scheduled = pts.filter(p => p.SCH === true).length;
