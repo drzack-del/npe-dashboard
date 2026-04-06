@@ -4842,12 +4842,19 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             {/* ── SUPER-ADMIN: Add New Practice ── only visible to miller-ortho */}
             {currentUser?.practiceId === 'miller-ortho' && (
               <div style={{backgroundColor:'#0f172a',border:'2px solid #334155',padding:'24px',borderRadius:'10px',marginBottom:'24px'}}>
-                <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'20px'}}>
-                  <span style={{fontSize:'18px'}}>🔑</span>
-                  <div>
-                    <h3 style={{fontSize:'16px',fontWeight:'800',color:'white',margin:0}}>CadenceIQ Admin — Add New Practice</h3>
-                    <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px'}}>Only visible to you. Creates the practice and admin user in Supabase.</div>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px',marginBottom:'20px',flexWrap:'wrap'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+                    <span style={{fontSize:'18px'}}>🔑</span>
+                    <div>
+                      <h3 style={{fontSize:'16px',fontWeight:'800',color:'white',margin:0}}>CadenceIQ Admin — Add New Practice</h3>
+                      <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px'}}>Only visible to you. Creates the practice and admin user in Supabase.</div>
+                    </div>
                   </div>
+                  <button
+                    onClick={() => { localStorage.removeItem(`onboarding-dismissed-${currentUser.practiceId}`); setShowOnboarding(true); }}
+                    style={{padding:'8px 16px',backgroundColor:'#334155',color:'#94a3b8',border:'1px solid #475569',borderRadius:'7px',fontSize:'12px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
+                    🧪 Preview Onboarding Flow
+                  </button>
                 </div>
 
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'12px',marginBottom:'16px'}}>
