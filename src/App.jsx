@@ -712,6 +712,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [allPracticesLoading, setAllPracticesLoading] = useState(false);
   const [practiceInviteOverride, setPracticeInviteOverride] = useState(null); // { userId, invite }
   const [passwordResetStatus, setPasswordResetStatus] = useState({}); // { [userId]: 'sending' | 'sent' | 'error' }
+  const [superadminOriginalUser, setSuperadminOriginalUser] = useState(null); // set while impersonating a practice
   // ─────────────────────────────────────────────────────────────────────
 
   const defaultGoalsData = {
@@ -983,6 +984,33 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       fetchAllPractices();
     }
   }, [currentUser?.practiceId, currentView]);
+
+  const switchToPractice = async (practice) => {
+    const owner = practice.admins[0];
+    if (!owner) return;
+    setSuperadminOriginalUser(currentUser);
+    const [locData, usersData] = await Promise.all([
+      supabase.from('settings').select('value').eq('key','locations').eq('practice_id', practice.id).maybeSingle(),
+      supabase.from('tc_users').select('*').eq('practice_id', practice.id).order('created_at', { ascending: true }),
+    ]);
+    setLocations(locData?.data?.value || []);
+    setTcUsers(usersData?.data || []);
+    setCurrentUser({ id: owner.auth_user_id || owner.id, name: owner.name, role: 'admin', email: owner.email, practiceId: practice.id, practiceName: practice.name });
+    setCurrentView('settings');
+  };
+
+  const switchBackToAdmin = async () => {
+    const orig = superadminOriginalUser;
+    setSuperadminOriginalUser(null);
+    const [locData, usersData] = await Promise.all([
+      supabase.from('settings').select('value').eq('key','locations').eq('practice_id', orig.practiceId).maybeSingle(),
+      supabase.from('tc_users').select('*').eq('practice_id', orig.practiceId).order('created_at', { ascending: true }),
+    ]);
+    setLocations(locData?.data?.value || []);
+    setTcUsers(usersData?.data || []);
+    setCurrentUser(orig);
+    setCurrentView('settings');
+  };
 
   // Auto-start guided tour for demo users
   useEffect(() => {
@@ -1665,6 +1693,22 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           ))}
         </div>
       </nav>
+
+      {/* Superadmin impersonation banner */}
+      {superadminOriginalUser && (
+        <div style={{backgroundColor:'#4c1d95',borderBottom:'2px solid #7c3aed',padding:'10px 24px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+            <span style={{fontSize:'14px'}}>🔑</span>
+            <span style={{fontSize:'13px',fontWeight:'700',color:'white'}}>
+              Managing <span style={{color:'#c4b5fd'}}>{currentUser?.practiceName}</span> as superadmin — changes you make here are saved to their account
+            </span>
+          </div>
+          <button onClick={switchBackToAdmin}
+            style={{padding:'6px 16px',backgroundColor:'#7c3aed',color:'white',border:'1px solid #a78bfa',borderRadius:'6px',fontSize:'12px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
+            ← Back to My Account
+          </button>
+        </div>
+      )}
 
       {/* Main Content */}
       <main style={{maxWidth:'1400px',margin:'0 auto',padding:'24px 16px'}}>
@@ -5296,6 +5340,10 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                         {passwordResetStatus[owner.id]==='sent' ? '✓ Reset Sent' : passwordResetStatus[owner.id]==='error' ? '✗ Failed' : passwordResetStatus[owner.id]==='sending' ? 'Sending…' : '🔑 Reset Password'}
                                       </button>
                                     )}
+                                    <button onClick={() => switchToPractice(practice)}
+                                      style={{padding:'4px 12px',backgroundColor:'#7c3aed',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
+                                      → Manage
+                                    </button>
                                   </div>
                                 </div>
                               ) : (
