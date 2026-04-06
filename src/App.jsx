@@ -679,7 +679,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     year: new Date().getFullYear(), month: new Date().getMonth() + 1,
     net_production: '', collections: '', npe_scheduled: '',
     npe_showed: '', starts: '', obs_added: '', notes: '',
-    prod_goal: '', starts_goal: ''
+    prod_goal: '', starts_goal: '', npe_goal: ''
   });
   const [showAIGoals, setShowAIGoals] = useState(false);
   const [goalAdjust, setGoalAdjust] = useState({ production: 0, npe: 0, starts: 0, conversion: 0, case_fee: 0 });
@@ -4279,6 +4279,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             const npe_sched    = parseInt(metricsForm.npe_scheduled) || 0;
             const prod_goal    = parseFloat(metricsForm.prod_goal?.toString().replace(/[^0-9.]/g,'')) || 0;
             const starts_goal  = parseInt(metricsForm.starts_goal) || 0;
+            const npe_goal_v   = parseInt(metricsForm.npe_goal) || 0;
             const show_up_rate = npe_sched > 0 ? npe_showed / npe_sched : null;
             const denom        = npe_showed - obs_added;
             const conv_rate    = denom > 0 ? starts / denom : null;
@@ -4291,13 +4292,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 show_up_rate, conversion_rate: conv_rate, avg_case_fee: avg_fee,
                 notes: metricsForm.notes, updated_at: new Date().toISOString()
               }, { onConflict: 'year,month,practice_id' });
-              if (prod_goal > 0 || starts_goal > 0) {
+              if (prod_goal > 0 || starts_goal > 0 || npe_goal_v > 0) {
                 const existingGoal = practiceGoals.find(g => g.year === y && g.month === mo);
                 await supabase.from('practice_goals').upsert({
                   year: y, month: mo, practice_id: currentUser.practiceId,
-                  production_goal: prod_goal > 0 ? prod_goal : (existingGoal?.production_goal || 0),
-                  start_goal: starts_goal > 0 ? starts_goal : (existingGoal?.start_goal || 0),
-                  npe_goal: existingGoal?.npe_goal || 0,
+                  production_goal: prod_goal   > 0 ? prod_goal   : (existingGoal?.production_goal || 0),
+                  start_goal:      starts_goal > 0 ? starts_goal : (existingGoal?.start_goal || 0),
+                  npe_goal:        npe_goal_v  > 0 ? npe_goal_v  : (existingGoal?.npe_goal || 0),
                   conversion_goal: existingGoal?.conversion_goal || 0,
                   avg_case_fee_goal: existingGoal?.avg_case_fee_goal || 0,
                 }, { onConflict: 'year,month,practice_id' });
@@ -4411,7 +4412,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     setMetricsForm({ year: metricsYear, month: new Date().getMonth()+1, net_production: '', collections: '', npe_scheduled: '',
                       npe_showed: String(dash.npe_showed), starts: String(dash.starts), obs_added: String(dash.obs_added), notes: '',
                       prod_goal: curGoal?.production_goal ? String(curGoal.production_goal) : '',
-                      starts_goal: curGoal?.start_goal ? String(curGoal.start_goal) : '' });
+                      starts_goal: curGoal?.start_goal ? String(curGoal.start_goal) : '',
+                      npe_goal: curGoal?.npe_goal ? String(curGoal.npe_goal) : '' });
                     setShowMetricsEntry(true);
                   }} style={{padding:'9px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
                     + Enter Monthly Data
@@ -4690,7 +4692,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                     obs_added:      m?.obs_added!=null?String(m.obs_added):String(dash.obs_added),
                                     notes:          m?.notes||'',
                                     prod_goal:      rowGoal?.production_goal ? String(rowGoal.production_goal) : '',
-                                    starts_goal:    rowGoal?.start_goal ? String(rowGoal.start_goal) : ''
+                                    starts_goal:    rowGoal?.start_goal ? String(rowGoal.start_goal) : '',
+                                    npe_goal:       rowGoal?.npe_goal ? String(rowGoal.npe_goal) : '',
                                   });
                                   setShowMetricsEntry(true);
                                 }} style={{padding:'5px 10px',border:'1px solid #e5e7eb',borderRadius:'6px',backgroundColor:'white',fontSize:'12px',cursor:'pointer',color:'#374151',whiteSpace:'nowrap'}}>
@@ -5008,6 +5011,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                 notes:          existing?.notes || '',
                                 prod_goal:      rowGoal?.production_goal ? String(rowGoal.production_goal) : '',
                                 starts_goal:    rowGoal?.start_goal      ? String(rowGoal.start_goal)      : '',
+                                npe_goal:       rowGoal?.npe_goal        ? String(rowGoal.npe_goal)        : '',
                               });
                             }} style={{width:'100%',padding:'10px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px'}}>
                               {f.options.map(o => typeof o === 'object'
@@ -5031,6 +5035,12 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           <label style={{display:'block',fontSize:'12px',fontWeight:'600',color:'#374151',marginBottom:'3px'}}>Start Goal</label>
                           <input value={metricsForm.starts_goal} onChange={e => setMetricsForm({...metricsForm, starts_goal: e.target.value})}
                             placeholder="0"
+                            style={{width:'100%',padding:'10px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',boxSizing:'border-box'}} />
+                        </div>
+                        <div>
+                          <label style={{display:'block',fontSize:'12px',fontWeight:'600',color:'#374151',marginBottom:'3px'}}>Consults Completed Goal</label>
+                          <input value={metricsForm.npe_goal} onChange={e => setMetricsForm({...metricsForm, npe_goal: e.target.value})}
+                            placeholder="0" type="number" min="0"
                             style={{width:'100%',padding:'10px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',boxSizing:'border-box'}} />
                         </div>
                         <div style={{gridColumn:'1/-1',fontSize:'11px',color:'#6b7280'}}>These show as targets on your Practice Metrics charts and table. Leave blank to keep existing goals.</div>
