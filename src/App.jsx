@@ -708,6 +708,10 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [newPracticeDocEmail, setNewPracticeDocEmail] = useState('');
   const [addPracticeMsg, setAddPracticeMsg] = useState(null); // null | { type, text, invite }
   const [addPracticeLoading, setAddPracticeLoading] = useState(false);
+  const [allPractices, setAllPractices] = useState([]); // superadmin: all practices with their admin user
+  const [allPracticesLoading, setAllPracticesLoading] = useState(false);
+  const [practiceInviteOverride, setPracticeInviteOverride] = useState(null); // { userId, invite }
+  const [passwordResetStatus, setPasswordResetStatus] = useState({}); // { [userId]: 'sending' | 'sent' | 'error' }
   // ─────────────────────────────────────────────────────────────────────
 
   const defaultGoalsData = {
@@ -948,11 +952,37 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       const invite = `Hi ${newPracticeDocName.trim().split(' ')[0]}! Your CadenceIQ account is ready.\n\n1️⃣ Go to: ${APP_URL}\n2️⃣ Click "Set up your account"\n3️⃣ Enter your email (${newPracticeDocEmail.trim().toLowerCase()}) and create a password\n\nYou're in. Reach out with any questions!`;
       setAddPracticeMsg({ type: 'success', text: `${newPracticeDocName.trim()} at ${newPracticeName.trim()} added!`, invite });
       setNewPracticeName(''); setNewPracticeDocName(''); setNewPracticeDocEmail('');
+      fetchAllPractices();
     } catch (err) {
       setAddPracticeMsg({ type: 'error', text: err.message || 'Something went wrong.' });
     }
     setAddPracticeLoading(false);
   };
+
+  const fetchAllPractices = async () => {
+    setAllPracticesLoading(true);
+    try {
+      const { data: practices } = await supabase.from('practices').select('id, name').order('name');
+      if (!practices) { setAllPractices([]); return; }
+      const { data: admins } = await supabase.from('tc_users').select('id, name, email, role, status, practice_id, auth_user_id').eq('role', 'admin');
+      const adminsByPractice = {};
+      (admins || []).forEach(a => {
+        if (!adminsByPractice[a.practice_id]) adminsByPractice[a.practice_id] = [];
+        adminsByPractice[a.practice_id].push(a);
+      });
+      setAllPractices(practices.map(p => ({ ...p, admins: adminsByPractice[p.id] || [] })));
+    } catch (e) {
+      // silently fail — not critical
+    }
+    setAllPracticesLoading(false);
+  };
+
+  // Superadmin: load all practices when viewing settings
+  useEffect(() => {
+    if (currentUser?.practiceId === 'miller-ortho' && currentView === 'settings') {
+      fetchAllPractices();
+    }
+  }, [currentUser?.practiceId, currentView]);
 
   // Auto-start guided tour for demo users
   useEffect(() => {
@@ -5202,6 +5232,94 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     )}
                   </div>
                 )}
+
+                {/* ── All Practices List ── */}
+                <div style={{marginTop:'28px'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'12px'}}>
+                    <div style={{fontSize:'13px',fontWeight:'700',color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.06em'}}>
+                      All Practices ({allPractices.filter(p => p.id !== 'miller-ortho').length})
+                    </div>
+                    <button onClick={fetchAllPractices} disabled={allPracticesLoading}
+                      style={{padding:'5px 12px',backgroundColor:'#1e293b',color:'#94a3b8',border:'1px solid #334155',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer',opacity:allPracticesLoading?0.5:1}}>
+                      {allPracticesLoading ? 'Loading…' : '↻ Refresh'}
+                    </button>
+                  </div>
+                  {allPracticesLoading && allPractices.length === 0 ? (
+                    <div style={{fontSize:'13px',color:'#475569',fontStyle:'italic'}}>Loading practices…</div>
+                  ) : allPractices.filter(p => p.id !== 'miller-ortho').length === 0 ? (
+                    <div style={{fontSize:'13px',color:'#475569',fontStyle:'italic'}}>No other practices yet.</div>
+                  ) : (
+                    <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+                      {allPractices.filter(p => p.id !== 'miller-ortho').map(practice => {
+                        const owner = practice.admins[0];
+                        const hasAuth = owner?.auth_user_id;
+                        const invite = owner ? `Hi ${owner.name.split(' ')[0]}! Your CadenceIQ account is ready.\n\n1️⃣ Go to: ${APP_URL}\n2️⃣ Click "Set up your account"\n3️⃣ Enter your email (${owner.email}) and create a password\n\nYou're in. Reach out with any questions!` : null;
+                        const isExpanded = practiceInviteOverride?.userId === owner?.id;
+                        return (
+                          <div key={practice.id} style={{backgroundColor:'#1e293b',border:'1px solid #334155',borderRadius:'8px',padding:'14px 16px'}}>
+                            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',flexWrap:'wrap'}}>
+                              <div>
+                                <div style={{fontSize:'14px',fontWeight:'800',color:'white'}}>{practice.name}</div>
+                                <div style={{fontSize:'11px',color:'#64748b',marginTop:'2px'}}>ID: {practice.id}</div>
+                              </div>
+                              {owner ? (
+                                <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
+                                  <div style={{textAlign:'right'}}>
+                                    <div style={{fontSize:'13px',fontWeight:'600',color:'#e2e8f0'}}>{owner.name}</div>
+                                    <div style={{fontSize:'11px',color:'#94a3b8'}}>{owner.email}</div>
+                                  </div>
+                                  <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                                    <span style={{
+                                      padding:'3px 9px',borderRadius:'20px',fontSize:'11px',fontWeight:'700',
+                                      backgroundColor: hasAuth ? '#052e16' : '#422006',
+                                      color: hasAuth ? '#4ade80' : '#fb923c',
+                                      border: `1px solid ${hasAuth ? '#16a34a' : '#c2410c'}`
+                                    }}>
+                                      {hasAuth ? '✓ Active' : '⏳ Pending Setup'}
+                                    </span>
+                                    {!hasAuth && invite && (
+                                      <button onClick={() => setPracticeInviteOverride(isExpanded ? null : { userId: owner.id, invite })}
+                                        style={{padding:'4px 12px',backgroundColor: isExpanded ? '#475569' : '#2563EB',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
+                                        {isExpanded ? 'Hide' : '📋 Get Invite'}
+                                      </button>
+                                    )}
+                                    {hasAuth && (
+                                      <button
+                                        disabled={passwordResetStatus[owner.id] === 'sending'}
+                                        onClick={async () => {
+                                          setPasswordResetStatus(s => ({ ...s, [owner.id]: 'sending' }));
+                                          const { error } = await supabase.auth.resetPasswordForEmail(owner.email, { redirectTo: APP_URL });
+                                          setPasswordResetStatus(s => ({ ...s, [owner.id]: error ? 'error' : 'sent' }));
+                                          setTimeout(() => setPasswordResetStatus(s => { const n = {...s}; delete n[owner.id]; return n; }), 4000);
+                                        }}
+                                        style={{padding:'4px 12px',backgroundColor: passwordResetStatus[owner.id]==='sent' ? '#16a34a' : passwordResetStatus[owner.id]==='error' ? '#dc2626' : '#334155',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer',opacity:passwordResetStatus[owner.id]==='sending'?0.5:1}}>
+                                        {passwordResetStatus[owner.id]==='sent' ? '✓ Reset Sent' : passwordResetStatus[owner.id]==='error' ? '✗ Failed' : passwordResetStatus[owner.id]==='sending' ? 'Sending…' : '🔑 Reset Password'}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span style={{fontSize:'12px',color:'#ef4444',fontWeight:'600'}}>⚠ No admin user found</span>
+                              )}
+                            </div>
+                            {isExpanded && invite && (
+                              <div style={{marginTop:'12px',borderTop:'1px solid #334155',paddingTop:'12px'}}>
+                                <div style={{fontSize:'11px',fontWeight:'700',color:'#64748b',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'8px'}}>Ready-to-send invite:</div>
+                                <div style={{backgroundColor:'#0f172a',border:'1px solid #334155',borderRadius:'6px',padding:'12px',fontFamily:'monospace',fontSize:'12px',color:'#e2e8f0',whiteSpace:'pre-wrap',lineHeight:'1.6',marginBottom:'10px'}}>
+                                  {invite}
+                                </div>
+                                <button onClick={() => { navigator.clipboard.writeText(invite); setCopiedInvite(owner.id); setTimeout(() => setCopiedInvite(''), 2500); }}
+                                  style={{padding:'6px 14px',backgroundColor: copiedInvite===owner.id?'#16a34a':'#334155',color:'white',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
+                                  {copiedInvite===owner.id ? '✓ Copied!' : '📋 Copy Invite'}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
