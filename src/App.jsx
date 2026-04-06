@@ -714,6 +714,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [passwordResetStatus, setPasswordResetStatus] = useState({}); // { [userId]: 'sending' | 'sent' | 'error' }
   const [superadminOriginalUser, setSuperadminOriginalUser] = useState(null); // set while impersonating a practice
   const [managedPracticeId, setManagedPracticeId] = useState(null); // explicit practice_id override for all writes during impersonation
+  const [switchingToPractice, setSwitchingToPractice] = useState(null); // id of practice currently being switched to
   // ─────────────────────────────────────────────────────────────────────
 
   const defaultGoalsData = {
@@ -986,8 +987,6 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       fetchAllPractices();
     }
   }, [currentUser?.practiceId, currentView]);
-
-  const [switchingToPractice, setSwitchingToPractice] = useState(null);
 
   const switchToPractice = async (practice) => {
     setSwitchingToPractice(practice.id);
