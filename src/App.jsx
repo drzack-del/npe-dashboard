@@ -4164,8 +4164,10 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           const ytdProd     = yearMetrics.reduce((s, m) => s + (m.net_production || 0), 0);
           const ytdColl     = yearMetrics.reduce((s, m) => s + (m.collections || 0), 0);
           const ytdStarts   = yearMetrics.reduce((s, m) => s + (m.starts || 0), 0);
-          const ytdGoalProd = yearGoals.reduce((s, g) => s + (g.production_goal || 0), 0);
-          const ytdGoalStarts = yearGoals.reduce((s, g) => s + (g.start_goal || 0), 0);
+          // YTD goals: only sum months that actually have data entered (apples-to-apples vs actuals)
+          const enteredMonths = new Set(yearMetrics.map(m => m.month));
+          const ytdGoalProd   = yearGoals.filter(g => enteredMonths.has(g.month)).reduce((s, g) => s + (g.production_goal || 0), 0);
+          const ytdGoalStarts = yearGoals.filter(g => enteredMonths.has(g.month)).reduce((s, g) => s + (g.start_goal || 0), 0);
           const convData    = yearMetrics.filter(m => m.conversion_rate != null);
           const avgConv     = convData.length ? convData.reduce((s, m) => s + m.conversion_rate, 0) / convData.length : null;
           const avgCaseFee  = ytdStarts > 0 ? ytdProd / ytdStarts : null;
@@ -4497,6 +4499,70 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 })()}
               </div>
 
+              {/* ── TREND CHART ── */}
+              {metricsViewMode === 'monthly' && yearMetrics.length > 0 && (() => {
+                const maxProd   = Math.max(...yearMetrics.map(m => m.net_production || 0), 1);
+                const maxStarts = Math.max(...yearMetrics.map(m => m.starts || 0), 1);
+                const barW = 36, gap = 8, padL = 56, padB = 28, padT = 16, padR = 16;
+                const chartW = padL + (barW * 2 + gap) * 12 + padR;
+                const chartH = 160;
+                const innerH = chartH - padT - padB;
+                return (
+                  <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px',flexWrap:'wrap',gap:'8px'}}>
+                      <div style={{fontSize:'14px',fontWeight:'700',color:'#374151'}}>Monthly Trend</div>
+                      <div style={{display:'flex',gap:'16px'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:'6px'}}><div style={{width:'12px',height:'12px',borderRadius:'2px',backgroundColor:'#2563EB'}}></div><span style={{fontSize:'12px',color:'#6b7280'}}>Production</span></div>
+                        <div style={{display:'flex',alignItems:'center',gap:'6px'}}><div style={{width:'12px',height:'12px',borderRadius:'2px',backgroundColor:'#10b981'}}></div><span style={{fontSize:'12px',color:'#6b7280'}}>Starts</span></div>
+                        {yearGoals.some(g=>g.production_goal>0) && <div style={{display:'flex',alignItems:'center',gap:'6px'}}><div style={{width:'20px',height:'2px',backgroundColor:'#f59e0b',borderTop:'2px dashed #f59e0b'}}></div><span style={{fontSize:'12px',color:'#6b7280'}}>Prod Goal</span></div>}
+                      </div>
+                    </div>
+                    <div style={{overflowX:'auto'}}>
+                      <svg width={chartW} height={chartH} style={{display:'block',minWidth:'480px'}}>
+                        {/* Y axis gridlines + labels for production */}
+                        {[0,0.25,0.5,0.75,1].map(pct => {
+                          const y = padT + innerH * (1 - pct);
+                          const label = pct === 0 ? '$0' : pct === 0.5 ? fmt$(maxProd/2) : pct === 1 ? fmt$(maxProd) : '';
+                          return (
+                            <g key={pct}>
+                              <line x1={padL} x2={chartW - padR} y1={y} y2={y} stroke="#f3f4f6" strokeWidth="1"/>
+                              {label && <text x={padL - 6} y={y + 4} textAnchor="end" fontSize="10" fill="#9ca3af">{label}</text>}
+                            </g>
+                          );
+                        })}
+                        {/* Bars per month */}
+                        {Array.from({length:12},(_,i)=>i+1).map(mo => {
+                          const m = getMetric(mo);
+                          const g = getGoal(mo);
+                          const x0 = padL + (mo - 1) * (barW * 2 + gap);
+                          const prodH  = m?.net_production ? Math.max(2, (m.net_production / maxProd) * innerH) : 0;
+                          const startH = m?.starts ? Math.max(2, (m.starts / maxStarts) * innerH) : 0;
+                          const goalH  = g?.production_goal ? (g.production_goal / maxProd) * innerH : null;
+                          const isCur  = mo === todayMo && metricsYear === todayYr;
+                          return (
+                            <g key={mo}>
+                              {/* Production bar */}
+                              {prodH > 0 && <rect x={x0} y={padT + innerH - prodH} width={barW} height={prodH}
+                                fill={isCur ? '#3b82f6' : '#2563EB'} rx="2" opacity="0.85"/>}
+                              {/* Starts bar (scaled to maxStarts) */}
+                              {startH > 0 && <rect x={x0 + barW + 2} y={padT + innerH - startH} width={barW - 4} height={startH}
+                                fill="#10b981" rx="2" opacity="0.75"/>}
+                              {/* Production goal dashed line */}
+                              {goalH && <line x1={x0 - 2} x2={x0 + barW + 2} y1={padT + innerH - goalH} y2={padT + innerH - goalH}
+                                stroke="#f59e0b" strokeWidth="2" strokeDasharray="4,2"/>}
+                              {/* Month label */}
+                              <text x={x0 + barW - 2} y={chartH - 6} textAnchor="middle" fontSize="10" fill={isCur?'#2563EB':'#9ca3af'} fontWeight={isCur?'700':'400'}>
+                                {MONTHS[mo-1].slice(0,3)}
+                              </text>
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── MONTHLY TABLE ── */}
               {metricsViewMode === 'monthly' && (
                 <div style={{backgroundColor:'white',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',overflow:'hidden'}}>
@@ -4564,17 +4630,19 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                     </div>
                                   );
                                   if (g?.production_goal) return (
-                                    <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px'}}
+                                    <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
+                                      padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
                                       onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:String(g.production_goal)})}>
-                                      Goal: {fmt$(g.production_goal)}
-                                      {m ? <span style={{marginLeft:'4px',fontWeight:'700',color:vsColor(m.net_production,g.production_goal)}}>{Math.round(m.net_production/g.production_goal*100)}%</span> : null}
-                                      <span style={{color:'#d1d5db',fontSize:'10px',marginLeft:'2px'}}>✏️</span>
+                                      <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{fmt$(g.production_goal)}</strong>
+                                      {m ? <span style={{fontWeight:'700',color:vsColor(m.net_production,g.production_goal)}}>{Math.round(m.net_production/g.production_goal*100)}%</span> : null}
+                                      <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
                                     </div>
                                   );
                                   return (
-                                    <div style={{fontSize:'11px',color:'#d1d5db',marginTop:'2px',cursor:'pointer'}}
+                                    <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
+                                      padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
                                       onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:''})}>
-                                      ＋ set goal
+                                      ＋ Set goal
                                     </div>
                                   );
                                 })()}
@@ -4605,17 +4673,19 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                     </div>
                                   );
                                   if (g?.start_goal) return (
-                                    <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px'}}
+                                    <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
+                                      padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
                                       onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:String(g.start_goal)})}>
-                                      Goal: {g.start_goal}
-                                      {m?.starts!=null ? <span style={{marginLeft:'4px',fontWeight:'700',color:vsColor(m.starts,g.start_goal)}}>{Math.round(m.starts/g.start_goal*100)}%</span> : null}
-                                      <span style={{color:'#d1d5db',fontSize:'10px',marginLeft:'2px'}}>✏️</span>
+                                      <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{g.start_goal}</strong>
+                                      {m?.starts!=null ? <span style={{fontWeight:'700',color:vsColor(m.starts,g.start_goal)}}>{Math.round(m.starts/g.start_goal*100)}%</span> : null}
+                                      <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
                                     </div>
                                   );
                                   return (
-                                    <div style={{fontSize:'11px',color:'#d1d5db',marginTop:'2px',cursor:'pointer'}}
+                                    <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
+                                      padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
                                       onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:''})}>
-                                      ＋ set goal
+                                      ＋ Set goal
                                     </div>
                                   );
                                 })()}
@@ -4756,93 +4826,100 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
                 {showAIGoals && aiSuggestions && (
                   <>
-                    {/* Adjustment sliders */}
-                    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:'16px',marginBottom:'20px',padding:'16px',backgroundColor:'#f9fafb',borderRadius:'8px'}}>
-                      <div style={{fontSize:'12px',fontWeight:'700',color:'#374151',gridColumn:'1/-1',marginBottom:'2px'}}>Fine-tune targets from baseline (0% = trend baseline):</div>
-                      {[
-                        {key:'production',label:'Production'},
-                        {key:'npe',label:'NPE Goal'},
-                        {key:'starts',label:'Starts'},
-                        {key:'conversion',label:'Conversion'},
-                        {key:'case_fee',label:'Case Fee'},
-                      ].map(({key,label}) => (
-                        <div key={key}>
-                          <div style={{display:'flex',justifyContent:'space-between',marginBottom:'4px'}}>
-                            <span style={{fontSize:'12px',color:'#6b7280',fontWeight:'600'}}>{label}</span>
-                            <span style={{fontSize:'12px',fontWeight:'800',color:goalAdjust[key]>0?'#10b981':goalAdjust[key]<0?'#ef4444':'#374151'}}>
-                              {goalAdjust[key]>0?'+':''}{goalAdjust[key]}%
-                            </span>
+                    {/* Single growth target input */}
+                    <div style={{display:'flex',alignItems:'center',gap:'16px',marginBottom:'20px',padding:'16px',backgroundColor:'#f9fafb',borderRadius:'8px',flexWrap:'wrap'}}>
+                      <div style={{flex:1,minWidth:'220px'}}>
+                        <div style={{fontSize:'13px',fontWeight:'700',color:'#374151',marginBottom:'2px'}}>Growth target vs trend baseline</div>
+                        <div style={{fontSize:'12px',color:'#9ca3af'}}>Built from trailing 3-month average + prior-year seasonal patterns. Adjust up or down.</div>
+                      </div>
+                      <div style={{display:'flex',gap:'16px',alignItems:'center',flexWrap:'wrap'}}>
+                        {[
+                          {key:'production', label:'Production'},
+                          {key:'starts',     label:'Starts'},
+                        ].map(({key,label}) => (
+                          <div key={key} style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                            <label style={{fontSize:'13px',fontWeight:'600',color:'#374151',whiteSpace:'nowrap'}}>{label}</label>
+                            <div style={{display:'flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:'6px',overflow:'hidden',backgroundColor:'white'}}>
+                              <button onClick={() => setGoalAdjust(g=>({...g,[key]:Math.max(-25,g[key]-5)}))}
+                                style={{padding:'6px 10px',border:'none',background:'none',fontSize:'16px',cursor:'pointer',color:'#6b7280',fontWeight:'700'}}>−</button>
+                              <span style={{fontSize:'14px',fontWeight:'800',minWidth:'44px',textAlign:'center',
+                                color:goalAdjust[key]>0?'#10b981':goalAdjust[key]<0?'#ef4444':'#374151'}}>
+                                {goalAdjust[key]>0?'+':''}{goalAdjust[key]}%
+                              </span>
+                              <button onClick={() => setGoalAdjust(g=>({...g,[key]:Math.min(25,g[key]+5)}))}
+                                style={{padding:'6px 10px',border:'none',background:'none',fontSize:'16px',cursor:'pointer',color:'#6b7280',fontWeight:'700'}}>+</button>
+                            </div>
                           </div>
-                          <input type="range" min="-25" max="25" step="5" value={goalAdjust[key]}
-                            onChange={e => setGoalAdjust({...goalAdjust,[key]:parseInt(e.target.value)})}
-                            style={{width:'100%',accentColor:'#2563EB'}} />
-                        </div>
-                      ))}
+                        ))}
+                        <button onClick={() => setGoalAdjust({ production:0, npe:0, starts:0, conversion:0, case_fee:0 })}
+                          style={{fontSize:'12px',color:'#9ca3af',background:'none',border:'1px solid #e5e7eb',borderRadius:'6px',padding:'6px 10px',cursor:'pointer'}}>
+                          Reset
+                        </button>
+                      </div>
                     </div>
 
-                    {/* Suggestions table */}
-                    <div style={{overflowX:'auto'}}>
-                      <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
-                        <thead>
-                          <tr style={{backgroundColor:'#f9fafb',borderBottom:'2px solid #e5e7eb'}}>
-                            {['Month','Prod Goal','NPE Goal','Start Goal','Conv Goal','Case Fee Goal',''].map(h => (
-                              <th key={h} style={{padding:'10px 12px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.04em',whiteSpace:'nowrap'}}>{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {aiSuggestions.map((s,i) => (
-                            <tr key={i} style={{borderBottom:'1px solid #f3f4f6'}}>
-                              <td style={{padding:'9px 12px',fontWeight:'700',color:'#374151',whiteSpace:'nowrap'}}>{MONTHS[s.month-1]} {s.year}</td>
-                              <td style={{padding:'9px 12px',color:'#374151'}}>{fmt$(s.production_goal)}</td>
-                              <td style={{padding:'9px 12px',color:'#374151'}}>{s.npe_goal}</td>
-                              <td style={{padding:'9px 12px',color:'#374151'}}>{s.start_goal}</td>
-                              <td style={{padding:'9px 12px',color:'#374151'}}>{fmtPct(s.conversion_goal)}</td>
-                              <td style={{padding:'9px 12px',color:'#374151'}}>{fmt$(s.avg_case_fee_goal)}</td>
-                              <td style={{padding:'9px 12px'}}>
-                                <button onClick={async () => {
-                                  if (supabase) {
-                                    await supabase.from('practice_goals').upsert({
-                                      year: s.year, month: s.month, practice_id: currentUser.practiceId,
-                                      production_goal: s.production_goal, npe_goal: s.npe_goal,
-                                      start_goal: s.start_goal, conversion_goal: s.conversion_goal,
-                                      avg_case_fee_goal: s.avg_case_fee_goal
-                                    }, { onConflict: 'year,month,practice_id' });
-                                    await loadPracticeMetrics();
-                                  }
-                                  setMetricsSaveMsg('Saved!');
-                                  setTimeout(() => setMetricsSaveMsg(''), 2000);
-                                }} style={{padding:'4px 10px',backgroundColor:'#f0fdf4',border:'1px solid #bbf7d0',color:'#166534',borderRadius:'5px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
-                                  Save
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:'14px',flexWrap:'wrap',gap:'10px'}}>
-                      <div style={{fontSize:'12px',color:'#9ca3af'}}>
-                        Trailing 3-month average with prior-year seasonal weighting. Save individual months or use Save All to apply every projection at once.
-                      </div>
-                      <button onClick={async () => {
-                        if (supabase) {
-                          await Promise.all(aiSuggestions.map(s =>
-                            supabase.from('practice_goals').upsert({
-                              year: s.year, month: s.month, practice_id: currentUser.practiceId,
-                              production_goal: s.production_goal, npe_goal: s.npe_goal,
-                              start_goal: s.start_goal, conversion_goal: s.conversion_goal,
-                              avg_case_fee_goal: s.avg_case_fee_goal
-                            }, { onConflict: 'year,month,practice_id' })
-                          ));
-                          await loadPracticeMetrics();
-                        }
-                        setMetricsSaveMsg(`All ${aiSuggestions.length} months saved!`);
-                        setTimeout(() => setMetricsSaveMsg(''), 3000);
-                      }} style={{padding:'9px 18px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
-                        Save All Goals
-                      </button>
-                    </div>
+                    {/* Suggestions table — current year only */}
+                    {(() => {
+                      const yearSuggestions = aiSuggestions.filter(s => s.year === metricsYear);
+                      if (yearSuggestions.length === 0) return (
+                        <div style={{fontSize:'13px',color:'#9ca3af',padding:'12px'}}>No projections available for {metricsYear} — select a year with historical data.</div>
+                      );
+                      return (
+                        <>
+                          <div style={{overflowX:'auto'}}>
+                            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
+                              <thead>
+                                <tr style={{backgroundColor:'#f9fafb',borderBottom:'2px solid #e5e7eb'}}>
+                                  {['Month','Prod Goal','Start Goal','Conv Goal','Case Fee Goal'].map(h => (
+                                    <th key={h} style={{padding:'10px 14px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.04em',whiteSpace:'nowrap'}}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {yearSuggestions.map((s,i) => {
+                                  const existing = practiceGoals.find(g => g.year===s.year && g.month===s.month);
+                                  const isSet = existing?.production_goal > 0 || existing?.start_goal > 0;
+                                  return (
+                                    <tr key={i} style={{borderBottom:'1px solid #f3f4f6',backgroundColor:isSet?'#f0fdf4':'white'}}>
+                                      <td style={{padding:'9px 14px',fontWeight:'700',color:'#374151',whiteSpace:'nowrap'}}>
+                                        {MONTHS[s.month-1]}
+                                        {isSet && <span style={{marginLeft:'6px',fontSize:'10px',color:'#10b981',fontWeight:'800'}}>✓ SET</span>}
+                                      </td>
+                                      <td style={{padding:'9px 14px',color:'#374151',fontWeight:'600'}}>{fmt$(s.production_goal)}</td>
+                                      <td style={{padding:'9px 14px',color:'#374151',fontWeight:'600'}}>{s.start_goal}</td>
+                                      <td style={{padding:'9px 14px',color:'#6b7280'}}>{fmtPct(s.conversion_goal)}</td>
+                                      <td style={{padding:'9px 14px',color:'#6b7280'}}>{fmt$(s.avg_case_fee_goal)}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:'14px',flexWrap:'wrap',gap:'10px'}}>
+                            <div style={{fontSize:'12px',color:'#9ca3af'}}>
+                              Seasonal weighting from prior-year data. Green rows already have goals saved.
+                            </div>
+                            <button onClick={async () => {
+                              if (supabase) {
+                                await Promise.all(yearSuggestions.map(s =>
+                                  supabase.from('practice_goals').upsert({
+                                    year: s.year, month: s.month, practice_id: currentUser.practiceId,
+                                    production_goal: s.production_goal, npe_goal: s.npe_goal,
+                                    start_goal: s.start_goal, conversion_goal: s.conversion_goal,
+                                    avg_case_fee_goal: s.avg_case_fee_goal
+                                  }, { onConflict: 'year,month,practice_id' })
+                                ));
+                                await loadPracticeMetrics();
+                              }
+                              setMetricsSaveMsg(`✅ ${yearSuggestions.length} months saved!`);
+                              setTimeout(() => setMetricsSaveMsg(''), 3000);
+                            }} style={{padding:'10px 20px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
+                              Save All {metricsYear} Goals
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
                   </>
                 )}
                 {showAIGoals && !aiSuggestions && (
