@@ -5058,7 +5058,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>Auto-pulled from NPE dashboard — override if needed</div>
                       <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'16px'}}>
                         {[
-                          {key:'npe_showed', label:'Consults Created (patients entered in dashboard)'},
+                          {key:'npe_showed', label:'Consults Completed (patients entered in dashboard)'},
                           {key:'starts',     label:'Starts'},
                           {key:'obs_added',  label:'OBS Added (excluded from conversion denominator)'},
                         ].map(f => (
