@@ -829,7 +829,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       last_contact_date: patient.lastContactDate,
       contact_log: patient.contact_log || [],
       from_pending: patient.fromPending || false,
-      practice_id: currentUser.practiceId
+      practice_id: managedPracticeId || currentUser.practiceId
     });
     if (error) {
       console.error('Supabase upsert error:', error);
@@ -840,7 +840,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
   const dbDelete = async (id) => {
     if (!supabase || currentUser?.id === 'demo') return;
-    await supabase.from('patients').delete().eq('id', id);
+    await supabase.from('patients').delete().eq('id', id).eq('practice_id', managedPracticeId || currentUser.practiceId);
   };
 
   // ── Feedback / Support ───────────────────────────────────────────────
@@ -5498,15 +5498,26 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                               </td>
                               <td style={{padding:'10px'}}>
                                 {u.email !== currentUser?.email && (
-                                  <button onClick={async () => {
-                                    const newStatus = u.status === 'active' ? 'inactive' : 'active';
-                                    await supabase.from('tc_users').update({ status: newStatus }).eq('id', u.id);
-                                    await loadTCUsers();
-                                    setTcMgmtMsg(`${u.name} ${newStatus === 'active' ? 'reactivated' : 'deactivated'}.`);
-                                    setTimeout(() => setTcMgmtMsg(''), 3000);
-                                  }} style={{fontSize:'11px',padding:'4px 10px',border:'1px solid #e5e7eb',borderRadius:'5px',cursor:'pointer',backgroundColor:'white',color: u.status==='active'?'#ef4444':'#10b981',fontWeight:'600'}}>
-                                    {u.status === 'active' ? 'Deactivate' : 'Reactivate'}
-                                  </button>
+                                  <div style={{display:'flex',gap:'6px'}}>
+                                    <button onClick={async () => {
+                                      const newStatus = u.status === 'active' ? 'inactive' : 'active';
+                                      await supabase.from('tc_users').update({ status: newStatus }).eq('id', u.id);
+                                      await loadTCUsers();
+                                      setTcMgmtMsg(`${u.name} ${newStatus === 'active' ? 'reactivated' : 'deactivated'}.`);
+                                      setTimeout(() => setTcMgmtMsg(''), 3000);
+                                    }} style={{fontSize:'11px',padding:'4px 10px',border:'1px solid #e5e7eb',borderRadius:'5px',cursor:'pointer',backgroundColor:'white',color: u.status==='active'?'#ef4444':'#10b981',fontWeight:'600'}}>
+                                      {u.status === 'active' ? 'Deactivate' : 'Reactivate'}
+                                    </button>
+                                    <button onClick={async () => {
+                                      if (!window.confirm(`Permanently delete ${u.name}? This cannot be undone.`)) return;
+                                      await supabase.from('tc_users').delete().eq('id', u.id);
+                                      await loadTCUsers();
+                                      setTcMgmtMsg(`${u.name} deleted.`);
+                                      setTimeout(() => setTcMgmtMsg(''), 3000);
+                                    }} style={{fontSize:'11px',padding:'4px 10px',border:'1px solid #fca5a5',borderRadius:'5px',cursor:'pointer',backgroundColor:'#fff1f2',color:'#dc2626',fontWeight:'600'}}>
+                                      Delete
+                                    </button>
+                                  </div>
                                 )}
                               </td>
                             </tr>
