@@ -4196,7 +4196,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
           // ── Export CSV ───────────────────────────────────────────────
           const exportCSV = () => {
-            const headers = ['Month','Net Production','Collections','Collection Rate','NPE Scheduled','Consults Created','OBS Added','Show Up %','Starts','Conversion','Avg Case Fee','Notes'];
+            const headers = ['Month','Net Production','Collections','Collection Rate','NPE Scheduled','Consults Completed','OBS Added','Show Up %','Starts','Conversion','Avg Case Fee','Notes'];
             const rows = Array.from({length:12},(_,i)=>i+1).map(mo => {
               const m = getMetric(mo);
               if (!m) return [MONTHS[mo-1],'','','','','','','','','','',''];
@@ -4464,7 +4464,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   {/* Table controls */}
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 14px',borderBottom:'1px solid #f3f4f6',flexWrap:'wrap',gap:'8px'}}>
                     <div style={{fontSize:'11px',color:'#9ca3af'}}>
-                      Conversion = Starts ÷ (Consults Created − Observations). <span style={{color:'#6b7280'}}>Observation patients are excluded from the denominator.</span>
+                      Conversion = Starts ÷ (Consults Completed − Observations). <span style={{color:'#6b7280'}}>Observation patients are excluded from the denominator.</span>
                     </div>
                     <button onClick={() => setShowDetailedMetricsCols(!showDetailedMetricsCols)}
                       style={{fontSize:'11px',fontWeight:'700',color:'#6b7280',background:'none',border:'1px solid #e5e7eb',borderRadius:'6px',padding:'4px 10px',cursor:'pointer',whiteSpace:'nowrap'}}>
@@ -4505,7 +4505,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Net Production</th>
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Collections</th>
                           {showDetailedMetricsCols && <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Sched</th>}
-                          <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Consults Created</th>
+                          <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Consults Completed</th>
                           {showDetailedMetricsCols && <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Obs</th>}
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Show Rate<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target 70%+</div></th>
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Starts</th>
@@ -4814,7 +4814,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             { label:'Net Production',   key:'net_production',  fmt:v=>fmt$(v),       sum:true  },
                             { label:'Collections',      key:'collections',     fmt:v=>fmt$(v),       sum:true  },
                             { label:'NPE Scheduled',    key:'npe_scheduled',   fmt:v=>v?.toLocaleString()??'—', sum:true  },
-                            { label:'Consults Created', key:'npe_showed',    fmt:v=>v?.toLocaleString()??'—', sum:true  },
+                            { label:'Consults Completed', key:'npe_showed',    fmt:v=>v?.toLocaleString()??'—', sum:true  },
                             { label:'OBS Added',        key:'obs_added',       fmt:v=>v??'—',        sum:true  },
                             { label:'Starts',           key:'starts',          fmt:v=>v??'—',        sum:true  },
                             { label:'Avg Show Up Rate', key:'show_up_rate',    fmt:v=>fmtPct(v),     avg:true  },
@@ -5084,7 +5084,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         ))}
                       </div>
                       <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'16px'}}>
-                        Conversion = Starts ÷ (Consults Created − OBS). OBS patients attended but are not yet treatment candidates.
+                        Conversion = Starts ÷ (Consults Completed − OBS). OBS patients attended but are not yet treatment candidates.
                       </div>
 
                       {/* Notes */}
