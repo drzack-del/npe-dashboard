@@ -685,6 +685,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [goalAdjust, setGoalAdjust] = useState({ production: 0, npe: 0, starts: 0, conversion: 0, case_fee: 0 });
   const [metricsSaveMsg, setMetricsSaveMsg] = useState('');
   const [showDetailedMetricsCols, setShowDetailedMetricsCols] = useState(false);
+  const [inlineGoalEdit, setInlineGoalEdit] = useState(null); // { year, month, field:'prod'|'starts', value:'' }
   // ── Team Management ───────────────────────────────────────────────────
   const [tcUsers, setTcUsers] = useState([]);
   const [newTCName, setNewTCName] = useState('');
@@ -4300,6 +4301,23 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             setTimeout(() => setMetricsSaveMsg(''), 3000);
           };
 
+          const saveInlineGoal = async (edit) => {
+            if (!edit || !supabase) return;
+            const raw = edit.value.toString().replace(/[^0-9.]/g, '');
+            const num = parseFloat(raw) || 0;
+            const existing = practiceGoals.find(g => g.year === edit.year && g.month === edit.month);
+            await supabase.from('practice_goals').upsert({
+              year: edit.year, month: edit.month, practice_id: currentUser.practiceId,
+              production_goal: edit.field === 'prod'   ? num : (existing?.production_goal || 0),
+              start_goal:      edit.field === 'starts' ? num : (existing?.start_goal || 0),
+              npe_goal:        existing?.npe_goal || 0,
+              conversion_goal: existing?.conversion_goal || 0,
+              avg_case_fee_goal: existing?.avg_case_fee_goal || 0,
+            }, { onConflict: 'year,month,practice_id' });
+            await loadPracticeMetrics();
+            setInlineGoalEdit(null);
+          };
+
           // ── AI suggestions ───────────────────────────────────────────
           const aiSuggestions = (() => {
             const all = [...practiceMetrics].sort((a,b) => a.year!==b.year ? a.year-b.year : a.month-b.month);
@@ -4533,7 +4551,33 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                               </td>
                               <td style={{padding:'10px 13px'}}>
                                 <div style={{fontWeight:'700',color:vsColor(m?.net_production,g?.production_goal)}}>{m?fmt$(m.net_production):'—'}</div>
-                                {g?.production_goal && <div style={{fontSize:'11px',color:'#9ca3af'}}>Goal: {fmt$(g.production_goal)}{m ? <span style={{marginLeft:'4px',fontWeight:'700',color:vsColor(m.net_production,g.production_goal)}}>{Math.round(m.net_production/g.production_goal*100)}%</span> : null}</div>}
+                                {(() => {
+                                  const isEditing = inlineGoalEdit?.year===metricsYear && inlineGoalEdit?.month===mo && inlineGoalEdit?.field==='prod';
+                                  if (isEditing) return (
+                                    <div style={{display:'flex',alignItems:'center',gap:'4px',marginTop:'4px'}}>
+                                      <span style={{fontSize:'11px',color:'#9ca3af'}}>$</span>
+                                      <input autoFocus type="text" value={inlineGoalEdit.value}
+                                        onChange={e => setInlineGoalEdit(v=>({...v,value:e.target.value}))}
+                                        onBlur={() => saveInlineGoal(inlineGoalEdit)}
+                                        onKeyDown={e => { if(e.key==='Enter') saveInlineGoal(inlineGoalEdit); if(e.key==='Escape') setInlineGoalEdit(null); }}
+                                        style={{width:'80px',padding:'3px 6px',border:'2px solid #2563EB',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}} />
+                                    </div>
+                                  );
+                                  if (g?.production_goal) return (
+                                    <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px'}}
+                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:String(g.production_goal)})}>
+                                      Goal: {fmt$(g.production_goal)}
+                                      {m ? <span style={{marginLeft:'4px',fontWeight:'700',color:vsColor(m.net_production,g.production_goal)}}>{Math.round(m.net_production/g.production_goal*100)}%</span> : null}
+                                      <span style={{color:'#d1d5db',fontSize:'10px',marginLeft:'2px'}}>✏️</span>
+                                    </div>
+                                  );
+                                  return (
+                                    <div style={{fontSize:'11px',color:'#d1d5db',marginTop:'2px',cursor:'pointer'}}
+                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:''})}>
+                                      ＋ set goal
+                                    </div>
+                                  );
+                                })()}
                               </td>
                               <td style={{padding:'10px 13px'}}>
                                 <div style={{fontWeight:'600',color:'#374151'}}>{m?fmt$(m.collections):'—'}</div>
@@ -4549,7 +4593,32 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                               </td>
                               <td style={{padding:'10px 13px'}}>
                                 <div style={{fontWeight:'700',color:vsColor(m?.starts,g?.start_goal)}}>{m?.starts??'—'}</div>
-                                {g?.start_goal && <div style={{fontSize:'11px',color:'#9ca3af'}}>Goal: {g.start_goal}{m?.starts!=null ? <span style={{marginLeft:'4px',fontWeight:'700',color:vsColor(m.starts,g.start_goal)}}>{Math.round(m.starts/g.start_goal*100)}%</span> : null}</div>}
+                                {(() => {
+                                  const isEditing = inlineGoalEdit?.year===metricsYear && inlineGoalEdit?.month===mo && inlineGoalEdit?.field==='starts';
+                                  if (isEditing) return (
+                                    <div style={{display:'flex',alignItems:'center',gap:'4px',marginTop:'4px'}}>
+                                      <input autoFocus type="number" min="0" value={inlineGoalEdit.value}
+                                        onChange={e => setInlineGoalEdit(v=>({...v,value:e.target.value}))}
+                                        onBlur={() => saveInlineGoal(inlineGoalEdit)}
+                                        onKeyDown={e => { if(e.key==='Enter') saveInlineGoal(inlineGoalEdit); if(e.key==='Escape') setInlineGoalEdit(null); }}
+                                        style={{width:'60px',padding:'3px 6px',border:'2px solid #2563EB',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}} />
+                                    </div>
+                                  );
+                                  if (g?.start_goal) return (
+                                    <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px'}}
+                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:String(g.start_goal)})}>
+                                      Goal: {g.start_goal}
+                                      {m?.starts!=null ? <span style={{marginLeft:'4px',fontWeight:'700',color:vsColor(m.starts,g.start_goal)}}>{Math.round(m.starts/g.start_goal*100)}%</span> : null}
+                                      <span style={{color:'#d1d5db',fontSize:'10px',marginLeft:'2px'}}>✏️</span>
+                                    </div>
+                                  );
+                                  return (
+                                    <div style={{fontSize:'11px',color:'#d1d5db',marginTop:'2px',cursor:'pointer'}}
+                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:''})}>
+                                      ＋ set goal
+                                    </div>
+                                  );
+                                })()}
                               </td>
                               <td style={{padding:'10px 13px'}}>
                                 <div style={{fontWeight:'700',color:vsColor(m?.conversion_rate,g?.conversion_goal||0.50)}}>{m?.conversion_rate!=null?fmtPct(m.conversion_rate):'—'}</div>
