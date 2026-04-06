@@ -985,18 +985,32 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     }
   }, [currentUser?.practiceId, currentView]);
 
+  const [switchingToPractice, setSwitchingToPractice] = useState(null);
+
   const switchToPractice = async (practice) => {
-    const owner = practice.admins[0];
-    if (!owner) return;
-    setSuperadminOriginalUser(currentUser);
-    const [locData, usersData] = await Promise.all([
-      supabase.from('settings').select('value').eq('key','locations').eq('practice_id', practice.id).maybeSingle(),
-      supabase.from('tc_users').select('*').eq('practice_id', practice.id).order('created_at', { ascending: true }),
-    ]);
-    setLocations(locData?.data?.value || []);
-    setTcUsers(usersData?.data || []);
-    setCurrentUser({ id: owner.auth_user_id || owner.id, name: owner.name, role: 'admin', email: owner.email, practiceId: practice.id, practiceName: practice.name });
-    setCurrentView('settings');
+    setSwitchingToPractice(practice.id);
+    try {
+      const [locData, usersData] = await Promise.all([
+        supabase.from('settings').select('value').eq('key','locations').eq('practice_id', practice.id).maybeSingle(),
+        supabase.from('tc_users').select('*').eq('practice_id', practice.id).order('created_at', { ascending: true }),
+      ]);
+      setLocations(locData?.data?.value || []);
+      setTcUsers(usersData?.data || []);
+      const owner = practice.admins[0];
+      setSuperadminOriginalUser(currentUser);
+      setCurrentUser({
+        id: owner?.auth_user_id || owner?.id || 'superadmin-proxy',
+        name: owner?.name || 'Superadmin',
+        role: 'admin',
+        email: owner?.email || currentUser.email,
+        practiceId: practice.id,
+        practiceName: practice.name,
+      });
+      setCurrentView('settings');
+    } catch(e) {
+      alert('Error switching to practice: ' + e.message);
+    }
+    setSwitchingToPractice(null);
   };
 
   const switchBackToAdmin = async () => {
@@ -5306,49 +5320,53 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                 <div style={{fontSize:'14px',fontWeight:'800',color:'white'}}>{practice.name}</div>
                                 <div style={{fontSize:'11px',color:'#64748b',marginTop:'2px'}}>ID: {practice.id}</div>
                               </div>
-                              {owner ? (
-                                <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
-                                  <div style={{textAlign:'right'}}>
-                                    <div style={{fontSize:'13px',fontWeight:'600',color:'#e2e8f0'}}>{owner.name}</div>
-                                    <div style={{fontSize:'11px',color:'#94a3b8'}}>{owner.email}</div>
+                              <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
+                                {owner ? (
+                                  <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
+                                    <div style={{textAlign:'right'}}>
+                                      <div style={{fontSize:'13px',fontWeight:'600',color:'#e2e8f0'}}>{owner.name}</div>
+                                      <div style={{fontSize:'11px',color:'#94a3b8'}}>{owner.email}</div>
+                                    </div>
+                                    <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                                      <span style={{
+                                        padding:'3px 9px',borderRadius:'20px',fontSize:'11px',fontWeight:'700',
+                                        backgroundColor: hasAuth ? '#052e16' : '#422006',
+                                        color: hasAuth ? '#4ade80' : '#fb923c',
+                                        border: `1px solid ${hasAuth ? '#16a34a' : '#c2410c'}`
+                                      }}>
+                                        {hasAuth ? '✓ Active' : '⏳ Pending Setup'}
+                                      </span>
+                                      {!hasAuth && invite && (
+                                        <button onClick={() => setPracticeInviteOverride(isExpanded ? null : { userId: owner.id, invite })}
+                                          style={{padding:'4px 12px',backgroundColor: isExpanded ? '#475569' : '#2563EB',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
+                                          {isExpanded ? 'Hide' : '📋 Get Invite'}
+                                        </button>
+                                      )}
+                                      {hasAuth && (
+                                        <button
+                                          disabled={passwordResetStatus[owner.id] === 'sending'}
+                                          onClick={async () => {
+                                            setPasswordResetStatus(s => ({ ...s, [owner.id]: 'sending' }));
+                                            const { error } = await supabase.auth.resetPasswordForEmail(owner.email, { redirectTo: APP_URL });
+                                            setPasswordResetStatus(s => ({ ...s, [owner.id]: error ? 'error' : 'sent' }));
+                                            setTimeout(() => setPasswordResetStatus(s => { const n = {...s}; delete n[owner.id]; return n; }), 4000);
+                                          }}
+                                          style={{padding:'4px 12px',backgroundColor: passwordResetStatus[owner.id]==='sent' ? '#16a34a' : passwordResetStatus[owner.id]==='error' ? '#dc2626' : '#334155',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer',opacity:passwordResetStatus[owner.id]==='sending'?0.5:1}}>
+                                          {passwordResetStatus[owner.id]==='sent' ? '✓ Reset Sent' : passwordResetStatus[owner.id]==='error' ? '✗ Failed' : passwordResetStatus[owner.id]==='sending' ? 'Sending…' : '🔑 Reset Password'}
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
-                                  <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
-                                    <span style={{
-                                      padding:'3px 9px',borderRadius:'20px',fontSize:'11px',fontWeight:'700',
-                                      backgroundColor: hasAuth ? '#052e16' : '#422006',
-                                      color: hasAuth ? '#4ade80' : '#fb923c',
-                                      border: `1px solid ${hasAuth ? '#16a34a' : '#c2410c'}`
-                                    }}>
-                                      {hasAuth ? '✓ Active' : '⏳ Pending Setup'}
-                                    </span>
-                                    {!hasAuth && invite && (
-                                      <button onClick={() => setPracticeInviteOverride(isExpanded ? null : { userId: owner.id, invite })}
-                                        style={{padding:'4px 12px',backgroundColor: isExpanded ? '#475569' : '#2563EB',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
-                                        {isExpanded ? 'Hide' : '📋 Get Invite'}
-                                      </button>
-                                    )}
-                                    {hasAuth && (
-                                      <button
-                                        disabled={passwordResetStatus[owner.id] === 'sending'}
-                                        onClick={async () => {
-                                          setPasswordResetStatus(s => ({ ...s, [owner.id]: 'sending' }));
-                                          const { error } = await supabase.auth.resetPasswordForEmail(owner.email, { redirectTo: APP_URL });
-                                          setPasswordResetStatus(s => ({ ...s, [owner.id]: error ? 'error' : 'sent' }));
-                                          setTimeout(() => setPasswordResetStatus(s => { const n = {...s}; delete n[owner.id]; return n; }), 4000);
-                                        }}
-                                        style={{padding:'4px 12px',backgroundColor: passwordResetStatus[owner.id]==='sent' ? '#16a34a' : passwordResetStatus[owner.id]==='error' ? '#dc2626' : '#334155',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer',opacity:passwordResetStatus[owner.id]==='sending'?0.5:1}}>
-                                        {passwordResetStatus[owner.id]==='sent' ? '✓ Reset Sent' : passwordResetStatus[owner.id]==='error' ? '✗ Failed' : passwordResetStatus[owner.id]==='sending' ? 'Sending…' : '🔑 Reset Password'}
-                                      </button>
-                                    )}
-                                    <button onClick={() => switchToPractice(practice)}
-                                      style={{padding:'4px 12px',backgroundColor:'#7c3aed',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
-                                      → Manage
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <span style={{fontSize:'12px',color:'#ef4444',fontWeight:'600'}}>⚠ No admin user found</span>
-                              )}
+                                ) : (
+                                  <span style={{fontSize:'12px',color:'#ef4444',fontWeight:'600'}}>⚠ No admin user found</span>
+                                )}
+                                <button
+                                  disabled={switchingToPractice === practice.id}
+                                  onClick={() => switchToPractice(practice)}
+                                  style={{padding:'6px 14px',backgroundColor: switchingToPractice===practice.id ? '#475569' : '#7c3aed',color:'white',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'700',cursor: switchingToPractice===practice.id ? 'not-allowed' : 'pointer',whiteSpace:'nowrap'}}>
+                                  {switchingToPractice === practice.id ? 'Opening…' : '→ Manage'}
+                                </button>
+                              </div>
                             </div>
                             {isExpanded && invite && (
                               <div style={{marginTop:'12px',borderTop:'1px solid #334155',paddingTop:'12px'}}>
