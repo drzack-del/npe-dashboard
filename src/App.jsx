@@ -713,6 +713,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [practiceInviteOverride, setPracticeInviteOverride] = useState(null); // { userId, invite }
   const [passwordResetStatus, setPasswordResetStatus] = useState({}); // { [userId]: 'sending' | 'sent' | 'error' }
   const [superadminOriginalUser, setSuperadminOriginalUser] = useState(null); // set while impersonating a practice
+  const [managedPracticeId, setManagedPracticeId] = useState(null); // explicit practice_id override for all writes during impersonation
   // ─────────────────────────────────────────────────────────────────────
 
   const defaultGoalsData = {
@@ -922,12 +923,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   // ─────────────────────────────────────────────────────────────────────
 
   // ── Team Management helpers ───────────────────────────────────────────
-  const loadTCUsers = async () => {
+  const loadTCUsers = async (overridePracticeId) => {
     if (!supabase) return;
-    const { data } = await supabase.from('tc_users').select('*').eq('practice_id', currentUser.practiceId).order('created_at', { ascending: true });
+    const pid = overridePracticeId || managedPracticeId || currentUser.practiceId;
+    const { data } = await supabase.from('tc_users').select('*').eq('practice_id', pid).order('created_at', { ascending: true });
     if (data) setTcUsers(data);
   };
-  useEffect(() => { if (currentUser?.role === 'admin') loadTCUsers(); }, [currentUser]);
+  useEffect(() => { if (currentUser?.role === 'admin') loadTCUsers(); }, [currentUser, managedPracticeId]);
 
   const APP_URL = 'https://npe-dashboard.vercel.app';
 
@@ -998,6 +1000,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       setTcUsers(usersData?.data || []);
       const owner = practice.admins[0];
       setSuperadminOriginalUser(currentUser);
+      setManagedPracticeId(practice.id); // explicit override — used by all write operations
       setCurrentUser({
         id: owner?.auth_user_id || owner?.id || 'superadmin-proxy',
         name: owner?.name || 'Superadmin',
@@ -1016,6 +1019,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const switchBackToAdmin = async () => {
     const orig = superadminOriginalUser;
     setSuperadminOriginalUser(null);
+    setManagedPracticeId(null);
     const [locData, usersData] = await Promise.all([
       supabase.from('settings').select('value').eq('key','locations').eq('practice_id', orig.practiceId).maybeSingle(),
       supabase.from('tc_users').select('*').eq('practice_id', orig.practiceId).order('created_at', { ascending: true }),
@@ -5413,7 +5417,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                               const updated = locations.filter((_,j) => j !== i);
                               setLocations(updated);
                               localStorage.setItem('npe-locations', JSON.stringify(updated));
-                              await supabase.from('settings').upsert({ key:'locations', value: updated, practice_id: currentUser.practiceId }, { onConflict:'key,practice_id' });
+                              await supabase.from('settings').upsert({ key:'locations', value: updated, practice_id: managedPracticeId || currentUser.practiceId }, { onConflict:'key,practice_id' });
                               setLocationMsg('Location removed.');
                               setTimeout(() => setLocationMsg(''), 2000);
                             }} style={{background:'none',border:'none',cursor:'pointer',color:'#9ca3af',fontSize:'14px',lineHeight:1,padding:'0 2px'}}>×</button>
@@ -5437,7 +5441,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         setLocations(updated);
                         localStorage.setItem('npe-locations', JSON.stringify(updated));
                         setNewLocationName('');
-                        await supabase.from('settings').upsert({ key:'locations', value: updated, practice_id: currentUser.practiceId }, { onConflict:'key,practice_id' });
+                        await supabase.from('settings').upsert({ key:'locations', value: updated, practice_id: managedPracticeId || currentUser.practiceId }, { onConflict:'key,practice_id' });
                         setLocationMsg(`"${name}" added.`);
                         setTimeout(() => setLocationMsg(''), 3000);
                       }} style={{padding:'9px 18px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
@@ -5535,7 +5539,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         </div>
                         <button id="guide-tc-add" onClick={async () => {
                           if (!newTCName.trim() || !newTCEmail.trim()) return setTcMgmtMsg('Error: Name and email are required.');
-                          const { error } = await supabase.from('tc_users').insert({ name: newTCName.trim(), email: newTCEmail.trim().toLowerCase(), role: newTCRole, status: 'active', practice_id: currentUser.practiceId });
+                          const { error } = await supabase.from('tc_users').insert({ name: newTCName.trim(), email: newTCEmail.trim().toLowerCase(), role: newTCRole, status: 'active', practice_id: managedPracticeId || currentUser.practiceId });
                           if (error) { setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.')); return; }
                           const addedName = newTCName.trim();
                           const addedEmail = newTCEmail.trim().toLowerCase();
