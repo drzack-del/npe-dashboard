@@ -1,6 +1,45 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Component } from 'react';
+
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      const msg = this.state.error?.message || String(this.state.error);
+      return (
+        <div style={{minHeight:'100vh',backgroundColor:'#202020',display:'flex',alignItems:'center',justifyContent:'center',padding:'24px'}}>
+          <div style={{backgroundColor:'white',padding:'36px',borderRadius:'16px',maxWidth:'480px',width:'100%',textAlign:'center'}}>
+            <div style={{fontSize:'36px',marginBottom:'16px'}}>⚠️</div>
+            <h2 style={{fontSize:'20px',fontWeight:'800',color:'#202020',marginBottom:'8px'}}>Something went wrong</h2>
+            <div style={{fontSize:'12px',color:'#ef4444',backgroundColor:'#fef2f2',border:'1px solid #fecaca',borderRadius:'8px',padding:'10px 12px',marginBottom:'20px',textAlign:'left',wordBreak:'break-word',fontFamily:'monospace'}}>{msg}</div>
+            <button onClick={() => window.location.reload()}
+              style={{width:'100%',padding:'12px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'9px',fontSize:'15px',fontWeight:'700',cursor:'pointer',marginBottom:'12px'}}>
+              Refresh Page
+            </button>
+            <button onClick={() => { localStorage.clear(); window.location.reload(); }}
+              style={{width:'100%',padding:'12px',backgroundColor:'white',color:'#6b7280',border:'1px solid #e5e7eb',borderRadius:'9px',fontSize:'14px',fontWeight:'600',cursor:'pointer'}}>
+              Clear Cache &amp; Refresh
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import { createClient } from '@supabase/supabase-js';
 
+
+        // ── FEATURE FLAGS ────────────────────────────────────────────────
+        // List practice IDs that have access to each beta feature.
+        // Use true to roll out to everyone, false/[] to disable for all.
+        // Example: newFeature: ['miller-ortho', 'adams-practice-id']
+        const BETA_FEATURES = {
+          newDashboard: ['miller-ortho'],
+        };
+        const hasFeature = (flag, practiceId) =>
+          BETA_FEATURES[flag] === true || (Array.isArray(BETA_FEATURES[flag]) && BETA_FEATURES[flag].includes(practiceId));
+        // ────────────────────────────────────────────────────────────────
 
         // ── SUPABASE CONFIG ──────────────────────────────────────────────
         const SUPABASE_URL  = 'https://flhvblepqsuvsmscmmxm.supabase.co';
@@ -56,15 +95,108 @@ import { createClient } from '@supabase/supabase-js';
           'Scheduling / Logistics',
         ];
 
+        // ── FOLLOW-UP SCRIPTS ────────────────────────────────────────────
+        // 4 escalating scripts per obstacle: attempt 0 (warm) → 3+ (best deal/final push)
+        const FOLLOW_UP_SCRIPTS = {
+          'Price / Down Payment': [
+            "Hi {name}! Great meeting you at your consult 😊 I know cost can be a factor — we have flexible monthly payment plans that fit most budgets. Would love to walk you through what payments would look like. Are you free for a quick chat?",
+            "Hi {name}! Just checking in — we're still holding your file from your consult. Many families are surprised how affordable treatment can be with our in-house payment plans. Can I run the numbers for you real quick?",
+            "Hi {name}! We have a few openings this month and I'd love to save one for you. If you can commit this week, we can reduce your down payment and get you started right away. Don't let cost hold your smile back — let's make it work! 💪",
+            "Hi {name}, this is my last reach-out before closing your file — I truly don't want to lose you! We are offering our lowest down payment of the year right now, and it expires soon. Can we connect today and make this happen? 🙏",
+          ],
+          'Spouse / Partner Needs to Approve': [
+            "Hi {name}! So glad you came in 😊 I'd love to set up a quick call with you and your partner together — I can walk you both through the plan and answer any questions. Would that be helpful?",
+            "Hi {name}! Just checking in — were you able to chat with your partner about treatment? I'm happy to jump on a call with you both or send over some info to help with the conversation!",
+            "Hi {name}! We have openings this month and can even do a quick virtual consult if that's easier for both your schedules. I want to make sure your partner has everything they need to feel confident about this. Can we set something up?",
+            "Hi {name}, reaching out one last time! I'd love to send your partner a quick one-pager with the treatment plan, timeline, and all financing options — sometimes that makes all the difference. Would that help? 😊",
+          ],
+          'Co-Parenting / Other Parent': [
+            "Hi {name}! Loved meeting you at the consult. We know coordinating with another parent can be tricky — I can send treatment info to both of you and work with both schedules. Just let me know!",
+            "Hi {name}, following up! If it helps, I can put together a quick summary for the other parent — treatment plan, timeline, and cost breakdown — to make that conversation easier. Want me to send that over?",
+            "Hi {name}! We're very flexible with scheduling and can work with both households. We have openings coming up — can we hop on a quick call this week to figure out next steps together?",
+            "Hi {name}, this is my final follow-up! I'd hate for logistics to be what stands between a great smile and your family. Let me know if there's anything I can do to help coordinate — I'm here to make it as easy as possible 🙏",
+          ],
+          'Getting a Second Opinion': [
+            "Hi {name}! Totally understand wanting a second opinion — that's a smart move! We're very confident in our treatment plan and pricing. If you have any questions after your other consult, I'm happy to compare and answer anything!",
+            "Hi {name}, just checking in! How did the other consult go? We'd love the chance to address any differences and make sure you have all the info to make the best decision. Happy to chat anytime!",
+            "Hi {name}! We know you're doing your homework and we respect that. We believe our quality, experience, and value are hard to beat — and we're happy to match any comparable quote. Can we connect this week?",
+            "Hi {name}, final follow-up from us! We truly believe we're the right fit for your family and would hate to lose you. Is there anything specific I can address to help you feel confident choosing us? 😊",
+          ],
+          'Insurance / Benefits Pending': [
+            "Hi {name}! Great to meet you at your consult. Just checking in — have you been able to verify your insurance benefits yet? We can also check your coverage directly if you share your insurance info — happy to do the legwork!",
+            "Hi {name}, following up on your consult! We can verify your benefits in-house — just need your insurance card info. Many patients are surprised by how much their plan covers. Want me to look into it for you?",
+            "Hi {name}! We have spots available this month and would love to get you started before your benefits reset. We work with most major insurance plans and can maximize your coverage. Want to check it together this week?",
+            "Hi {name}, last follow-up! Don't let insurance paperwork slow you down — we handle all of it in-house. We have openings right now and I'd hate for you to miss out. Can we connect today? 🙌",
+          ],
+          'Waiting to Hear from Medicaid': [
+            "Hi {name}! Just checking in on your Medicaid application — any update yet? We're keeping your spot open and have your file ready to go the moment it's approved!",
+            "Hi {name}, following up on your Medicaid status! Any news? We're rooting for you and can move fast once approval comes through. Don't hesitate to reach out with any questions!",
+            "Hi {name}! Still thinking about you and hoping for good news on Medicaid. If for any reason it doesn't come through, we do have flexible private pay options that might surprise you. Here if you need anything!",
+            "Hi {name}, reaching out one more time! Whether Medicaid comes through or not, I want to make treatment possible for you. Let's talk through all the options — I'm confident we can find a way to make it work 💙",
+          ],
+          'Dental Work Needed First': [
+            "Hi {name}! Great meeting you! Just checking in — have you been able to connect with a dentist about the dental work needed first? Happy to give you a referral to one of our trusted partners if that would help!",
+            "Hi {name}, following up! Once the dental work is done, we can move quickly to get your treatment started. How is that coming along? We can help with referrals if needed!",
+            "Hi {name}! We want to make sure dental work doesn't become a long roadblock. We work with several great dentists and can coordinate care to keep your timeline on track. Would a referral be helpful?",
+            "Hi {name}, last check-in! Once you're cleared by your dentist we can get you started right away — no new consult needed. Just give me a call or text and I'll get you on the schedule same week! 😊",
+          ],
+          'Waiting on Finances': [
+            "Hi {name}! Totally understand — finances take time. Just a reminder that we have in-house payment plans and third-party financing options (CareCredit, etc.) that make monthly payments very manageable. Here whenever you're ready!",
+            "Hi {name}, checking in! When you're thinking about timing, keep in mind our payment plans spread the cost across your whole treatment — many families find it much more manageable than expected. Happy to run the numbers!",
+            "Hi {name}! We have openings this month and flexible financing that can get you started with a low down payment while you work on the rest. Let's talk about what we can do — I think we can make it work! 💪",
+            "Hi {name}, final follow-up! I don't want finances to hold your smile back. We have low down payment options, extended payment plans, and third-party financing. Let me find the right fit for your situation and budget 🙏",
+          ],
+          'Timing / Life Event': [
+            "Hi {name}! Totally understand that timing is everything. When life settles down, we'd love to pick up where we left off. Just wanted to check in — is there a better window coming up that might work?",
+            "Hi {name}, following up! Life gets busy, we completely get it 😊 When do you think timing might open up? We can hold your file and reach out again whenever is best — just say the word.",
+            "Hi {name}! Just a reminder that starting treatment now means finishing sooner — and we have flexible appointment times to work around even the busiest schedules. Is there any window coming up where timing might work?",
+            "Hi {name}, last reach-out! We'd hate to lose you just because of timing. Even starting at a slower pace works — we can always adjust as life settles. Can we find even just one appointment to get the ball rolling? 😊",
+          ],
+          'Fear / Bad Experience': [
+            "Hi {name}! I completely understand hesitation, especially with a past bad experience. Our practice is very different — patient comfort is our top priority and most patients are genuinely surprised by how easy treatment is today. Would love to address any specific concerns!",
+            "Hi {name}, following up! Orthodontic treatment has come a long way — we have options like clear aligners that many patients find much more comfortable than traditional braces. Would it help to come in just to talk through what treatment would actually look like for you?",
+            "Hi {name}! Your comfort matters to us more than anything. We can do a no-pressure visit — just walking through exactly what treatment involves, step by step, with zero commitment. Would something like that help ease the decision?",
+            "Hi {name}, reaching out one last time! We genuinely want to earn your trust. If there's anything specific you're worried about, I'll answer it honestly. A great smile is worth it, and I promise we'll make the experience a positive one 💙",
+          ],
+          'Scheduling / Logistics': [
+            "Hi {name}! Scheduling can definitely be a puzzle but we have early mornings, evenings, and weekend appointments available. What times generally work best for your family? We'll find something that fits!",
+            "Hi {name}, following up! We want to make this as easy as possible — we also offer virtual check-ins for some appointments to cut down on trips. What days and times tend to work best for you?",
+            "Hi {name}! We just added some new time slots including early morning and after-school openings. Would any of those work for your family? Would love to lock something in!",
+            "Hi {name}, last follow-up! We'll bend over backwards to make the schedule work — school, work, activities, whatever. Let's find something that clicks so logistics don't stand between you and a great smile 📅",
+          ],
+        };
+
+        const getFollowUpScript = (patient) => {
+          const obstacle = patient.obstacle || (patient.MP ? 'Waiting to Hear from Medicaid' : null);
+          if (!obstacle) return null;
+          const scripts = FOLLOW_UP_SCRIPTS[obstacle];
+          if (!scripts) return null;
+          const attempt = patient.contactAttempts || 0;
+          const idx = Math.min(attempt, scripts.length - 1);
+          const firstName = (patient.name || '').split(' ')[0] || patient.name;
+          return scripts[idx].replace(/\{name\}/g, firstName);
+        };
+
+        const SCRIPT_URGENCY = [
+          { label: '1st Outreach', color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe' },
+          { label: '2nd Outreach', color: '#d97706', bg: '#fffbeb', border: '#fde68a' },
+          { label: '3rd Outreach — Raise urgency', color: '#ea580c', bg: '#fff7ed', border: '#fed7aa' },
+          { label: 'Final Push — Best offer', color: '#dc2626', bg: '#fef2f2', border: '#fecaca' },
+        ];
+
         const skipWeekend = (dateStr) => {
+          if (!dateStr) return dateStr;
           const d = new Date(dateStr + 'T12:00:00');
+          if (isNaN(d.getTime())) return dateStr;
           if (d.getDay() === 6) d.setDate(d.getDate() + 2);
           if (d.getDay() === 0) d.setDate(d.getDate() + 1);
           return d.toISOString().split('T')[0];
         };
 
         const addMonths = (dateStr, months) => {
+          if (!dateStr) return dateStr;
           const d = new Date(dateStr + 'T12:00:00');
+          if (isNaN(d.getTime())) return dateStr;
           d.setMonth(d.getMonth() + months);
           return skipWeekend(d.toISOString().split('T')[0]);
         };
@@ -188,8 +320,9 @@ import { createClient } from '@supabase/supabase-js';
         const getBondCheckDate = (p) => {
           if (!p.SCH || !p.bondDate) return null;
           const d = new Date(p.bondDate + 'T12:00:00');
+          if (isNaN(d.getTime())) return null;
           d.setDate(d.getDate() + 1);
-          return skipWeekend(d.toISOString().split('T')[0]); // skip to Monday if day-after falls on weekend
+          return skipWeekend(d.toISOString().split('T')[0]);
         };
         // ────────────────────────────────────────────────────────────────
 
@@ -228,7 +361,7 @@ import { createClient } from '@supabase/supabase-js';
                     const { data: practiceData } = await supabase.from('practices').select('name').eq('id', practiceId).maybeSingle();
                     if (practiceData?.name) practiceName = practiceData.name;
                 } catch {}
-                return { id: userId, name: data.name, role: data.role, email: userEmail, practiceId, practiceName };
+                return { id: userId, name: data.name, role: data.role, email: userEmail, practiceId, practiceName, bonusEnabled: data.bonus_enabled === true };
             };
 
             useEffect(() => {
@@ -284,8 +417,8 @@ import { createClient } from '@supabase/supabase-js';
                 setLoginError('');
                 setLoginLoading(true);
                 try {
-                    const { data: tcRow } = await withTimeout(supabase.from('tc_users').select('id').eq('email', email).single());
-                    if (!tcRow) {
+                    const { data: emailExists } = await withTimeout(supabase.rpc('check_tc_email', { user_email: email }));
+                    if (!emailExists) {
                         setLoginError('Your email was not found. Ask your admin to add you before setting up your account.');
                         setLoginLoading(false);
                         return;
@@ -413,7 +546,7 @@ import { createClient } from '@supabase/supabase-js';
 
             return (
               <>
-                <NPEDashboard currentUser={currentUser} onSignOut={handleSignOut} />
+                <NPEDashboard currentUser={currentUser} onUserChange={setCurrentUser} onSignOut={handleSignOut} />
                 {showDemoWelcome && (
                   <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.72)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}}
                        onClick={() => setShowDemoWelcome(false)}>
@@ -573,7 +706,7 @@ const GuidedHighlight = ({ highlight, onDismiss, onComplete }) => {
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NPEDashboard = ({ currentUser, onSignOut }) => {
+const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [currentView, setCurrentView] = useState(currentUser?.role === 'tc' ? 'followup' : 'dashboard');
   const [dashTimeframe, setDashTimeframe] = useState('month'); // 'month' | 'all'
   const [dashTCFilter, setDashTCFilter] = useState('All');
@@ -589,14 +722,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
   const [patients, setPatients] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [tcList, setTcList] = useState(() => {
-    const saved = localStorage.getItem('npe-tc-list');
-    return saved ? JSON.parse(saved) : ['Reaghan'];
-  });
   const [monthlyTCFilter, setMonthlyTCFilter] = useState('All');
   const [selectedMonthIdx, setSelectedMonthIdx] = useState(new Date().getMonth());
   const [selectedMonthYear, setSelectedMonthYear] = useState(new Date().getFullYear());
-  const newTCRef = useRef(null);
 
   // Admin state
   const [adminUnlocked, setAdminUnlocked] = useState(false);
@@ -610,7 +738,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     return saved ? JSON.parse(saved) : { sds: 20, ret: 5, white: 5, pif: 5 };
   });
   const [popupBonuses, setPopupBonuses] = useState([]);
-  const [popupBonusForm, setPopupBonusForm] = useState({ name: '', startDate: '', endDate: '', description: '', tcFilter: 'All', amtSDS: 0, amtPending: 0, amtScheduled: 0, amtRetainer: 0, amtWhitening: 0 });
+  const [popupBonusForm, setPopupBonusForm] = useState({ name: '', startDate: '', endDate: '', description: '', tcFilter: 'All', amtSDS: 0, amtPending: 0, amtScheduled: 0, amtRetainer: 0, amtWhitening: 0, goalThreshold: 0, replacesBase: false });
 
   const adminMsg_placeholder = null; // keep line ref stable
   const [adminMsg, setAdminMsg] = useState('');
@@ -634,22 +762,19 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [showAdminInput, setShowAdminInput] = useState(false);
 
   // Default TC (#8)
-  const [defaultTC, setDefaultTC] = useState(() => localStorage.getItem('npe-default-tc') || 'Reaghan');
 
   // Supabase connection test (#9)
   const [supabaseTestResult, setSupabaseTestResult] = useState(null); // null | 'testing' | { count, ok }
 
-  // Auto-persist TC list to localStorage + Supabase whenever it changes
-  useEffect(() => {
-    localStorage.setItem('npe-tc-list', JSON.stringify(tcList));
-    // Note: dbSaveSettings defined below — using window-level ref trick
-    if (supabase && currentUser && currentUser.id !== 'demo') supabase.from('settings').upsert({ key: 'tc-list', value: tcList, practice_id: currentUser.practiceId });
-  }, [tcList]);
 
-  const [newPatientForm, setNewPatientForm] = useState({
-    name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: 'Car', dp: '', tc: localStorage.getItem('npe-default-tc') || 'Reaghan', status: '',
+  const [newPatientForm, setNewPatientForm] = useState(() => {
+    const savedLocs = localStorage.getItem('npe-locations');
+    const locs = savedLocs ? JSON.parse(savedLocs) : [];
+    return {
+    name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: locs[0] || '', dp: '', tc: '', status: '',
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
     'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: ''
+    };
   });
   const [addPatientError, setAddPatientError] = useState('');
 
@@ -665,6 +790,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [ontimeMonthFilter, setOntimeMonthFilter] = useState(
     new Date().toISOString().slice(0, 7)
   );
+  const [followupTCFilter, setFollowupTCFilter] = useState('All');
+  const [bonusTCSelect, setBonusTCSelect] = useState('All');
+  const [ontimeTCFilter, setOntimeTCFilter] = useState('All');
 
   // ── Practice Metrics ─────────────────────────────────────────────────
   const [metricsUnlocked, setMetricsUnlocked] = useState(true);
@@ -691,8 +819,16 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [tcUsers, setTcUsers] = useState([]);
   const [newTCName, setNewTCName] = useState('');
   const [newTCEmail, setNewTCEmail] = useState('');
+  const [newTCPassword, setNewTCPassword] = useState('');
+  const [showNewTCPw, setShowNewTCPw] = useState(false);
   const [newTCRole, setNewTCRole] = useState('tc');
   const [tcMgmtMsg, setTcMgmtMsg] = useState('');
+  const [tcMgmtMsgType, setTcMgmtMsgType] = useState('info');
+  const [tcSetPwInputs, setTcSetPwInputs] = useState({});
+  const [tcSetPwStatus, setTcSetPwStatus] = useState({});
+  const [changePwForm, setChangePwForm] = useState({ current: '', next: '', confirm: '' });
+  const [changePwMsg, setChangePwMsg] = useState('');
+  const [changePwLoading, setChangePwLoading] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState('');
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [locations, setLocations] = useState(() => {
@@ -712,6 +848,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const [allPracticesLoading, setAllPracticesLoading] = useState(false);
   const [practiceInviteOverride, setPracticeInviteOverride] = useState(null); // { userId, invite }
   const [passwordResetStatus, setPasswordResetStatus] = useState({}); // { [userId]: 'sending' | 'sent' | 'error' }
+  const [setPasswordInputs, setSetPasswordInputs] = useState({}); // { [userId]: string }
+  const [setPasswordStatus, setSetPasswordStatus] = useState({}); // { [userId]: 'saving' | 'saved' | 'error' }
   const [superadminOriginalUser, setSuperadminOriginalUser] = useState(null); // set while impersonating a practice
   const [managedPracticeId, setManagedPracticeId] = useState(null); // explicit practice_id override for all writes during impersonation
   const [switchingToPractice, setSwitchingToPractice] = useState(null); // id of practice currently being switched to
@@ -748,7 +886,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           setPatients(data.map(r => ({
             id: r.id, name: r.name, phone: r.phone || '', age: r.age || null,
             npeDate: r.npe_date, location: r.location,
-            dp: r.dp, tc: r.tc || 'Reaghan',
+            dp: r.dp, tc: r.tc || '',
             BR: r.br, INV: r.inv, PH1: r.ph1, PH2: r.ph2, LTD: r.ltd,
             'R+': r.r_plus, 'W+': r.w_plus, PIF: r.pif,
             ST: r.st, SCH: r.sch, PEN: r.pen, OBS: r.obs, MP: r.mp, NOTX: r.notx, DBRETS: r.dbrets || false,
@@ -769,7 +907,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       setLoading(false);
     };
     load();
-  }, []);
+  }, [currentUser?.practiceId]);
 
   // Auto-fix: MP and OBS patients with incorrect nextTouchDate
   useEffect(() => {
@@ -818,7 +956,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     const { error } = await supabase.from('patients').upsert({
       id: patient.id, name: patient.name, phone: patient.phone || '', age: patient.age || null,
       npe_date: patient.npeDate, location: patient.location,
-      dp: patient.dp, tc: patient.tc || 'Reaghan',
+      dp: patient.dp, tc: patient.tc || '',
       br: patient.BR, inv: patient.INV, ph1: patient.PH1, ph2: patient.PH2, ltd: patient.LTD,
       r_plus: patient['R+'], w_plus: patient['W+'], pif: patient.PIF,
       st: patient.ST, sch: patient.SCH, pen: patient.PEN, obs: patient.OBS, mp: patient.MP, notx: patient.NOTX, dbrets: patient.DBRETS || false,
@@ -883,7 +1021,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const dbSaveSettings = async (key, value) => {
     if (!supabase || currentUser?.id === 'demo') return;
     const { error } = await supabase.from('settings').upsert(
-      { key, value, practice_id: currentUser.practiceId },
+      { key, value, practice_id: managedPracticeId || currentUser.practiceId },
       { onConflict: 'key,practice_id' }
     );
     if (error) {
@@ -895,7 +1033,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
   const dbLoadSettings = async (key) => {
     if (!supabase || currentUser?.id === 'demo') return null;
-    const { data, error } = await supabase.from('settings').select('value').eq('key', key).eq('practice_id', currentUser.practiceId).maybeSingle();
+    const { data, error } = await supabase.from('settings').select('value').eq('key', key).eq('practice_id', managedPracticeId || currentUser.practiceId).maybeSingle();
     if (error) { console.warn('dbLoadSettings:', key, error.message); return null; }
     return data ? data.value : null;
   };
@@ -904,23 +1042,21 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   useEffect(() => {
     const loadSettings = async () => {
       if (currentUser?.id === 'demo') return;
-      const [cloudGoals, cloudBonusRates, cloudTCList, cloudAdminPw, cloudPopupBonuses, cloudLocations] = await Promise.all([
+      const [cloudGoals, cloudBonusRates, cloudAdminPw, cloudPopupBonuses, cloudLocations] = await Promise.all([
         dbLoadSettings('goals'),
         dbLoadSettings('bonus-rates'),
-        dbLoadSettings('tc-list'),
         dbLoadSettings('admin-password'),
         dbLoadSettings('popup-bonuses'),
         dbLoadSettings('locations'),
       ]);
       if (cloudGoals) setGoals(cloudGoals);
       if (cloudBonusRates) setBonusRates(cloudBonusRates);
-      if (cloudTCList && Array.isArray(cloudTCList)) setTcList(cloudTCList);
       if (cloudAdminPw) localStorage.setItem('npe-admin-password', cloudAdminPw);
       if (cloudPopupBonuses && Array.isArray(cloudPopupBonuses)) setPopupBonuses(cloudPopupBonuses);
       if (cloudLocations && Array.isArray(cloudLocations)) { setLocations(cloudLocations); localStorage.setItem('npe-locations', JSON.stringify(cloudLocations)); }
     };
     loadSettings();
-  }, []);
+  }, [currentUser?.practiceId]);
   // ─────────────────────────────────────────────────────────────────────
 
   // ── Team Management helpers ───────────────────────────────────────────
@@ -1000,7 +1136,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       const owner = practice.admins[0];
       setSuperadminOriginalUser(currentUser);
       setManagedPracticeId(practice.id); // explicit override — used by all write operations
-      setCurrentUser({
+      onUserChange({
         id: owner?.auth_user_id || owner?.id || 'superadmin-proxy',
         name: owner?.name || 'Superadmin',
         role: 'admin',
@@ -1025,7 +1161,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     ]);
     setLocations(locData?.data?.value || []);
     setTcUsers(usersData?.data || []);
-    setCurrentUser(orig);
+    onUserChange(orig);
     setCurrentView('settings');
   };
 
@@ -1093,7 +1229,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     if (metrics) setPracticeMetrics(metrics);
     if (goals) setPracticeGoals(goals);
   };
-  useEffect(() => { if (metricsUnlocked) loadPracticeMetrics(); }, [metricsUnlocked]);
+  useEffect(() => { if (metricsUnlocked) loadPracticeMetrics(); }, [metricsUnlocked, currentUser?.practiceId]);
 
   // Pull shows, starts, OBS for a given month directly from patient data
   const getDashboardMonthData = (year, month) => {
@@ -1165,6 +1301,12 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       const pIsST       = p.ST && !pIsSDS;
       const pIsDBRETS   = p.DBRETS;
       let total = 0;
+      // replacesBase campaigns pay a flat rate for ALL starts (SDS + pending + scheduled)
+      if (bonus.replacesBase) {
+        const isAnyStart = pIsSDS || pIsPending || pIsST;
+        if (isAnyStart && bonus.amtSDS > 0) total += bonus.amtSDS;
+        return total;
+      }
       if (pIsSDS    && bonus.amtSDS       > 0) total += bonus.amtSDS;
       if (pIsPending && bonus.amtPending  > 0) total += bonus.amtPending;
       if (pIsST && !pIsPending && bonus.amtScheduled > 0) total += bonus.amtScheduled;
@@ -1175,6 +1317,42 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     // Legacy fallback (old campaigns only had `amount` per fromPending/ST start)
     if (!(p.fromPending || p.ST)) return 0;
     return (bonus.amount || 0) + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0);
+  };
+
+  // Check if a campaign's start-goal threshold has been met for a given TC
+  const isThresholdMet = (bonus, tcOverride) => {
+    if (!bonus.goalThreshold || bonus.goalThreshold <= 0) return true;
+    const tc = bonus.tcFilter !== 'All' ? bonus.tcFilter : (tcOverride || null);
+    const startsInRange = patients.filter(p => {
+      const sd = effectiveStartDate(p);
+      if (!sd || sd < bonus.startDate || sd > bonus.endDate) return false;
+      if (tc && p.tc !== tc) return false;
+      return isSDS(p) || p.ST;
+    });
+    return startsInRange.length >= bonus.goalThreshold;
+  };
+  const thresholdStartCount = (bonus, tcOverride) => {
+    if (!bonus.goalThreshold || bonus.goalThreshold <= 0) return 0;
+    const tc = bonus.tcFilter !== 'All' ? bonus.tcFilter : (tcOverride || null);
+    return patients.filter(p => {
+      const sd = effectiveStartDate(p);
+      if (!sd || sd < bonus.startDate || sd > bonus.endDate) return false;
+      if (tc && p.tc !== tc) return false;
+      return isSDS(p) || p.ST;
+    }).length;
+  };
+
+  // Returns the first active replacesBase campaign covering this patient (threshold met), or null
+  const getReplacingCampaign = (p, tcOverride) => {
+    const sd = effectiveStartDate(p);
+    if (!sd) return null;
+    return popupBonuses.find(b => {
+      if (!b.replacesBase) return false;
+      if (sd < b.startDate || sd > b.endDate) return false;
+      if (b.tcFilter !== 'All' && p.tc !== b.tcFilter) return false;
+      if (tcOverride && p.tc !== tcOverride) return false;
+      return isThresholdMet(b, tcOverride || (b.tcFilter !== 'All' ? b.tcFilter : null));
+    }) || null;
   };
 
   // Calculate metrics. npePts = patients filtered by NPE date (for NPE totals).
@@ -1199,13 +1377,20 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     const overallConv = total > 0 ? Math.round((started.length / total) * 100) : 0;
     const sdsConv = total > 0 ? Math.round((sds.length / total) * 100) : 0;
 
-    // Per-office metrics
-    const carPts = pts.filter(p => p.location === 'Car');
-    const apoPts = pts.filter(p => p.location === 'Apo');
-    const carStarted = _sp.filter(p => p.location === 'Car' && (isSDS(p) || p.ST)).length;
-    const apoStarted = _sp.filter(p => p.location === 'Apo' && (isSDS(p) || p.ST)).length;
-    const carConv = carPts.length > 0 ? Math.round((carStarted / carPts.length) * 100) : 0;
-    const apoConv = apoPts.length > 0 ? Math.round((apoStarted / apoPts.length) * 100) : 0;
+    // Per-location metrics — dynamic for any number of locations
+    const perLocation = locations.map(loc => {
+      const locPts = pts.filter(p => p.location === loc);
+      const locStarted = _sp.filter(p => p.location === loc && (isSDS(p) || p.ST)).length;
+      const locConv = locPts.length > 0 ? Math.round((locStarted / locPts.length) * 100) : 0;
+      return { loc, total: locPts.length, started: locStarted, conv: locConv };
+    });
+    // Keep backwards-compat fields for existing code that uses carTotal/apoTotal/carConv/apoConv
+    const carTotal = perLocation[0]?.total || 0;
+    const apoTotal = perLocation[1]?.total || 0;
+    const carStarted = perLocation[0]?.started || 0;
+    const apoStarted = perLocation[1]?.started || 0;
+    const carConv = perLocation[0]?.conv || 0;
+    const apoConv = perLocation[1]?.conv || 0;
 
     // Average down payment — SDS/ST only, PIF excluded (full-pay skews the avg high)
     const startedDPs = started.filter(p => !p.PIF).map(p => parseDP(p.dp)).filter(v => v > 0);
@@ -1232,12 +1417,25 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     return {
       total, started: started.length, sds: sds.length, pending, scheduled, observation, medicaidPending, noTx,
       overallConv, sdsConv, retainers, whitening, pif, sdsBonus, retBonus, whiteBonus, pifBonus, totalBonus,
-      carTotal: carPts.length, apoTotal: apoPts.length, carStarted, apoStarted, carConv, apoConv,
+      perLocation, carTotal, apoTotal, carStarted, apoStarted, carConv, apoConv,
       avgDP, avgDPAll, brCount, invCount, ph1Count, ph2Count, ltdCount, sdsRate
     };
   };
 
   const overall = calculateMetrics(patients);
+
+  // TC names: prefer login accounts; fall back to unique names in patient data (for demo)
+  const tcNames = tcUsers.length > 0
+    ? tcUsers.filter(u => u.role === 'tc').map(u => u.name)
+    : [...new Set(patients.map(p => p.tc).filter(Boolean))];
+
+  // Sync new patient form defaults when locations/tcUsers first load
+  useEffect(() => {
+    if (locations.length > 0) setNewPatientForm(f => f.location ? f : {...f, location: locations[0]});
+  }, [locations]);
+  useEffect(() => {
+    if (tcNames.length > 0) setNewPatientForm(f => f.tc ? f : {...f, tc: tcNames[0]});
+  }, [tcUsers, patients]);
 
   const today = new Date().toISOString().split('T')[0];
 
@@ -1245,6 +1443,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   const selectedFollowUps = patients.filter(p => {
     if (!p.PEN && !p.MP && !p.OBS) return false;
     if (!p.nextTouchDate || p.nextTouchDate === '__MAX__') return false;
+    if (followupTCFilter !== 'All' && p.tc !== followupTCFilter) return false;
     const effectiveDate = skipWeekend(p.nextTouchDate); // normalize any stored weekend date → next Monday
     if (selectedWeekDay === today) return effectiveDate <= today;
     return effectiveDate === selectedWeekDay;
@@ -1253,6 +1452,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
   // Bond check-ins: SCH patients, reminder = day after bond date; past-due pinned to today
   const selectedBondCheckins = patients.filter(p => {
     if (!p.SCH || !p.bondDate) return false;
+    if (followupTCFilter !== 'All' && p.tc !== followupTCFilter) return false;
     const checkDate = getBondCheckDate(p);
     if (!checkDate) return false;
     if (selectedWeekDay === today) return checkDate <= today;
@@ -1478,7 +1678,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       npeDate: newPatientForm.npeDate,
       location: newPatientForm.location,
       dp: newPatientForm.dp || '$0',
-      tc: newPatientForm.tc || 'Reaghan',
+      tc: newPatientForm.tc || '',
       BR: newPatientForm.BR, INV: newPatientForm.INV, PH1: newPatientForm.PH1,
       PH2: newPatientForm.PH2, LTD: newPatientForm.LTD,
       'R+': newPatientForm['R+'], 'W+': newPatientForm['W+'], PIF: newPatientForm.PIF,
@@ -1507,8 +1707,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
     setSaveToast('✅ ' + patient.name + ' saved!' + nextInfo);
     setTimeout(() => setSaveToast(''), 4000);
     setNewPatientForm({
-      name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: 'Car', dp: '',
-      tc: defaultTC || newPatientForm.tc || 'Reaghan', status: '',
+      name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: locations[0] || newPatientForm.location || '', dp: '',
+      tc: tcNames[0] || newPatientForm.tc || '', status: '',
       BR: false, INV: false, PH1: false, PH2: false, LTD: false,
       'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: ''
     });
@@ -1672,8 +1872,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
       <nav style={{backgroundColor:'white',borderBottom:'1px solid #e5e7eb'}}>
         <div style={{maxWidth:'1400px',margin:'0 auto',padding:'0 16px',display:'flex',gap:'8px',overflowX:'auto'}}>
           {(currentUser?.role === 'tc'
-            ? ['dashboard', 'followup', 'add', 'patients', 'bonus', 'ontime']
-            : ['dashboard', 'followup', 'add', 'patients', 'monthly', 'bonus', 'ontime', 'metrics', 'settings',
+            ? ['dashboard', 'followup', 'add', 'patients', ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'settings']
+            : ['dashboard', 'followup', 'add', 'patients', 'bonus', 'ontime', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
             <button
@@ -1816,6 +2016,447 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             setDashMonth(m); setDashYear(y);
           };
 
+          // ── NEW DASHBOARD (miller-ortho owner only) ──────────────────
+          const useNewDashboard = hasFeature('newDashboard', currentUser?.practiceId) && currentUser?.role === 'admin';
+          if (useNewDashboard) {
+            const selMonthStr  = `${dashYear}-${String(dashMonth + 1).padStart(2, '0')}`;
+            const selMonthLabel = new Date(dashYear, dashMonth, 1).toLocaleDateString('en-US', {month:'long', year:'numeric'});
+            const todayStrNew  = new Date().toISOString().split('T')[0];
+
+            // Metrics for selected month (all TCs combined)
+            const selNPEPts   = patients.filter(p => { const d = new Date(p.npeDate+'T12:00:00'); return d.getMonth()===dashMonth && d.getFullYear()===dashYear; });
+            const selStartPts = patients.filter(p => { const sd=effectiveStartDate(p); if(!sd) return false; const d=new Date(sd+'T12:00:00'); return d.getMonth()===dashMonth && d.getFullYear()===dashYear; });
+            const nm = calculateMetrics(selNPEPts, selStartPts);
+            const nmGoal = goals.monthly[dashMonth] || {};
+            const nmNPEGoal     = (nmGoal.carNPE||0)+(nmGoal.apoNPE||0);
+            const nmStartedGoal = (nmGoal.carStarted||0)+(nmGoal.apoStarted||0);
+            const nmConvGoal    = nmGoal.convGoal || 50;
+
+            // Per-TC data
+            const perTCNew = tcNames.map(tcName => {
+              // On-time rate for selected month
+              let tcOT=0, tcOTTotal=0;
+              patients.forEach(p => {
+                if (p.tc !== tcName) return;
+                (p.contact_log||[]).forEach(entry => {
+                  if (!entry.scheduledDate || !entry.date || !entry.date.startsWith(selMonthStr)) return;
+                  tcOTTotal++;
+                  if (entry.date <= entry.scheduledDate) tcOT++;
+                });
+              });
+              // Base bonus for selected month
+              let tcBaseBonus = 0;
+              patients.forEach(p => {
+                if (p.tc !== tcName) return;
+                const sd = effectiveStartDate(p);
+                if (!sd || !sd.startsWith(selMonthStr)) return;
+                const replacing = getReplacingCampaign(p, tcName);
+                if (!replacing) {
+                  if (isSDS(p)) tcBaseBonus += bonusRates.sds;
+                  if ((isSDS(p)||p.DBRETS) && p['R+']) tcBaseBonus += bonusRates.ret;
+                  if ((isSDS(p)||p.DBRETS) && p['W+']) tcBaseBonus += bonusRates.white;
+                  if ((isSDS(p)||p.ST) && p.PIF) tcBaseBonus += bonusRates.pif;
+                }
+              });
+              // Campaign bonus for selected month
+              const activeCampaigns = popupBonuses.filter(b => {
+                const overlapStart = b.startDate.substring(0,7) <= selMonthStr;
+                const overlapEnd   = b.endDate.substring(0,7)   >= selMonthStr;
+                return overlapStart && overlapEnd && (b.tcFilter==='All' || b.tcFilter===tcName);
+              });
+              let tcCampaignBonus = 0;
+              activeCampaigns.forEach(b => {
+                if (!isThresholdMet(b, tcName)) return;
+                patients.forEach(p => { tcCampaignBonus += popupBonusEarnings(p, b, tcName); });
+              });
+              // Due today count
+              const tcDueToday = patients.filter(p => {
+                if (p.tc!==tcName || (!p.PEN&&!p.MP&&!p.OBS)) return false;
+                if (!p.nextTouchDate || p.nextTouchDate==='__MAX__') return false;
+                return skipWeekend(p.nextTouchDate) <= todayStrNew;
+              }).length;
+              // Starts this month (for campaign threshold display)
+              const tcStartsThisMonth = selStartPts.filter(p => p.tc===tcName && (isSDS(p)||p.ST)).length;
+              // Reach rate — all time from contact logs
+              let tcTotalContacts=0, tcReached=0, tcVoicemail=0, tcNoAnswer=0;
+              patients.filter(p=>p.tc===tcName).forEach(p => {
+                (p.contact_log||[]).forEach(entry => {
+                  if (!entry.reachedPatient) return;
+                  if (entry.reachedPatient === "Waiting on Medicaid — didn't call") return;
+                  tcTotalContacts++;
+                  if (entry.reachedPatient === 'Spoke with patient') tcReached++;
+                  else if (entry.reachedPatient === 'Left voicemail') tcVoicemail++;
+                  else if (entry.reachedPatient === 'No answer') tcNoAnswer++;
+                });
+              });
+              const tcReachRate = tcTotalContacts > 0 ? Math.round((tcReached/tcTotalContacts)*100) : null;
+              // Best time to call buckets
+              const tcTimeBuckets = [
+                { label:'8–10 AM',  start:8,  end:10 },
+                { label:'10–12 PM', start:10, end:12 },
+                { label:'12–2 PM',  start:12, end:14 },
+                { label:'2–4 PM',   start:14, end:16 },
+                { label:'4–6 PM',   start:16, end:18 },
+                { label:'6+ PM',    start:18, end:24 },
+              ].map(bucket => {
+                let tot=0, hit=0;
+                patients.filter(p=>p.tc===tcName).forEach(p => {
+                  (p.contact_log||[]).forEach(entry => {
+                    if (!entry.time || !entry.reachedPatient) return;
+                    const hr = parseInt(entry.time.split(':')[0]);
+                    if (hr >= bucket.start && hr < bucket.end) {
+                      tot++;
+                      if (entry.reachedPatient === 'Spoke with patient') hit++;
+                    }
+                  });
+                });
+                return { ...bucket, total:tot, reached:hit, rate: tot>=3 ? Math.round((hit/tot)*100) : null };
+              }).filter(b=>b.total>0);
+              return {
+                name: tcName,
+                onTimeRate: tcOTTotal>0 ? Math.round((tcOT/tcOTTotal)*100) : null,
+                onTimeTotal: tcOTTotal,
+                baseBonus: tcBaseBonus,
+                campaignBonus: tcCampaignBonus,
+                totalBonus: tcBaseBonus + tcCampaignBonus,
+                dueToday: tcDueToday,
+                startsThisMonth: tcStartsThisMonth,
+                activeCampaigns,
+                reachRate: tcReachRate,
+                reachedCount: tcReached,
+                voicemailCount: tcVoicemail,
+                noAnswerCount: tcNoAnswer,
+                totalContacts: tcTotalContacts,
+                timeBuckets: tcTimeBuckets,
+              };
+            });
+
+            // Queue health (always today-based)
+            const allDueTodayNew = patients.filter(p => {
+              if (!p.PEN&&!p.MP&&!p.OBS) return false;
+              if (!p.nextTouchDate||p.nextTouchDate==='__MAX__') return false;
+              return skipWeekend(p.nextTouchDate) <= todayStrNew;
+            }).length;
+            const overdueNew = patients.filter(p => {
+              if (!p.PEN&&!p.MP&&!p.OBS) return false;
+              if (!p.nextTouchDate||p.nextTouchDate==='__MAX__') return false;
+              return skipWeekend(p.nextTouchDate) < todayStrNew;
+            }).length;
+            const staleCutoffNew = (() => { const d=new Date(todayStrNew+'T12:00:00'); d.setDate(d.getDate()-14); return d.toISOString().split('T')[0]; })();
+            const staleCountNew = patients.filter(p => {
+              if (!p.PEN&&!p.MP) return false;
+              if ((p.contact_log||[]).some(e=>e.date&&e.date>staleCutoffNew)) return false;
+              return !p.npeDate||p.npeDate<=staleCutoffNew;
+            }).length;
+
+            const pctColor  = r => r===null?'#9ca3af':r>=80?'#10b981':r>=60?'#d97706':'#dc2626';
+            const pctBg     = r => r===null?'#f9fafb':r>=80?'#f0fdf4':r>=60?'#fffbeb':'#fef2f2';
+            const pctBorder = r => r===null?'#e5e7eb':r>=80?'#86efac':r>=60?'#fde68a':'#fca5a5';
+
+            return (
+              <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
+
+                {/* Header with month navigation */}
+                <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',flexWrap:'wrap',gap:'12px'}}>
+                  <div>
+                    <div style={{fontSize:'13px',color:'#6b7280',marginBottom:'2px'}}>{dateLabel}</div>
+                    <h2 style={{fontSize:'26px',fontWeight:'800',color:'#202020',margin:0}}>Practice Health — {selMonthLabel}</h2>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:'8px',overflow:'hidden',backgroundColor:'white'}}>
+                    <button onClick={()=>navDashMonth(-1)} style={{padding:'8px 14px',border:'none',cursor:'pointer',fontSize:'14px',fontWeight:'700',color:'#374151',backgroundColor:'transparent'}}>◀</button>
+                    <span style={{padding:'8px 12px',fontSize:'13px',fontWeight:'700',color:'#202020',minWidth:'130px',textAlign:'center',borderLeft:'1px solid #e5e7eb',borderRight:'1px solid #e5e7eb'}}>{selMonthLabel}</span>
+                    <button onClick={()=>navDashMonth(1)} disabled={isCurrentMonth} style={{padding:'8px 14px',border:'none',cursor:isCurrentMonth?'default':'pointer',fontSize:'14px',fontWeight:'700',color:isCurrentMonth?'#d1d5db':'#374151',backgroundColor:'transparent'}}>▶</button>
+                  </div>
+                </div>
+
+                {/* HERO — TC On-Time Accountability */}
+                <div>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'12px'}}>
+                    <div>
+                      <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>⏱️ TC Follow-Up Accountability</div>
+                      <div style={{fontSize:'12px',color:'#6b7280',marginTop:'1px'}}>Are your TCs completing follow-ups on time? Goal: 80%+</div>
+                    </div>
+                    <button onClick={()=>setCurrentView('ontime')} style={{padding:'8px 16px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(perTCNew.length,1)},1fr)`,gap:'14px'}}>
+                    {perTCNew.length === 0
+                      ? <div style={{backgroundColor:'white',borderRadius:'12px',padding:'24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',color:'#9ca3af',fontSize:'14px'}}>No TCs configured</div>
+                      : perTCNew.map(tc => {
+                        const r = tc.onTimeRate;
+                        const statusLabel = r===null?'No calls logged yet':r>=80?'On track':r>=60?'Needs improvement':'Falling behind';
+                        const statusIcon  = r===null?'—':r>=80?'✓':r>=60?'⚠️':'🔴';
+                        return (
+                          <div key={tc.name} style={{backgroundColor:pctBg(r),border:`2px solid ${pctBorder(r)}`,borderRadius:'14px',padding:'24px 28px',boxShadow:'0 2px 6px rgba(0,0,0,0.06)'}}>
+                            <div style={{fontSize:'13px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>{tc.name}</div>
+                            <div style={{fontSize:'56px',fontWeight:'900',color:pctColor(r),lineHeight:1,marginBottom:'4px'}}>{r!==null?`${r}%`:'—'}</div>
+                            <div style={{fontSize:'12px',fontWeight:'700',color:pctColor(r),marginBottom:'16px'}}>{statusIcon} {statusLabel}</div>
+                            <div style={{height:'10px',backgroundColor:'rgba(0,0,0,0.07)',borderRadius:'5px',overflow:'hidden',marginBottom:'14px'}}>
+                              <div style={{height:'100%',width:`${r||0}%`,backgroundColor:pctColor(r),borderRadius:'5px',transition:'width 0.4s ease'}} />
+                            </div>
+                            <div style={{display:'flex',flexDirection:'column',gap:'5px'}}>
+                              <div style={{fontSize:'12px',color:'#6b7280'}}><span style={{fontWeight:'600',color:'#374151'}}>{tc.onTimeTotal}</span> calls logged this month</div>
+                              <div style={{fontSize:'12px'}}>{tc.dueToday>0?<span style={{color:'#d97706',fontWeight:'700'}}>⚡ {tc.dueToday} in queue today</span>:<span style={{color:'#10b981',fontWeight:'600'}}>✓ Queue clear</span>}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+
+                {/* KPI Row */}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:'12px'}}>
+                  {[
+                    {label:'NPEs',       value:nm.total,                              goal:nmNPEGoal>0?nmNPEGoal:null,         color:'#374151'},
+                    {label:'Starts',     value:nm.started,                            goal:nmStartedGoal>0?nmStartedGoal:null, color:'#10b981'},
+                    {label:'Conversion', value:`${nm.overallConv}%`,                  goal:`${nmConvGoal}%`,                   color:'#2563EB'},
+                    {label:'SDS Rate',   value:nm.started>0?`${nm.sdsRate}%`:'—',    goal:null,                               color:'#3b82f6'},
+                  ].map(card => {
+                    const numVal  = parseFloat(String(card.value).replace('%',''));
+                    const numGoal = card.goal ? parseFloat(String(card.goal).replace('%','')) : null;
+                    const met = numGoal!==null && !isNaN(numVal) && numVal>=numGoal;
+                    return (
+                      <div key={card.label} style={{backgroundColor:'white',borderRadius:'10px',padding:'16px 18px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                        <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'6px'}}>{card.label}</div>
+                        <div style={{fontSize:'28px',fontWeight:'800',color:card.color,lineHeight:1}}>{card.value}</div>
+                        {card.goal&&<div style={{fontSize:'11px',marginTop:'5px',color:met?'#10b981':'#9ca3af'}}>{met?'✓ Goal met':`Goal: ${card.goal}`}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* TC Bonus Cards */}
+                {perTCNew.length > 0 && (
+                  <div>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'12px'}}>
+                      <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>💰 TC Bonus — {selMonthLabel}</div>
+                      <button onClick={()=>setCurrentView('bonus')} style={{padding:'8px 16px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
+                    </div>
+                    <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(perTCNew.length,1)},1fr)`,gap:'14px'}}>
+                      {perTCNew.map(tc => {
+                        const todayStr2 = todayStrNew;
+                        const activePops = tc.activeCampaigns.filter(b => todayStr2>=b.startDate && todayStr2<=b.endDate);
+                        return (
+                          <div key={tc.name} style={{backgroundColor:'white',borderRadius:'14px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #e5e7eb'}}>
+                            <div style={{fontSize:'13px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'6px'}}>{tc.name}</div>
+                            <div style={{fontSize:'42px',fontWeight:'900',color:'#10b981',lineHeight:1,marginBottom:'4px'}}>${tc.totalBonus}</div>
+                            <div style={{fontSize:'12px',color:'#6b7280',marginBottom:'14px'}}>
+                              {tc.startsThisMonth} start{tc.startsThisMonth!==1?'s':''} · base ${tc.baseBonus}{tc.campaignBonus>0?` + $${tc.campaignBonus} campaign`:''}
+                            </div>
+                            {/* Active popup campaigns for this TC */}
+                            {activePops.map(b => {
+                              const threshOk = isThresholdMet(b, tc.name);
+                              const startCnt = b.goalThreshold>0 ? thresholdStartCount(b, tc.name) : tc.startsThisMonth;
+                              const pct = b.goalThreshold>0 ? Math.min(100,Math.round((startCnt/b.goalThreshold)*100)) : 100;
+                              // Potential bonus = what they'd earn for current starts if goal were hit right now
+                              const potentialBonus = patients.filter(p => {
+                                const sd = effectiveStartDate(p);
+                                if (!sd || sd < b.startDate || sd > b.endDate) return false;
+                                if (b.tcFilter !== 'All' && p.tc !== b.tcFilter) return false;
+                                if (p.tc !== tc.name) return false;
+                                return true;
+                              }).reduce((sum, p) => sum + popupBonusEarnings(p, b, tc.name), 0);
+                              // Projected total if they hit the full goal threshold (for replacesBase campaigns)
+                              const projectedBonus = b.replacesBase && b.goalThreshold > 0 && b.amtSDS > 0
+                                ? b.goalThreshold * b.amtSDS
+                                : potentialBonus;
+                              return (
+                                <div key={b.id} style={{marginTop:'8px',padding:'10px 12px',borderRadius:'8px',backgroundColor:threshOk?'#f0fdf4':'#f3f4f6',border:`1px solid ${threshOk?'#86efac':'#d1d5db'}`}}>
+                                  <div style={{fontSize:'12px',fontWeight:'700',color:threshOk?'#166534':'#374151',marginBottom:'6px'}}>
+                                    {threshOk?'🏆':'🔒'} {b.name}
+                                  </div>
+                                  {b.goalThreshold>0 && (
+                                    <>
+                                      <div style={{height:'6px',backgroundColor:'rgba(0,0,0,0.09)',borderRadius:'3px',overflow:'hidden',marginBottom:'4px'}}>
+                                        <div style={{height:'100%',width:`${pct}%`,backgroundColor:threshOk?'#10b981':'#6b7280',borderRadius:'3px'}} />
+                                      </div>
+                                      <div style={{fontSize:'11px',color:threshOk?'#166534':'#6b7280',marginBottom: threshOk ? '0' : '6px'}}>
+                                        {threshOk ? `Goal hit! ${startCnt}/${b.goalThreshold} starts` : `${startCnt}/${b.goalThreshold} starts — ${b.goalThreshold-startCnt} to go`}
+                                      </div>
+                                      {!threshOk && (
+                                        <div style={{padding:'6px 10px',borderRadius:'6px',backgroundColor:'white',border:'1px solid #e5e7eb',marginTop:'4px'}}>
+                                          <div style={{fontSize:'10px',color:'#9ca3af',fontWeight:'600',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'2px'}}>Unlock this bonus</div>
+                                          <div style={{fontSize:'22px',fontWeight:'900',color:'#374151',lineHeight:1}}>${projectedBonus}</div>
+                                          <div style={{fontSize:'11px',color:'#6b7280',marginTop:'2px'}}>at {b.goalThreshold} starts</div>
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Queue Health */}
+                <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                  <h3 style={{fontSize:'15px',fontWeight:'700',color:'#202020',marginBottom:'14px',marginTop:0}}>Follow-Up Queue Health <span style={{fontSize:'12px',fontWeight:'400',color:'#9ca3af'}}>— as of today</span></h3>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'12px'}}>
+                    {[
+                      {label:'Due today (incl. overdue)', value:allDueTodayNew, desc:'Calls scheduled for today or earlier', warnIf:v=>v>0, warnColor:'#c2410c',warnBg:'#fff7ed',warnBorder:'#fed7aa',okColor:'#15803d',okBg:'#f0fdf4',okBorder:'#bbf7d0'},
+                      {label:'Past due',                  value:overdueNew,     desc:'Follow-ups missed — strictly overdue',warnIf:v=>v>0, warnColor:'#dc2626',warnBg:'#fee2e2',warnBorder:'#fca5a5',okColor:'#15803d',okBg:'#f0fdf4',okBorder:'#bbf7d0'},
+                      {label:'14+ days no contact',       value:staleCountNew,  desc:'In pipeline with no activity logged', warnIf:v=>v>0, warnColor:'#92400e',warnBg:'#fef3c7',warnBorder:'#fde68a',okColor:'#15803d',okBg:'#f0fdf4',okBorder:'#bbf7d0'},
+                    ].map(row => {
+                      const warn = row.warnIf(row.value);
+                      return (
+                        <div key={row.label} style={{padding:'16px',borderRadius:'10px',backgroundColor:warn?row.warnBg:row.okBg,border:`1px solid ${warn?row.warnBorder:row.okBorder}`}}>
+                          <div style={{fontSize:'32px',fontWeight:'900',color:warn?row.warnColor:row.okColor,lineHeight:1,marginBottom:'6px'}}>{row.value}</div>
+                          <div style={{fontSize:'13px',fontWeight:'700',color:warn?row.warnColor:row.okColor,marginBottom:'3px'}}>{row.label}</div>
+                          <div style={{fontSize:'11px',color:warn?row.warnColor:row.okColor,opacity:0.75}}>{row.desc}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button onClick={()=>setCurrentView('followup')} style={{marginTop:'14px',padding:'9px 18px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'600',cursor:'pointer'}}>View Queue →</button>
+                </div>
+
+                {/* Pipeline */}
+                {nm.total > 0 && (
+                  <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                    <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'14px',marginTop:0}}>🔄 Pipeline — Where Patients Are Now</h3>
+                    <div style={{display:'flex',gap:'12px',flexWrap:'wrap'}}>
+                      {[
+                        {count:nm.pending,        label:'Pending',    sub:'In follow-up',      bg:'#fff7ed',border:'#fed7aa',color:'#c2410c'},
+                        {count:nm.scheduled,       label:'Scheduled',  sub:'Bond upcoming',     bg:'#eff6ff',border:'#bfdbfe',color:'#1d4ed8'},
+                        {count:nm.observation,     label:'Observation',sub:'6-mo re-check',     bg:'#f0fdf4',border:'#bbf7d0',color:'#15803d'},
+                        {count:nm.medicaidPending, label:'Medicaid',   sub:'Awaiting approval', bg:'#fef3c7',border:'#fde68a',color:'#92400e'},
+                        {count:nm.noTx,            label:'Declined',   sub:'No treatment',      bg:'#f9fafb',border:'#e5e7eb',color:'#6b7280'},
+                      ].map(item => (
+                        <div key={item.label} style={{flex:'1',minWidth:'90px',borderRadius:'8px',padding:'14px 16px',textAlign:'center',backgroundColor:item.bg,border:`1px solid ${item.border}`}}>
+                          <div style={{fontSize:'28px',fontWeight:'800',color:item.color,lineHeight:1,marginBottom:'4px'}}>{item.count}</div>
+                          <div style={{fontSize:'11px',fontWeight:'600',color:item.color}}>{item.label}</div>
+                          <div style={{fontSize:'10px',color:item.color,opacity:0.7,marginTop:'2px'}}>{item.sub}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Obstacle Intelligence + Call Performance */}
+                {(() => {
+                  const winRates = OBSTACLE_OPTIONS.map(obs => {
+                    const withObs = patients.filter(p=>p.obstacle===obs);
+                    const started = withObs.filter(p=>isSDS(p)||p.ST).length;
+                    const total   = withObs.length;
+                    const active  = withObs.filter(p=>p.PEN||p.MP).length;
+                    const rate    = total>0?Math.round((started/total)*100):null;
+                    return {obs,total,started,active,rate};
+                  }).filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
+                  const barColor = r => r===null?'#9ca3af':r>=50?'#10b981':r>=25?'#f59e0b':'#ef4444';
+
+                  // Call performance — aggregate across all TCs
+                  const callPerTC = perTCNew.filter(tc => tc.totalContacts > 0);
+                  const allTimeBuckets = [
+                    { label:'8–10 AM',  start:8,  end:10 },
+                    { label:'10–12 PM', start:10, end:12 },
+                    { label:'12–2 PM',  start:12, end:14 },
+                    { label:'2–4 PM',   start:14, end:16 },
+                    { label:'4–6 PM',   start:16, end:18 },
+                    { label:'6+ PM',    start:18, end:24 },
+                  ].map(bucket => {
+                    let tot=0, hit=0;
+                    patients.forEach(p => {
+                      (p.contact_log||[]).forEach(entry => {
+                        if (!entry.time || !entry.reachedPatient) return;
+                        const hr = parseInt(entry.time.split(':')[0]);
+                        if (hr >= bucket.start && hr < bucket.end) {
+                          tot++;
+                          if (entry.reachedPatient === 'Spoke with patient') hit++;
+                        }
+                      });
+                    });
+                    return { ...bucket, total:tot, reached:hit, rate: tot>=3 ? Math.round((hit/tot)*100) : null };
+                  }).filter(b=>b.total>0);
+                  const bestBucketRate = allTimeBuckets.length > 0 ? Math.max(...allTimeBuckets.filter(b=>b.rate!==null).map(b=>b.rate), 0) : 0;
+                  const bClr = r=>r===null?'#9ca3af':r>=50?'#10b981':r>=30?'#f59e0b':'#ef4444';
+
+                  if (winRates.length === 0 && callPerTC.length === 0) return null;
+                  return (
+                    <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                      {winRates.length > 0 && (
+                        <>
+                          <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'16px',marginTop:0}}>🚧 Obstacle Intelligence — Win Rates</h3>
+                          <div style={{display:'flex',flexDirection:'column',gap:'12px',marginBottom: callPerTC.length>0 ? '20px' : '0'}}>
+                            {winRates.map(({obs,total,started,active,rate}) => (
+                              <div key={obs}>
+                                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:'4px'}}>
+                                  <div>
+                                    <span style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>{obs}</span>
+                                    {active>0&&<span style={{fontSize:'11px',color:'#6b7280',marginLeft:'6px'}}>{active} active</span>}
+                                  </div>
+                                  <div style={{display:'flex',alignItems:'center',gap:'10px',flexShrink:0}}>
+                                    <span style={{fontSize:'11px',color:'#9ca3af'}}>{started}/{total} started</span>
+                                    <span style={{fontSize:'15px',fontWeight:'800',color:barColor(rate),minWidth:'36px',textAlign:'right'}}>{rate!==null?`${rate}%`:'—'}</span>
+                                  </div>
+                                </div>
+                                <div style={{height:'6px',backgroundColor:'#f3f4f6',borderRadius:'3px'}}>
+                                  <div style={{height:'6px',borderRadius:'3px',backgroundColor:barColor(rate),width:`${rate||0}%`}} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+
+                      {/* Pick-Up Rate + Best Time to Call per TC */}
+                      {callPerTC.length > 0 && (
+                        <div style={{paddingTop: winRates.length>0 ? '20px' : '0', borderTop: winRates.length>0 ? '1px solid #f3f4f6' : 'none'}}>
+                          <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'14px',marginTop:0}}>📞 Call Performance</h3>
+                          <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(callPerTC.length,1)},1fr)`,gap:'20px'}}>
+                            {callPerTC.map(tc => (
+                              <div key={tc.name}>
+                                <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'10px'}}>{tc.name}</div>
+                                {/* Pick-up rate */}
+                                <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'8px'}}>
+                                  <span style={{fontSize:'24px',fontWeight:'800',color:tc.reachRate>=50?'#10b981':tc.reachRate>=30?'#d97706':'#dc2626',lineHeight:1}}>{tc.reachRate}%</span>
+                                  <span style={{fontSize:'12px',color:'#6b7280'}}>pick-up rate</span>
+                                </div>
+                                <div style={{display:'flex',gap:'14px',marginBottom:'12px'}}>
+                                  {[{val:tc.reachedCount,lbl:'Spoke'},{val:tc.voicemailCount,lbl:'Voicemail'},{val:tc.noAnswerCount,lbl:'No Answer'}].map(({val,lbl})=>(
+                                    <div key={lbl}>
+                                      <div style={{fontSize:'14px',fontWeight:'700',color:'#374151'}}>{val}</div>
+                                      <div style={{fontSize:'10px',color:'#9ca3af'}}>{lbl}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                {/* Best time to call */}
+                                {tc.timeBuckets.length > 0 && (
+                                  <div>
+                                    <div style={{fontSize:'10px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'6px'}}>🕐 Best Time to Call</div>
+                                    <div style={{display:'flex',flexDirection:'column',gap:'5px'}}>
+                                      {tc.timeBuckets.map(b => {
+                                        const isBest = b.rate!==null && b.rate===Math.max(...tc.timeBuckets.filter(x=>x.rate!==null).map(x=>x.rate),0);
+                                        return (
+                                          <div key={b.label} style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                                            <div style={{fontSize:'11px',fontWeight:'600',color:'#374151',minWidth:'62px'}}>{b.label}</div>
+                                            <div style={{flex:1,height:'6px',backgroundColor:'#f3f4f6',borderRadius:'3px',overflow:'hidden'}}>
+                                              <div style={{width:b.rate!==null?`${b.rate}%`:'0%',height:'100%',backgroundColor:bClr(b.rate),borderRadius:'3px'}}/>
+                                            </div>
+                                            <div style={{fontSize:'11px',fontWeight:'700',color:bClr(b.rate),minWidth:'30px',textAlign:'right'}}>{b.rate!==null?`${b.rate}%`:'—'}</div>
+                                            {isBest&&<span style={{fontSize:'9px',fontWeight:'700',padding:'1px 4px',backgroundColor:'#dcfce7',color:'#166534',borderRadius:'3px'}}>BEST</span>}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+              </div>
+            );
+          }
+          // ── END NEW DASHBOARD ─────────────────────────────────────────
+
           return (
           <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
 
@@ -1830,7 +2471,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   <select value={dashTCFilter} onChange={e => setDashTCFilter(e.target.value)}
                     style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',fontWeight:'600',color:'#374151',backgroundColor:'white',cursor:'pointer'}}>
                     <option value="All">All TCs</option>
-                    {tcList.map(tc => <option key={tc} value={tc}>{tc}</option>)}
+                    {tcNames.map(tc => <option key={tc} value={tc}>{tc}</option>)}
                   </select>
                 ) : (
                   <div style={{padding:'8px 14px',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',fontWeight:'700',color:'#374151',backgroundColor:'#f9fafb'}}>
@@ -1938,21 +2579,21 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 <HelpTip id="dash-metrics" tip={"NPE = New Patient Exam (anyone who comes in for a consultation).\n\nStarted = Patients who started treatment this month (SDS + ST).\n\nConversion Rate = Started ÷ NPEs. Industry average is 55-65%. Aim for 60%+.\n\nSame-Day Start (SDS) = Patient bonded the same day as their exam. These earn the highest TC bonus.\n\nOn-Time Rate = % of your scheduled follow-up calls made on or before the due date."} />
               </div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))',gap:'14px'}}>
-                <MetricCard label="Total NPE" value={dash.total}
+                {currentUser?.role !== 'tc' && <MetricCard label="Total NPE" value={dash.total}
                   goal={dashTimeframe === 'month' && totalNPEGoal > 0 ? totalNPEGoal : null}
-                  goalLabel={dashTimeframe === 'month' && totalNPEGoal > 0 && dash.total < totalNPEGoal ? `· ${totalNPEGoal - dash.total} to go` : null} />
-                <MetricCard label="Started" value={dash.started} color="#10b981"
+                  goalLabel={dashTimeframe === 'month' && totalNPEGoal > 0 && dash.total < totalNPEGoal ? `· ${totalNPEGoal - dash.total} to go` : null} />}
+                {currentUser?.role !== 'tc' && <MetricCard label="Started" value={dash.started} color="#10b981"
                   goal={dashTimeframe === 'month' && totalStartedGoal > 0 ? totalStartedGoal : null}
-                  goalLabel={dashTimeframe === 'month' && totalStartedGoal > 0 && dash.started < totalStartedGoal ? `· ${totalStartedGoal - dash.started} to go` : null} />
+                  goalLabel={dashTimeframe === 'month' && totalStartedGoal > 0 && dash.started < totalStartedGoal ? `· ${totalStartedGoal - dash.started} to go` : null} />}
                 <MetricCard label="Conversion Rate" value={`${dash.overallConv}%`} color="#2563EB"
                   goal={dashTimeframe === 'month' && convGoal > 0 ? `${convGoal}%` : null}
                   goalLabel={dashTimeframe === 'month' && dash.overallConv < convGoal ? `· ${convGoal - dash.overallConv} pts behind` : null}
                   badge={dashTimeframe === 'month' ? (dash.overallConv >= convGoal ? '✓ Goal Met' : `${dash.overallConv}%`) : null}
                   badgeColor={dashTimeframe === 'month' ? (dash.overallConv >= convGoal ? '#dcfce7' : dash.overallConv >= convGoal * 0.8 ? '#fef3c7' : '#fee2e2') : null} />
-                <MetricCard label="Same-Day Starts" value={dash.sds} color="#3b82f6"
-                  sub={dash.started > 0 ? `SDS Rate: ${dash.sdsRate}% of starts` : 'No starts yet'} />
-                <MetricCard label="Avg Down Payment" value={dash.avgDP > 0 ? `$${dash.avgDP}` : '—'} color="#8b5cf6"
-                  sub="Started patients only" />
+                {currentUser?.role !== 'tc' && <MetricCard label="Same-Day Starts" value={dash.sds} color="#3b82f6"
+                  sub={dash.started > 0 ? `SDS Rate: ${dash.sdsRate}% of starts` : 'No starts yet'} />}
+                {currentUser?.role !== 'tc' && <MetricCard label="Avg Down Payment" value={dash.avgDP > 0 ? `$${dash.avgDP}` : '—'} color="#8b5cf6"
+                  sub="Started patients only" />}
                 <MetricCard label="On-Time Follow-Up Rate" value={dashOnTimeRate !== null ? `${dashOnTimeRate}%` : '—'} color={dashOnTimeColor}
                   sub={dashTotalTracked > 0 ? `${dashOnTimeCount}/${dashTotalTracked} contacts on time` : 'No tracked contacts yet'}
                   goal={dashOnTimeRate !== null ? '80%' : null}
@@ -1961,7 +2602,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             </div>
 
             {/* ── Pipeline — single clean section ── */}
-            {dash.total > 0 && (
+            {currentUser?.role !== 'tc' && dash.total > 0 && (
               <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
                 <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'14px',display:'flex',alignItems:'center',gap:'6px'}}>🔄 Pipeline — Where Patients Are Now</h3>
                 <div style={{display:'flex',gap:'12px',flexWrap:'wrap'}}>
@@ -1983,7 +2624,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             )}
 
             {/* ── Age Insights ── */}
-            {(() => {
+            {currentUser?.role !== 'tc' && (() => {
               const withAge = dashPatients.filter(p => p.age && p.age > 0);
               if (withAge.length === 0) return null;
               const avgAge = Math.round(withAge.reduce((s, p) => s + p.age, 0) / withAge.length);
@@ -2251,55 +2892,46 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             })()}
 
             {/* ── Per-Office + Treatment Mix ── */}
-            {dash.total > 0 && (
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px'}}>
-                <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
-                  <h4 style={{fontSize:'15px',fontWeight:'700',color:'#0369a1',marginBottom:'14px'}}>🏢 Carrollwood</h4>
-                  {[
-                    {label:'NPEs', val:dash.carTotal, goal: dashTimeframe==='month'&&carNPEGoal>0 ? carNPEGoal : null, color:'#202020'},
-                    {label:'Started', val:dash.carStarted, goal: dashTimeframe==='month'&&carStartedGoal>0 ? carStartedGoal : null, color:'#10b981'},
-                    {label:'Conversion', val:`${dash.carConv}%`, color:'#2563EB'},
-                  ].map(row => (
-                    <div key={row.label} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:'1px solid #F5F5F5',fontSize:'14px'}}>
-                      <span style={{color:'#6b7280'}}>{row.label}</span>
-                      <span style={{fontWeight:'700',color:row.color}}>{row.val}{row.goal ? <span style={{fontSize:'11px',color:'#9ca3af',fontWeight:'400',marginLeft:'4px'}}>/ {row.goal}</span> : null}</span>
+            {currentUser?.role !== 'tc' && dash.total > 0 && locations.length > 0 && (
+              <div style={{display:'grid',gridTemplateColumns:`repeat(${locations.length}, 1fr)`,gap:'16px'}}>
+                {(dash.perLocation || []).map((locData, idx) => {
+                  const locGoals = (() => {
+                    if (dashTimeframe !== 'month') return { npe: 0, started: 0 };
+                    if (idx === 0) return { npe: carNPEGoal, started: carStartedGoal };
+                    if (idx === 1) return { npe: apoNPEGoal, started: apoStartedGoal };
+                    return { npe: 0, started: 0 };
+                  })();
+                  const headerColors = ['#0369a1','#86198f','#047857','#b45309','#6d28d9'];
+                  const hColor = headerColors[idx % headerColors.length];
+                  return (
+                    <div key={locData.loc} style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                      <h4 style={{fontSize:'15px',fontWeight:'700',color:hColor,marginBottom:'14px'}}>📍 {locData.loc}</h4>
+                      {[
+                        {label:'NPEs', val:locData.total, goal: locGoals.npe>0 ? locGoals.npe : null, color:'#202020'},
+                        {label:'Started', val:locData.started, goal: locGoals.started>0 ? locGoals.started : null, color:'#10b981'},
+                        {label:'Conversion', val:`${locData.conv}%`, color:'#2563EB'},
+                      ].map(row => (
+                        <div key={row.label} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:'1px solid #F5F5F5',fontSize:'14px'}}>
+                          <span style={{color:'#6b7280'}}>{row.label}</span>
+                          <span style={{fontWeight:'700',color:row.color}}>{row.val}{row.goal ? <span style={{fontSize:'11px',color:'#9ca3af',fontWeight:'400',marginLeft:'4px'}}>/ {row.goal}</span> : null}</span>
+                        </div>
+                      ))}
+                      {locGoals.started > 0 && (
+                        <>
+                          <div style={{height:'4px',backgroundColor:'#f3f4f6',borderRadius:'2px',marginTop:'12px'}}>
+                            <div style={{height:'4px',borderRadius:'2px',backgroundColor: locData.started>=locGoals.started?'#10b981':'#f59e0b',width:`${Math.min(100,Math.round((locData.started/locGoals.started)*100))}%`}}></div>
+                          </div>
+                          <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'5px'}}>{locData.started} of {locGoals.started} starts goal</div>
+                        </>
+                      )}
                     </div>
-                  ))}
-                  {dashTimeframe==='month'&&carStartedGoal>0 && (
-                    <>
-                      <div style={{height:'4px',backgroundColor:'#f3f4f6',borderRadius:'2px',marginTop:'12px'}}>
-                        <div style={{height:'4px',borderRadius:'2px',backgroundColor: dash.carStarted>=carStartedGoal?'#10b981':'#f59e0b',width:`${Math.min(100,Math.round((dash.carStarted/carStartedGoal)*100))}%`}}></div>
-                      </div>
-                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'5px'}}>{dash.carStarted} of {carStartedGoal} starts goal</div>
-                    </>
-                  )}
-                </div>
-                <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
-                  <h4 style={{fontSize:'15px',fontWeight:'700',color:'#86198f',marginBottom:'14px'}}>🏖️ Apollo Beach</h4>
-                  {[
-                    {label:'NPEs', val:dash.apoTotal, goal: dashTimeframe==='month'&&apoNPEGoal>0 ? apoNPEGoal : null, color:'#202020'},
-                    {label:'Started', val:dash.apoStarted, goal: dashTimeframe==='month'&&apoStartedGoal>0 ? apoStartedGoal : null, color:'#10b981'},
-                    {label:'Conversion', val:`${dash.apoConv}%`, color:'#2563EB'},
-                  ].map(row => (
-                    <div key={row.label} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:'1px solid #F5F5F5',fontSize:'14px'}}>
-                      <span style={{color:'#6b7280'}}>{row.label}</span>
-                      <span style={{fontWeight:'700',color:row.color}}>{row.val}{row.goal ? <span style={{fontSize:'11px',color:'#9ca3af',fontWeight:'400',marginLeft:'4px'}}>/ {row.goal}</span> : null}</span>
-                    </div>
-                  ))}
-                  {dashTimeframe==='month'&&apoStartedGoal>0 && (
-                    <>
-                      <div style={{height:'4px',backgroundColor:'#f3f4f6',borderRadius:'2px',marginTop:'12px'}}>
-                        <div style={{height:'4px',borderRadius:'2px',backgroundColor: dash.apoStarted>=apoStartedGoal?'#10b981':'#f59e0b',width:`${Math.min(100,Math.round((dash.apoStarted/apoStartedGoal)*100))}%`}}></div>
-                      </div>
-                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'5px'}}>{dash.apoStarted} of {apoStartedGoal} starts goal</div>
-                    </>
-                  )}
-                </div>
+                  );
+                })}
               </div>
             )}
 
             {/* ── Treatment Mix ── */}
-            {dash.started > 0 && (
+            {currentUser?.role !== 'tc' && dash.started > 0 && (
               <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
                 <h4 style={{fontSize:'15px',fontWeight:'700',color:'#374151',marginBottom:'14px'}}>
                   🦷 Treatment Mix
@@ -2388,7 +3020,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           const onTimeRate = otTotal > 0 ? Math.round((otCount / otTotal) * 100) : null;
 
           // Per-TC stats
-          const perTC = tcList.map(tcName => {
+          const perTC = tcNames.map(tcName => {
             let tcOT = 0, tcOTTotal = 0;
             patients.forEach(p => {
               if (p.tc !== tcName) return;
@@ -2456,6 +3088,146 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
             { label:'SDS Rate', value: m.started > 0 ? `${m.sdsRate}%` : '—', goal: null, color:'#3b82f6' },
             { label:'On-Time %', value: onTimeRate !== null ? `${onTimeRate}%` : '—', goal: '80%', color: otColor },
           ];
+
+          const useNewDashboard = hasFeature('newDashboard', currentUser?.practiceId);
+
+          // ── NEW DASHBOARD LAYOUT (miller-ortho only) ──────────────────
+          if (useNewDashboard) return (
+            <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
+              {/* Header */}
+              <div>
+                <div style={{fontSize:'13px',color:'#6b7280',marginBottom:'2px'}}>{dateLabel}</div>
+                <h2 style={{fontSize:'26px',fontWeight:'800',color:'#202020',margin:0}}>Practice Health — {monthLabel}</h2>
+              </div>
+
+              {/* HERO — TC On-Time Accountability */}
+              <div>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'12px'}}>
+                  <div>
+                    <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>⏱️ TC Follow-Up Accountability</div>
+                    <div style={{fontSize:'12px',color:'#6b7280',marginTop:'1px'}}>Are your TCs completing follow-ups on time? Goal: 80%+</div>
+                  </div>
+                  <button onClick={() => setCurrentView('ontime')} style={{padding:'8px 16px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>
+                    Full Audit →
+                  </button>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(perTC.length, 1)}, 1fr)`,gap:'14px'}}>
+                  {perTC.length === 0 ? (
+                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',color:'#9ca3af',fontSize:'14px'}}>No TCs configured</div>
+                  ) : perTC.map(tc => {
+                    const rate = tc.onTimeRate;
+                    const bg = rate === null ? '#f9fafb' : rate >= 80 ? '#f0fdf4' : rate >= 60 ? '#fffbeb' : '#fef2f2';
+                    const border = rate === null ? '#e5e7eb' : rate >= 80 ? '#86efac' : rate >= 60 ? '#fde68a' : '#fca5a5';
+                    const big = rate === null ? '#9ca3af' : rate >= 80 ? '#10b981' : rate >= 60 ? '#d97706' : '#dc2626';
+                    const statusLabel = rate === null ? 'No calls logged yet' : rate >= 80 ? 'On track' : rate >= 60 ? 'Needs improvement' : 'Falling behind';
+                    const statusIcon = rate === null ? '—' : rate >= 80 ? '✓' : rate >= 60 ? '⚠️' : '🔴';
+                    return (
+                      <div key={tc.name} style={{backgroundColor:bg,border:`2px solid ${border}`,borderRadius:'14px',padding:'24px 28px',boxShadow:'0 2px 6px rgba(0,0,0,0.06)'}}>
+                        <div style={{fontSize:'13px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>{tc.name}</div>
+                        <div style={{fontSize:'56px',fontWeight:'900',color:big,lineHeight:1,marginBottom:'4px'}}>
+                          {rate !== null ? `${rate}%` : '—'}
+                        </div>
+                        <div style={{fontSize:'12px',fontWeight:'700',color:big,marginBottom:'16px'}}>{statusIcon} {statusLabel}</div>
+                        {/* Progress bar */}
+                        <div style={{height:'10px',backgroundColor:'rgba(0,0,0,0.07)',borderRadius:'5px',overflow:'hidden',marginBottom:'14px'}}>
+                          <div style={{height:'100%',width:`${rate || 0}%`,backgroundColor:big,borderRadius:'5px',transition:'width 0.4s ease'}} />
+                        </div>
+                        <div style={{display:'flex',flexDirection:'column',gap:'5px'}}>
+                          <div style={{fontSize:'12px',color:'#6b7280'}}>
+                            <span style={{fontWeight:'600',color:'#374151'}}>{tc.onTimeTotal}</span> calls logged this month
+                          </div>
+                          <div style={{fontSize:'12px'}}>
+                            {tc.dueToday > 0
+                              ? <span style={{color:'#d97706',fontWeight:'700'}}>⚡ {tc.dueToday} in queue today</span>
+                              : <span style={{color:'#10b981',fontWeight:'600'}}>✓ Queue clear</span>}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* KPI Row */}
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(140px, 1fr))',gap:'12px'}}>
+                {[
+                  { label:'NPEs', value: m.total, goal: totalNPEGoal > 0 ? totalNPEGoal : null, color:'#374151' },
+                  { label:'Starts', value: m.started, goal: totalStartedGoal > 0 ? totalStartedGoal : null, color:'#10b981' },
+                  { label:'Conversion', value: `${m.overallConv}%`, goal: `${convGoal}%`, color:'#2563EB' },
+                  { label:'SDS Rate', value: m.started > 0 ? `${m.sdsRate}%` : '—', goal: null, color:'#3b82f6' },
+                ].map(card => {
+                  const numVal = parseFloat(String(card.value).replace('%',''));
+                  const numGoal = card.goal ? parseFloat(String(card.goal).replace('%','')) : null;
+                  const isGoalMet = numGoal !== null && !isNaN(numVal) && numVal >= numGoal;
+                  return (
+                    <div key={card.label} style={{backgroundColor:'white',borderRadius:'10px',padding:'16px 18px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                      <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'6px'}}>{card.label}</div>
+                      <div style={{fontSize:'28px',fontWeight:'800',color:card.color,lineHeight:1}}>{card.value}</div>
+                      {card.goal && (
+                        <div style={{fontSize:'11px',marginTop:'5px',color: isGoalMet ? '#10b981' : '#9ca3af'}}>
+                          {isGoalMet ? '✓ Goal met' : `Goal: ${card.goal}`}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Queue Health + Bonus side by side */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px'}}>
+                {/* Queue Health */}
+                <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                  <h3 style={{fontSize:'15px',fontWeight:'700',color:'#202020',marginBottom:'14px',marginTop:0}}>Follow-Up Queue Health</h3>
+                  <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+                    {[
+                      { label:'Due today (incl. overdue)', value: allDueToday, warnIf: v => v > 0, warnColor:'#c2410c', warnBg:'#fff7ed', warnBorder:'#fed7aa', okColor:'#15803d', okBg:'#f0fdf4', okBorder:'#bbf7d0' },
+                      { label:'Past due', value: overdue, warnIf: v => v > 0, warnColor:'#dc2626', warnBg:'#fee2e2', warnBorder:'#fca5a5', okColor:'#15803d', okBg:'#f0fdf4', okBorder:'#bbf7d0' },
+                      { label:'14+ days no contact', value: staleCount, warnIf: v => v > 0, warnColor:'#92400e', warnBg:'#fef3c7', warnBorder:'#fde68a', okColor:'#15803d', okBg:'#f0fdf4', okBorder:'#bbf7d0' },
+                    ].map(row => {
+                      const warn = row.warnIf(row.value);
+                      return (
+                        <div key={row.label} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 14px',borderRadius:'8px',backgroundColor: warn ? row.warnBg : row.okBg, border:`1px solid ${warn ? row.warnBorder : row.okBorder}`}}>
+                          <span style={{fontWeight:'600',color: warn ? row.warnColor : row.okColor,fontSize:'14px'}}>{row.label}</span>
+                          <span style={{fontSize:'22px',fontWeight:'800',color: warn ? row.warnColor : row.okColor}}>{row.value}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button onClick={() => setCurrentView('followup')} style={{marginTop:'16px',width:'100%',padding:'10px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'8px',fontSize:'14px',fontWeight:'600',cursor:'pointer'}}>
+                    View Queue →
+                  </button>
+                </div>
+
+                {/* Bonus Projections */}
+                <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                  <h3 style={{fontSize:'15px',fontWeight:'700',color:'#202020',marginBottom:'14px',marginTop:0}}>💰 Bonus Projections — {monthLabel}</h3>
+                  {perTC.length === 0 ? (
+                    <div style={{color:'#9ca3af',fontSize:'14px'}}>No TCs configured</div>
+                  ) : (
+                    <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                      {perTC.map(tc => {
+                        const bonusGoal = 520;
+                        const pct = Math.min(Math.round((tc.bonus / bonusGoal) * 100), 100);
+                        return (
+                          <div key={tc.name} style={{display:'flex',alignItems:'center',gap:'16px'}}>
+                            <div style={{fontWeight:'600',color:'#374151',minWidth:'80px'}}>{tc.name}</div>
+                            <div style={{flex:1,height:'8px',backgroundColor:'#f3f4f6',borderRadius:'4px',overflow:'hidden'}}>
+                              <div style={{width:`${pct}%`,height:'100%',backgroundColor: tc.bonus >= bonusGoal ? '#10b981' : tc.bonus >= bonusGoal * 0.6 ? '#f59e0b' : '#3b82f6',borderRadius:'4px'}} />
+                            </div>
+                            <div style={{fontWeight:'700',color: tc.bonus >= bonusGoal ? '#10b981' : '#374151',minWidth:'50px',textAlign:'right'}}>${tc.bonus}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <button onClick={() => setCurrentView('bonus')} style={{marginTop:'16px',padding:'8px 16px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',color:'#374151',cursor:'pointer',fontWeight:'500'}}>
+                    Full Bonus Audit →
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+          // ── END NEW DASHBOARD ─────────────────────────────────────────
 
           return (
             <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
@@ -2580,7 +3352,16 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
         {/* FOLLOW-UP QUEUE */}
         {currentView === 'followup' && (
           <div style={{display:'flex',flexDirection:'column',gap:'24px'}}>
-            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',display:'flex',alignItems:'center',gap:'4px'}}>Follow-Up Queue <HelpTip id="followup-queue" tip={"This is where you spend most of your day. Every patient who didn't start same-day is here.\n\nPriority labels:\n• FRESH = NPE within the last 7 days\n• WARM = 8–30 days\n• HOT = over 30 days (overdue)\n\nThe system auto-schedules who's due today based on their obstacle. Work through every patient on today's list before the day ends."} /></h2>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'12px'}}>
+              <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',display:'flex',alignItems:'center',gap:'4px',margin:0}}>Follow-Up Queue <HelpTip id="followup-queue" tip={"This is where you spend most of your day. Every patient who didn't start same-day is here.\n\nPriority labels:\n• FRESH = NPE within the last 7 days\n• WARM = 8–30 days\n• HOT = over 30 days (overdue)\n\nThe system auto-schedules who's due today based on their obstacle. Work through every patient on today's list before the day ends."} /></h2>
+              {tcNames.length > 1 && (
+                <select value={followupTCFilter} onChange={e => setFollowupTCFilter(e.target.value)}
+                  style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',color:'#374151',backgroundColor:'white'}}>
+                  <option value="All">All TCs</option>
+                  {tcNames.map(tc => <option key={tc} value={tc}>{tc}</option>)}
+                </select>
+              )}
+            </div>
 
             {/* Active popup bonus banner */}
             {(() => {
@@ -2669,6 +3450,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     const isSelected = dateStr === selectedWeekDay;
                     const isWeekend = date.getDay() === 0 || date.getDay() === 6;
                     const count = isWeekend ? 0 : patients.filter(p => {
+                      // TC filter
+                      if (followupTCFilter !== 'All' && p.tc !== followupTCFilter) return false;
                       // Regular follow-ups — normalize stored dates to skip weekends
                       const hasPending = (p.PEN || p.MP || p.OBS) && p.nextTouchDate && p.nextTouchDate !== '__MAX__';
                       const effectiveTouchDate = p.nextTouchDate ? skipWeekend(p.nextTouchDate) : '';
@@ -2740,7 +3523,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             </a>
                           )}
                           <div style={{fontSize:'14px',color:'#6b7280'}}>
-                            📅 NPE: {new Date(patient.npeDate + 'T12:00:00').toLocaleDateString()} • 📍 {patient.location === 'Car' ? 'Carrollwood' : 'Apollo Beach'} • 👤 {patient.tc}
+                            📅 NPE: {new Date(patient.npeDate + 'T12:00:00').toLocaleDateString()} • 📍 {patient.location} • 👤 {patient.tc}
                           </div>
                           <div style={{fontSize:'14px',color:'#92400e',marginTop:'4px',fontWeight:'500'}}>
                             🦷 Initial Bond was scheduled for: <strong>{new Date(patient.bondDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</strong>
@@ -2823,7 +3606,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     </h4>
                   )}
                   {selectedFollowUps.map(patient => {
-                    const daysOld = Math.floor((new Date() - new Date(patient.npeDate + 'T12:00:00')) / 86400000);
+                    const npeDateSafe = patient.npeDate || today;
+                    const daysOld = Math.floor((new Date() - new Date(npeDateSafe + 'T12:00:00')) / 86400000);
                     const priority = daysOld <= 7 ? 'FRESH' : daysOld <= 21 ? 'WARM' : 'HOT';
                     return (
                 <div key={patient.id} style={{backgroundColor:'white',padding:'20px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'16px'}}>
@@ -2852,7 +3636,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         </a>
                       )}
                       <div style={{fontSize:'13px',color:'#6b7280',marginBottom:'2px'}}>
-                        📅 NPE: {new Date(patient.npeDate + 'T12:00:00').toLocaleDateString()} • 📍 {patient.location === 'Car' ? 'Carrollwood' : 'Apollo Beach'} • 👤 {patient.tc}
+                        📅 NPE: {npeDateSafe ? new Date(npeDateSafe + 'T12:00:00').toLocaleDateString() : '—'} • 📍 {patient.location} • 👤 {patient.tc}
                       </div>
                       {patient.obstacle && (
                         <div style={{fontSize:'13px',color:'#dc2626',fontWeight:'600',marginBottom:'2px'}}>🚧 Obstacle: {patient.obstacle}</div>
@@ -2894,7 +3678,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         <div key={i} style={{marginBottom: i < arr.length - 1 ? '10px' : 0, paddingBottom: i < arr.length - 1 ? '10px' : 0, borderBottom: i < arr.length - 1 ? '1px solid #e5e7eb' : 'none'}}>
                           <div style={{display:'flex',alignItems:'center',gap:'6px',flexWrap:'wrap',marginBottom:'3px'}}>
                             <span style={{fontSize:'12px',fontWeight:'700',color:'#374151'}}>
-                              {new Date(log.date + 'T12:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'})}
+                              {log.date ? new Date(log.date + 'T12:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'}) : '—'}
                             </span>
                             <span style={{fontSize:'11px',padding:'1px 6px',borderRadius:'3px',fontWeight:'500',
                               backgroundColor: log.reachedPatient === 'Spoke with patient' ? '#dcfce7' : '#f3f4f6',
@@ -2918,6 +3702,34 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   {showContactLog === patient.id ? (
                     <div style={{backgroundColor:'#f9fafb',padding:'16px',borderRadius:'8px',border:'2px solid #2563EB'}}>
                       <h5 style={{fontSize:'14px',fontWeight:'600',marginBottom:'12px'}}>LOG CONTACT</h5>
+
+                      {/* Suggested Script Panel */}
+                      {!patient.OBS && (() => {
+                        const script = getFollowUpScript(patient);
+                        if (!script) return null;
+                        const attempt = patient.contactAttempts || 0;
+                        const urgency = SCRIPT_URGENCY[Math.min(attempt, SCRIPT_URGENCY.length - 1)];
+                        return (
+                          <div style={{marginBottom:'16px',backgroundColor:urgency.bg,border:`1.5px solid ${urgency.border}`,borderRadius:'8px',padding:'12px 14px'}}>
+                            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px',gap:'8px',flexWrap:'wrap'}}>
+                              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                                <span style={{fontSize:'13px'}}>💬</span>
+                                <span style={{fontSize:'12px',fontWeight:'700',color:urgency.color,textTransform:'uppercase',letterSpacing:'0.04em'}}>Suggested Script — {urgency.label}</span>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(script);
+                                  const btn = document.getElementById(`copy-script-${patient.id}`);
+                                  if (btn) { btn.textContent = '✓ Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 2000); }
+                                }}
+                                id={`copy-script-${patient.id}`}
+                                style={{padding:'3px 10px',backgroundColor:'white',border:`1px solid ${urgency.border}`,borderRadius:'4px',fontSize:'11px',fontWeight:'600',color:urgency.color,cursor:'pointer',whiteSpace:'nowrap'}}
+                              >Copy</button>
+                            </div>
+                            <p style={{margin:0,fontSize:'13px',color:'#374151',lineHeight:'1.55',whiteSpace:'pre-wrap'}}>{script}</p>
+                          </div>
+                        );
+                      })()}
 
                       {/* #2: relabeled to "Contact result:" */}
                       <div style={{marginBottom:'12px'}}>
@@ -3221,7 +4033,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     onChange={e => setNewPatientForm({...newPatientForm, location: e.target.value})}
                     style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}>
                     {(locations.length > 0 ? locations : ['Car', 'Apo']).map(loc => (
-                      <option key={loc} value={loc}>{loc === 'Car' ? 'Carrollwood' : loc === 'Apo' ? 'Apollo Beach' : loc}</option>
+                      <option key={loc} value={loc}>{loc}</option>
                     ))}
                   </select>
                 </div>
@@ -3249,7 +4061,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   <select value={newPatientForm.tc}
                     onChange={e => setNewPatientForm({...newPatientForm, tc: e.target.value})}
                     style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}>
-                    {tcList.map(tc => <option key={tc} value={tc}>{tc}</option>)}
+                    {tcNames.map(tc => <option key={tc} value={tc}>{tc}</option>)}
                   </select>
                 </div>
               </div>
@@ -3553,7 +4365,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       </div>
                     </div>
                     <div style={{fontSize:'14px',color:'#6b7280',marginBottom:'4px'}}>
-                      📅 {new Date(patient.npeDate + 'T12:00:00').toLocaleDateString()} • 📍 {patient.location === 'Car' ? 'Carrollwood' : 'Apollo Beach'} • 💰 {patient.dp} • 👤 {patient.tc}
+                      📅 {new Date(patient.npeDate + 'T12:00:00').toLocaleDateString()} • 📍 {patient.location} • 💰 {patient.dp} • 👤 {patient.tc}
                       {patient.startDate && ` • 🦷 Started: ${new Date(patient.startDate + 'T12:00:00').toLocaleDateString()}`}
                     </div>
                     {patient.phone && <div style={{fontSize:'13px',color:'#374151',marginBottom:'4px',fontWeight:'500'}}>📞 {patient.phone}</div>}
@@ -3723,7 +4535,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   <select value={monthlyTCFilter} onChange={e => setMonthlyTCFilter(e.target.value)}
                     style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px'}}>
                     <option value="All">All TCs</option>
-                    {tcList.map(tc => <option key={tc} value={tc}>{tc}</option>)}
+                    {tcNames.map(tc => <option key={tc} value={tc}>{tc}</option>)}
                   </select>
                 </div>
               </div>
@@ -3781,9 +4593,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   <h3 style={{fontSize:'20px',fontWeight:'bold',marginBottom:'16px'}}>🎯 Monthly Goals vs Actual</h3>
                   <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'20px'}}>
                     {[
-                      {label:'🏢 Carrollwood', bg:'#f0f9ff', border:'#bae6fd', hColor:'#0369a1',
+                      {label:`📍 ${locations[0] || 'Location 1'}`, bg:'#f0f9ff', border:'#bae6fd', hColor:'#0369a1',
                        rows:[{name:'NPE', actual:m.carTotal, goal:monthGoals.carNPE},{name:'Started', actual:m.carStarted, goal:monthGoals.carStarted}]},
-                      {label:'🏖️ Apollo Beach', bg:'#fdf4ff', border:'#f0abfc', hColor:'#86198f',
+                      {label:`📍 ${locations[1] || 'Location 2'}`, bg:'#fdf4ff', border:'#f0abfc', hColor:'#86198f',
                        rows:[{name:'NPE', actual:m.apoTotal, goal:monthGoals.apoNPE},{name:'Started', actual:m.apoStarted, goal:monthGoals.apoStarted}]},
                     ].map(office => (
                       <div key={office.label} style={{padding:'16px',backgroundColor:office.bg,borderRadius:'8px',border:`1px solid ${office.border}`}}>
@@ -3858,8 +4670,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
         )}
 
         {/* BONUS AUDIT */}
-        {currentView === 'bonus' && (() => {
-          const bonusTCFilter = currentUser?.role === 'tc' ? currentUser.name : null;
+        {currentView === 'bonus' && (currentUser?.role !== 'tc' || currentUser?.bonusEnabled) && (() => {
+          const bonusTCFilter = currentUser?.role === 'tc' ? currentUser.name : (bonusTCSelect !== 'All' ? bonusTCSelect : null);
           return (
           <div>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'24px',flexWrap:'wrap',gap:'12px'}}>
@@ -3870,12 +4682,19 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 </h2>
                 {bonusTCFilter && <div style={{fontSize:'13px',color:'#6b7280',marginTop:'3px'}}>Your personal bonus summary — only you can see this</div>}
               </div>
-              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
                 <label style={{fontSize:'14px',fontWeight:'500'}}>Month:</label>
                 <input type="month"
                   value={bonusMonthFilter}
                   onChange={e => setBonusMonthFilter(e.target.value)}
                   style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px'}} />
+                {currentUser?.role === 'admin' && tcNames.length > 1 && (
+                  <select value={bonusTCSelect} onChange={e => setBonusTCSelect(e.target.value)}
+                    style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',color:'#374151',backgroundColor:'white'}}>
+                    <option value="All">All TCs</option>
+                    {tcNames.map(tc => <option key={tc} value={tc}>{tc}</option>)}
+                  </select>
+                )}
               </div>
             </div>
 
@@ -3908,12 +4727,41 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   });
                   if (relevantBonuses.length === 0) return null;
                   return relevantBonuses.map(bonus => {
-                    const qualifying = patients.filter(p => popupBonusEarnings(p, bonus, bonusTCFilter || null) > 0);
-                    if (qualifying.length === 0) return null;
-                    const total = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, bonusTCFilter || null), 0);
+                    const tcFilter = bonusTCFilter || null;
+                    const thresholdOk = isThresholdMet(bonus, tcFilter);
+                    const startCount = bonus.goalThreshold > 0 ? thresholdStartCount(bonus, tcFilter) : 0;
+                    const qualifying = thresholdOk ? patients.filter(p => popupBonusEarnings(p, bonus, tcFilter) > 0) : [];
+                    const total = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, tcFilter), 0);
                     const typeLabels = bonus.amtSDS !== undefined
                       ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
                       : `$${bonus.amount}/start`;
+                    // Show locked state if threshold not met
+                    if (bonus.goalThreshold > 0 && !thresholdOk) {
+                      const pct = Math.min(100, Math.round((startCount / bonus.goalThreshold) * 100));
+                      return (
+                        <div key={bonus.id} style={{backgroundColor:'#f8fafc',border:'2px solid #cbd5e1',borderRadius:'10px',padding:'20px 24px',marginBottom:'16px',opacity:0.85}}>
+                          <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'12px'}}>
+                            <span style={{fontSize:'22px'}}>🔒</span>
+                            <div style={{flex:1}}>
+                              <div style={{fontWeight:'800',fontSize:'16px',color:'#475569'}}>{bonus.name}</div>
+                              <div style={{fontSize:'12px',color:'#64748b'}}>{typeLabels} · {bonus.startDate} → {bonus.endDate}</div>
+                              <div style={{fontSize:'12px',color:'#f59e0b',fontWeight:'700',marginTop:'2px'}}>
+                                Goal: {startCount} / {bonus.goalThreshold} starts needed to unlock
+                              </div>
+                            </div>
+                            <div style={{textAlign:'right'}}>
+                              <div style={{fontSize:'22px',fontWeight:'900',color:'#94a3b8',lineHeight:1}}>Locked</div>
+                              <div style={{fontSize:'12px',color:'#9ca3af'}}>{bonus.goalThreshold - startCount} more to go</div>
+                            </div>
+                          </div>
+                          <div style={{height:'8px',backgroundColor:'#e2e8f0',borderRadius:'4px',overflow:'hidden'}}>
+                            <div style={{height:'100%',width:`${pct}%`,backgroundColor:'#f59e0b',borderRadius:'4px',transition:'width 0.3s'}} />
+                          </div>
+                          <div style={{fontSize:'11px',color:'#94a3b8',marginTop:'4px',textAlign:'right'}}>{pct}% to goal</div>
+                        </div>
+                      );
+                    }
+                    if (!bonus.goalThreshold && qualifying.length === 0) return null;
                     return (
                       <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'20px 24px',marginBottom:'16px'}}>
                         <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'12px'}}>
@@ -3921,6 +4769,14 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           <div>
                             <div style={{fontWeight:'800',fontSize:'16px',color:'#92400e'}}>{bonus.name}</div>
                             <div style={{fontSize:'12px',color:'#92400e'}}>{typeLabels} · {bonus.startDate} → {bonus.endDate}</div>
+                            {bonus.goalThreshold > 0 && (
+                              <div style={{fontSize:'12px',color:'#10b981',fontWeight:'700',marginTop:'2px'}}>
+                                🏆 Goal reached! {startCount} / {bonus.goalThreshold} starts
+                              </div>
+                            )}
+                            {bonus.replacesBase && (
+                              <div style={{fontSize:'11px',color:'#92400e',marginTop:'2px'}}>🔁 Replaces standard SDS/retainer/whitening bonuses for these starts</div>
+                            )}
                           </div>
                           <div style={{marginLeft:'auto',textAlign:'right'}}>
                             <div style={{fontSize:'28px',fontWeight:'900',color:'#10b981',lineHeight:1}}>${total}</div>
@@ -3974,15 +4830,16 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     if (!sd || !sd.startsWith(bonusMonthFilter)) return;
                     const tc = p.tc || 'Unassigned';
                     if (!perTC[tc]) perTC[tc] = { sds: 0, ret: 0, white: 0, pif: 0, total: 0 };
-                    if (isSDS(p)) {
+                    const replacing = getReplacingCampaign(p, null);
+                    if (isSDS(p) && !replacing) {
                       perTC[tc].sds++;
                       perTC[tc].total += bonusRates.sds;
                     }
-                    if (isSDS(p) || p.DBRETS) {
+                    if ((isSDS(p) || p.DBRETS) && !replacing) {
                       if (p['R+']) { perTC[tc].ret++; perTC[tc].total += bonusRates.ret; }
                       if (p['W+']) { perTC[tc].white++; perTC[tc].total += bonusRates.white; }
                     }
-                    if ((isSDS(p) || p.ST) && p.PIF) { perTC[tc].pif++; perTC[tc].total += bonusRates.pif; }
+                    if ((isSDS(p) || p.ST) && p.PIF && !replacing) { perTC[tc].pif++; perTC[tc].total += bonusRates.pif; }
                   });
                   const entries = Object.entries(perTC).filter(([, v]) => v.total > 0);
                   if (entries.length === 0) return null;
@@ -4031,20 +4888,21 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
                         patients.forEach(p => {
                           const sd = effectiveStartDate(p);
-                          if (isSDS(p)) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'SDS', amount: bonusRates.sds});
+                          const replacing = getReplacingCampaign(p, bonusTCFilter || null);
+                          if (isSDS(p) && !replacing) {
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'SDS', amount: bonusRates.sds});
                           }
-                          if ((isSDS(p) || p.DBRETS) && p['R+']) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'Retainer', amount: bonusRates.ret});
+                          if ((isSDS(p) || p.DBRETS) && p['R+'] && !replacing) {
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Retainer', amount: bonusRates.ret});
                           }
-                          if ((isSDS(p) || p.DBRETS) && p['W+']) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'Whitening', amount: bonusRates.white});
+                          if ((isSDS(p) || p.DBRETS) && p['W+'] && !replacing) {
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Whitening', amount: bonusRates.white});
                           }
-                          if (started.find(s => s.id === p.id) && p.PIF) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, type: 'PIF', amount: bonusRates.pif});
+                          if (started.find(s => s.id === p.id) && p.PIF && !replacing) {
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'PIF', amount: bonusRates.pif});
                           }
                         });
-                        // Filter by month and TC role
+                        // Filter by month and TC
                         bonusItems = bonusItems.filter(item => item.date && item.date.startsWith(bonusMonthFilter));
                         if (bonusTCFilter) bonusItems = bonusItems.filter(item => item.tc === bonusTCFilter);
                         bonusItems.sort((a,b) => a.date.localeCompare(b.date));
@@ -4078,10 +4936,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             let amt = 0;
                             const sd = effectiveStartDate(p);
                             if (sd && sd.startsWith(bonusMonthFilter)) {
-                              if (isSDS(p)) amt += bonusRates.sds;
-                              if (isSDS(p) && p['R+']) amt += bonusRates.ret;
-                              if (isSDS(p) && p['W+']) amt += bonusRates.white;
-                              if (p.PIF) amt += bonusRates.pif;
+                              const replacing = getReplacingCampaign(p, bonusTCFilter || null);
+                              if (!replacing) {
+                                if (isSDS(p)) amt += bonusRates.sds;
+                                if (isSDS(p) && p['R+']) amt += bonusRates.ret;
+                                if (isSDS(p) && p['W+']) amt += bonusRates.white;
+                                if (p.PIF) amt += bonusRates.pif;
+                              }
                             }
                             return sum + amt;
                           }, 0)}
@@ -4099,10 +4960,15 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       patients.forEach(p => {
                         const sd = effectiveStartDate(p);
                         if (!sd || !sd.startsWith(bonusMonthFilter)) return;
-                        if (isSDS(p)) rows.push([sd, p.name, p.tc||'', 'SDS', bonusRates.sds]);
-                        if (isSDS(p) && p['R+']) rows.push([sd, p.name, p.tc||'', 'Retainer', bonusRates.ret]);
-                        if (isSDS(p) && p['W+']) rows.push([sd, p.name, p.tc||'', 'Whitening', bonusRates.white]);
-                        if (started.find(s=>s.id===p.id) && p.PIF) rows.push([sd, p.name, p.tc||'', 'PIF', bonusRates.pif]);
+                        const replacing = getReplacingCampaign(p, null);
+                        if (!replacing) {
+                          if (isSDS(p)) rows.push([sd, p.name, p.tc||'', 'SDS', bonusRates.sds]);
+                          if (isSDS(p) && p['R+']) rows.push([sd, p.name, p.tc||'', 'Retainer', bonusRates.ret]);
+                          if (isSDS(p) && p['W+']) rows.push([sd, p.name, p.tc||'', 'Whitening', bonusRates.white]);
+                          if (started.find(s=>s.id===p.id) && p.PIF) rows.push([sd, p.name, p.tc||'', 'PIF', bonusRates.pif]);
+                        } else {
+                          if (isSDS(p) || p.ST) rows.push([sd, p.name, p.tc||'', `Goal Bonus (${replacing.name})`, popupBonusEarnings(p, replacing, null)]);
+                        }
                       });
                       const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
                       const a = document.createElement('a');
@@ -4133,6 +4999,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
           // Collect all contact log entries with a scheduledDate in the selected month
           let entries = [];
           patients.forEach(p => {
+            if (ontimeTCFilter !== 'All' && p.tc !== ontimeTCFilter) return;
             (p.contact_log || []).forEach(entry => {
               if (!entry.scheduledDate || !entry.date) return;
               if (!entry.date.startsWith(ontimeMonthFilter)) return;
@@ -4175,12 +5042,19 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',margin:0,display:'flex',alignItems:'center',gap:'4px'}}>⏱️ On-Time Follow-Up Audit <HelpTip id="ontime-audit" tip={"This tracks whether you're completing follow-up calls on time.\n\nWhen you log a call in the Follow-Up Queue, the system records both when the call was scheduled and when you actually made it. This audit compares the two.\n\n80%+ is the goal. Below 60% means patients are falling through the cracks — their follow-ups are being missed or delayed."} /></h2>
                 <div style={{fontSize:'13px',color:'#6b7280',marginTop:'3px'}}>Tracks whether follow-ups were completed on or before their scheduled date</div>
               </div>
-              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
                 <label style={{fontSize:'14px',fontWeight:'500'}}>Month:</label>
                 <input type="month"
                   value={ontimeMonthFilter}
                   onChange={e => setOntimeMonthFilter(e.target.value)}
                   style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px'}} />
+                {tcNames.length > 1 && (
+                  <select value={ontimeTCFilter} onChange={e => setOntimeTCFilter(e.target.value)}
+                    style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',color:'#374151',backgroundColor:'white'}}>
+                    <option value="All">All TCs</option>
+                    {tcNames.map(tc => <option key={tc} value={tc}>{tc}</option>)}
+                  </select>
+                )}
               </div>
             </div>
 
@@ -5228,10 +6102,45 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
         {/* SETTINGS */}
         {currentView === 'settings' && (
           <div style={{maxWidth:'1200px'}}>
-            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>Goals & Settings</h2>
+            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>{currentUser?.role === 'tc' ? 'My Account' : 'Goals & Settings'}</h2>
 
-            {/* ── SUPER-ADMIN: Add New Practice ── only visible to miller-ortho */}
-            {currentUser?.practiceId === 'miller-ortho' && (
+            {/* ── Change My Password — visible to all users ── */}
+            <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',marginBottom:'24px',maxWidth:'420px'}}>
+              <h4 style={{fontSize:'16px',fontWeight:'800',color:'#202020',marginBottom:'4px'}}>🔑 Change My Password</h4>
+              <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Update your login password. You'll stay signed in.</p>
+              <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+                <input type="password" placeholder="New password (min 6 characters)"
+                  value={changePwForm.next} onChange={e => setChangePwForm(f => ({...f, next: e.target.value}))}
+                  style={{padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}} />
+                <input type="password" placeholder="Confirm new password"
+                  value={changePwForm.confirm} onChange={e => setChangePwForm(f => ({...f, confirm: e.target.value}))}
+                  style={{padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}} />
+                {changePwMsg && (
+                  <div style={{fontSize:'13px',fontWeight:'600',padding:'8px 12px',borderRadius:'6px',
+                    backgroundColor: changePwMsg.startsWith('✅') ? '#f0fdf4' : '#fef2f2',
+                    color: changePwMsg.startsWith('✅') ? '#166534' : '#ef4444',
+                    border: `1px solid ${changePwMsg.startsWith('✅') ? '#86efac' : '#fecaca'}`}}>
+                    {changePwMsg}
+                  </div>
+                )}
+                <button disabled={changePwLoading} onClick={async () => {
+                  if (changePwForm.next.length < 6) return setChangePwMsg('Password must be at least 6 characters.');
+                  if (changePwForm.next !== changePwForm.confirm) return setChangePwMsg('Passwords do not match.');
+                  setChangePwLoading(true);
+                  const { error } = await supabase.auth.updateUser({ password: changePwForm.next });
+                  setChangePwLoading(false);
+                  if (error) { setChangePwMsg('Error: ' + error.message); return; }
+                  setChangePwMsg('✅ Password updated successfully!');
+                  setChangePwForm({ next: '', confirm: '' });
+                  setTimeout(() => setChangePwMsg(''), 5000);
+                }} style={{padding:'10px',backgroundColor: changePwLoading ? '#9ca3af' : '#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'13px',fontWeight:'700',cursor: changePwLoading ? 'default' : 'pointer'}}>
+                  {changePwLoading ? 'Updating...' : 'Update Password'}
+                </button>
+              </div>
+            </div>
+
+            {/* ── SUPER-ADMIN: Add New Practice ── only visible to miller-ortho admin */}
+            {currentUser?.practiceId === 'miller-ortho' && currentUser?.role === 'admin' && (
               <div style={{backgroundColor:'#0f172a',border:'2px solid #334155',padding:'24px',borderRadius:'10px',marginBottom:'24px'}}>
                 <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px',marginBottom:'20px',flexWrap:'wrap'}}>
                   <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
@@ -5345,19 +6254,44 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                           {isExpanded ? 'Hide' : '📋 Get Invite'}
                                         </button>
                                       )}
-                                      {hasAuth && (
+                                      {hasAuth && (<>
+                                        <input
+                                          type="password"
+                                          placeholder="Set new password…"
+                                          value={setPasswordInputs[owner.id] || ''}
+                                          onChange={e => setSetPasswordInputs(s => ({ ...s, [owner.id]: e.target.value }))}
+                                          style={{padding:'4px 8px',border:'1px solid #475569',borderRadius:'6px',fontSize:'11px',backgroundColor:'#1e293b',color:'white',width:'140px'}}
+                                        />
                                         <button
-                                          disabled={passwordResetStatus[owner.id] === 'sending'}
+                                          disabled={setPasswordStatus[owner.id] === 'saving' || !setPasswordInputs[owner.id]}
                                           onClick={async () => {
-                                            setPasswordResetStatus(s => ({ ...s, [owner.id]: 'sending' }));
-                                            const { error } = await supabase.auth.resetPasswordForEmail(owner.email, { redirectTo: APP_URL });
-                                            setPasswordResetStatus(s => ({ ...s, [owner.id]: error ? 'error' : 'sent' }));
-                                            setTimeout(() => setPasswordResetStatus(s => { const n = {...s}; delete n[owner.id]; return n; }), 4000);
+                                            const newPw = setPasswordInputs[owner.id];
+                                            if (!newPw || newPw.length < 6) return alert('Password must be at least 6 characters');
+                                            setSetPasswordStatus(s => ({ ...s, [owner.id]: 'saving' }));
+                                            try {
+                                              if (!owner.auth_user_id) throw new Error('This user has no auth account yet (auth_user_id is missing). They need to sign up first.');
+                                              const res = await fetch(`${SUPABASE_URL}/functions/v1/set-user-password`, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json', 'x-admin-secret': '5bfbc2bc4b279358db905e50da18d22d23c01cf048691c4620b7e1bcf3fe6e02' },
+                                                body: JSON.stringify({ targetUserId: owner.auth_user_id, newPassword: newPw }),
+                                              });
+                                              const result = await res.json();
+                                              if (result.success) {
+                                                setSetPasswordStatus(s => ({ ...s, [owner.id]: 'saved' }));
+                                                setSetPasswordInputs(s => ({ ...s, [owner.id]: '' }));
+                                              } else {
+                                                throw new Error(result.error || `HTTP ${res.status}`);
+                                              }
+                                            } catch(e) {
+                                              setSetPasswordStatus(s => ({ ...s, [owner.id]: 'error' }));
+                                              alert('Error setting password: ' + e.message);
+                                            }
+                                            setTimeout(() => setSetPasswordStatus(s => { const n = {...s}; delete n[owner.id]; return n; }), 3000);
                                           }}
-                                          style={{padding:'4px 12px',backgroundColor: passwordResetStatus[owner.id]==='sent' ? '#16a34a' : passwordResetStatus[owner.id]==='error' ? '#dc2626' : '#334155',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer',opacity:passwordResetStatus[owner.id]==='sending'?0.5:1}}>
-                                          {passwordResetStatus[owner.id]==='sent' ? '✓ Reset Sent' : passwordResetStatus[owner.id]==='error' ? '✗ Failed' : passwordResetStatus[owner.id]==='sending' ? 'Sending…' : '🔑 Reset Password'}
+                                          style={{padding:'4px 12px',backgroundColor: setPasswordStatus[owner.id]==='saved' ? '#16a34a' : setPasswordStatus[owner.id]==='error' ? '#dc2626' : '#334155',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer',opacity:(!setPasswordInputs[owner.id]||setPasswordStatus[owner.id]==='saving')?0.5:1}}>
+                                          {setPasswordStatus[owner.id]==='saved' ? '✓ Saved' : setPasswordStatus[owner.id]==='error' ? '✗ Error' : setPasswordStatus[owner.id]==='saving' ? 'Saving…' : 'Set Password'}
                                         </button>
-                                      )}
+                                      </>)}
                                     </div>
                                   </div>
                                 ) : (
@@ -5392,8 +6326,8 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               </div>
             )}
 
-            {/* ADMIN PANEL */}
-            <div style={{backgroundColor:'white',border:'2px solid #202020',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'24px'}}>
+            {/* ADMIN PANEL + goals — hidden from TCs */}
+            {currentUser?.role !== 'tc' && (<><div style={{backgroundColor:'white',border:'2px solid #202020',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'24px'}}>
               <h3 style={{fontSize:'20px',fontWeight:'bold',color:'#202020',marginBottom:'16px'}}>⚙️ Admin Panel</h3>
                 <div style={{display:'flex',flexDirection:'column',gap:'24px'}}>
                   {adminMsg && (
@@ -5454,17 +6388,17 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>Team Management</h4>
                     <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Add TCs and manage their access. Each person signs in with their own email and password.</p>
                     {tcMgmtMsg && (
-                      tcMgmtMsg.startsWith('Error') ? (
-                        <div style={{padding:'8px 12px',borderRadius:'6px',marginBottom:'12px',fontSize:'13px',fontWeight:'600',backgroundColor:'#fef2f2',color:'#ef4444'}}>{tcMgmtMsg}</div>
+                      tcMgmtMsgType === 'error' ? (
+                        <div style={{padding:'10px 14px',borderRadius:'6px',marginBottom:'12px',fontSize:'13px',fontWeight:'600',backgroundColor:'#fef2f2',color:'#ef4444',border:'1px solid #fecaca'}}>{tcMgmtMsg}</div>
                       ) : (
                         <div style={{marginBottom:'12px',padding:'14px',backgroundColor:'#f0fdf4',border:'1px solid #86efac',borderRadius:'8px'}}>
-                          <div style={{fontSize:'12px',fontWeight:'700',color:'#166534',marginBottom:'8px'}}>✅ Team member added — text them this:</div>
-                          <div style={{backgroundColor:'white',border:'1px solid #d1fae5',borderRadius:'6px',padding:'10px',fontFamily:'monospace',fontSize:'12px',color:'#374151',whiteSpace:'pre-wrap',lineHeight:'1.6',marginBottom:'8px'}}>
+                          <div style={{fontSize:'12px',fontWeight:'700',color:'#166534',marginBottom:'8px'}}>Account created — send them these login details:</div>
+                          <div style={{backgroundColor:'white',border:'1px solid #d1fae5',borderRadius:'6px',padding:'10px',fontFamily:'monospace',fontSize:'12px',color:'#374151',whiteSpace:'pre-wrap',lineHeight:'1.8',marginBottom:'8px'}}>
                             {tcMgmtMsg}
                           </div>
                           <button onClick={() => { navigator.clipboard.writeText(tcMgmtMsg); setCopiedInvite('tc'); setTimeout(() => setCopiedInvite(''), 2500); }}
                             style={{padding:'6px 14px',backgroundColor: copiedInvite==='tc'?'#16a34a':'#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
-                            {copiedInvite==='tc' ? '✓ Copied!' : '📋 Copy Message'}
+                            {copiedInvite==='tc' ? '✓ Copied!' : '📋 Copy Login Details'}
                           </button>
                         </div>
                       )
@@ -5475,7 +6409,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       <table style={{width:'100%',borderCollapse:'collapse',marginBottom:'20px',fontSize:'13px'}}>
                         <thead>
                           <tr style={{borderBottom:'2px solid #e5e7eb'}}>
-                            {['Name','Email','Role','Status',''].map(h => (
+                            {['Name','Email','Role','Status','Bonus',''].map(h => (
                               <th key={h} style={{padding:'8px 10px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.04em'}}>{h}</th>
                             ))}
                           </tr>
@@ -5496,8 +6430,55 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                                 </span>
                               </td>
                               <td style={{padding:'10px'}}>
+                                <label style={{display:'flex',alignItems:'center',gap:'6px',cursor:'pointer',userSelect:'none'}}>
+                                  <div style={{position:'relative',display:'inline-block',width:'34px',height:'18px'}} onClick={async () => {
+                                    const newVal = !u.bonus_enabled;
+                                    await supabase.from('tc_users').update({ bonus_enabled: newVal }).eq('id', u.id);
+                                    await loadTCUsers();
+                                  }}>
+                                    <div style={{position:'absolute',inset:0,borderRadius:'9px',backgroundColor: u.bonus_enabled ? '#2563EB' : '#d1d5db',transition:'background 0.2s'}} />
+                                    <div style={{position:'absolute',top:'2px',left: u.bonus_enabled ? '18px' : '2px',width:'14px',height:'14px',borderRadius:'50%',backgroundColor:'white',boxShadow:'0 1px 3px rgba(0,0,0,0.2)',transition:'left 0.2s'}} />
+                                  </div>
+                                  <span style={{fontSize:'11px',color: u.bonus_enabled ? '#2563EB' : '#9ca3af',fontWeight:'600'}}>{u.bonus_enabled ? 'On' : 'Off'}</span>
+                                </label>
+                              </td>
+                              <td style={{padding:'10px'}}>
                                 {u.email !== currentUser?.email && (
-                                  <div style={{display:'flex',gap:'6px'}}>
+                                  <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
+                                    {u.auth_user_id && (<>
+                                      <input
+                                        type="password"
+                                        placeholder="New password…"
+                                        value={tcSetPwInputs[u.id] || ''}
+                                        onChange={e => setTcSetPwInputs(s => ({ ...s, [u.id]: e.target.value }))}
+                                        style={{padding:'4px 8px',border:'1px solid #d1d5db',borderRadius:'5px',fontSize:'11px',width:'120px'}}
+                                      />
+                                      <button
+                                        disabled={!tcSetPwInputs[u.id] || tcSetPwStatus[u.id] === 'saving'}
+                                        onClick={async () => {
+                                          const newPw = tcSetPwInputs[u.id];
+                                          if (!newPw || newPw.length < 6) return alert('Password must be at least 6 characters');
+                                          setTcSetPwStatus(s => ({ ...s, [u.id]: 'saving' }));
+                                          try {
+                                            const res = await fetch(`${SUPABASE_URL}/functions/v1/set-user-password`, {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json', 'x-admin-secret': '5bfbc2bc4b279358db905e50da18d22d23c01cf048691c4620b7e1bcf3fe6e02' },
+                                              body: JSON.stringify({ targetUserId: u.auth_user_id, newPassword: newPw }),
+                                            });
+                                            const result = await res.json();
+                                            if (!result.success) throw new Error(result.error || `HTTP ${res.status}`);
+                                            setTcSetPwStatus(s => ({ ...s, [u.id]: 'saved' }));
+                                            setTcSetPwInputs(s => ({ ...s, [u.id]: '' }));
+                                          } catch(e) {
+                                            setTcSetPwStatus(s => ({ ...s, [u.id]: 'error' }));
+                                            alert('Error: ' + e.message);
+                                          }
+                                          setTimeout(() => setTcSetPwStatus(s => { const n = {...s}; delete n[u.id]; return n; }), 3000);
+                                        }}
+                                        style={{fontSize:'11px',padding:'4px 10px',border:'none',borderRadius:'5px',cursor:'pointer',fontWeight:'600',backgroundColor: tcSetPwStatus[u.id]==='saved'?'#16a34a':tcSetPwStatus[u.id]==='error'?'#dc2626':'#374151',color:'white',opacity:(!tcSetPwInputs[u.id]||tcSetPwStatus[u.id]==='saving')?0.5:1}}>
+                                        {tcSetPwStatus[u.id]==='saved'?'✓ Saved':tcSetPwStatus[u.id]==='error'?'✗ Error':tcSetPwStatus[u.id]==='saving'?'Saving…':'Set Password'}
+                                      </button>
+                                    </>)}
                                     <button onClick={async () => {
                                       const newStatus = u.status === 'active' ? 'inactive' : 'active';
                                       await supabase.from('tc_users').update({ status: newStatus }).eq('id', u.id);
@@ -5528,7 +6509,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     {/* Add TC form */}
                     <div id="guide-team-form" style={{borderTop: tcUsers.length > 0 ? '1px solid #e5e7eb' : 'none', paddingTop: tcUsers.length > 0 ? '16px' : '0'}}>
                       <div style={{fontSize:'12px',fontWeight:'700',color:'#374151',marginBottom:'10px'}}>Add a Team Member</div>
-                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr auto auto',gap:'8px',alignItems:'end'}}>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto auto',gap:'8px',alignItems:'end'}}>
                         <div>
                           <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Name</label>
                           <input id="guide-tc-name" value={newTCName} onChange={e => setNewTCName(e.target.value)} placeholder="First name"
@@ -5540,6 +6521,17 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             style={{width:'100%',padding:'9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',boxSizing:'border-box'}} />
                         </div>
                         <div>
+                          <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Temporary Password</label>
+                          <div style={{position:'relative'}}>
+                            <input type={showNewTCPw ? 'text' : 'password'} value={newTCPassword} onChange={e => setNewTCPassword(e.target.value)} placeholder="Min 6 characters"
+                              style={{width:'100%',padding:'9px 32px 9px 9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',boxSizing:'border-box'}} />
+                            <button onClick={() => setShowNewTCPw(v => !v)} type="button"
+                              style={{position:'absolute',right:'8px',top:'50%',transform:'translateY(-50%)',background:'none',border:'none',cursor:'pointer',fontSize:'14px',color:'#6b7280',padding:0}}>
+                              {showNewTCPw ? '🙈' : '👁'}
+                            </button>
+                          </div>
+                        </div>
+                        <div>
                           <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Role</label>
                           <select value={newTCRole} onChange={e => setNewTCRole(e.target.value)}
                             style={{padding:'9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}}>
@@ -5548,31 +6540,37 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                           </select>
                         </div>
                         <button id="guide-tc-add" onClick={async () => {
-                          if (!newTCName.trim() || !newTCEmail.trim()) return setTcMgmtMsg('Error: Name and email are required.');
-                          const { error } = await supabase.from('tc_users').insert({ name: newTCName.trim(), email: newTCEmail.trim().toLowerCase(), role: newTCRole, status: 'active', practice_id: managedPracticeId || currentUser.practiceId });
-                          if (error) { setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.')); return; }
+                          if (!newTCName.trim() || !newTCEmail.trim()) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Name and email are required.'); }
+                          if (!newTCPassword.trim() || newTCPassword.trim().length < 6) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Password must be at least 6 characters.'); }
                           const addedName = newTCName.trim();
                           const addedEmail = newTCEmail.trim().toLowerCase();
-                          setNewTCName(''); setNewTCEmail(''); setNewTCRole('tc');
+                          const addedPassword = newTCPassword.trim();
+                          // Create Supabase auth account using a temp client so admin stays signed in
+                          const tempClient = createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false, detectSessionInUrl: false } });
+                          const { error: authError } = await tempClient.auth.signUp({ email: addedEmail, password: addedPassword });
+                          if (authError && !authError.message?.includes('already registered')) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Auth error: ' + authError.message); }
+                          // Insert into tc_users
+                          const { error } = await supabase.from('tc_users').insert({ name: addedName, email: addedEmail, role: newTCRole, status: 'active', practice_id: managedPracticeId || currentUser.practiceId });
+                          if (error) { setTcMgmtMsgType('error'); setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.')); return; }
+                          setNewTCName(''); setNewTCEmail(''); setNewTCPassword(''); setNewTCRole('tc');
                           await loadTCUsers();
-                          // Clear spotlight so the invite copy box is visible, then reopen checklist
                           setGuidedHighlight(null);
                           setShowOnboarding(true);
-                          const tcInvite = `Hi ${addedName.split(' ')[0]}! You've been added to CadenceIQ.\n\n1️⃣ Go to: ${APP_URL}\n2️⃣ Click "Set up your account"\n3️⃣ Enter your email (${addedEmail}) and create a password\n\nSee you in there!`;
-                          setTcMgmtMsg(tcInvite);
-                          setTimeout(() => setTcMgmtMsg(''), 30000);
+                          setTcMgmtMsgType('success');
+                          setTcMgmtMsg(`✅ ${addedName} is ready to go!\n\nSend them:\n🌐 ${APP_URL}\n📧 ${addedEmail}\n🔑 ${addedPassword}\n\nThey can log in right now and change their password in Settings.`);
+                          setTimeout(() => setTcMgmtMsg(''), 60000);
                         }} style={{padding:'9px 16px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
                           Add
                         </button>
                       </div>
                       <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'8px'}}>
-                        After adding, send them the dashboard URL and ask them to click "Set up your account" with their email. Their status will show Active once they've signed in.
+                        You set the password — they log in immediately. They can change it themselves from Settings once they're in.
                       </div>
                     </div>
                   </div>
 
-                  {/* Change Dashboard Password */}
-                  <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
+                  {/* Change Dashboard Password — hidden during superadmin impersonation */}
+                  {!superadminOriginalUser && <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>🔑 Change Dashboard Password</h4>
                     <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Legacy shared password — no longer needed with individual logins.</p>
                     <div style={{display:'grid',gap:'10px',maxWidth:'400px'}}>
@@ -5615,7 +6613,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         Save Dashboard Password
                       </button>
                     </div>
-                  </div>
+                  </div>}
 
                   {/* Bonus Rate Editor */}
                   <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
@@ -5704,7 +6702,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       onChange={e => setPopupBonusForm(f => ({...f, tcFilter: e.target.value}))}
                       style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}>
                       <option value="All">All TCs</option>
-                      {tcList.map(tc => <option key={tc} value={tc}>{tc}</option>)}
+                      {tcNames.map(tc => <option key={tc} value={tc}>{tc}</option>)}
                     </select>
                   </div>
                   <div>
@@ -5714,46 +6712,100 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                       onChange={e => setPopupBonusForm(f => ({...f, description: e.target.value}))}
                       style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}} />
                   </div>
+                  <div>
+                    <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'4px'}}>
+                      Start Goal — unlock threshold <span style={{fontWeight:'400',color:'#9ca3af'}}>(optional)</span>
+                    </label>
+                    <input type="number" min="0" step="1" placeholder="e.g. 25"
+                      value={popupBonusForm.goalThreshold || ''}
+                      onChange={e => setPopupBonusForm(f => ({...f, goalThreshold: Number(e.target.value)}))}
+                      style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px',
+                        borderColor: popupBonusForm.goalThreshold > 0 ? '#86efac' : '#d1d5db',
+                        backgroundColor: popupBonusForm.goalThreshold > 0 ? '#f0fdf4' : 'white'}} />
+                    {popupBonusForm.goalThreshold > 0 && (
+                      <div style={{fontSize:'11px',color:'#059669',marginTop:'4px'}}>
+                        Bonus only pays out if the TC reaches {popupBonusForm.goalThreshold} starts — then all qualifying starts in the campaign period count.
+                      </div>
+                    )}
+                  </div>
+                  <div style={{gridColumn:'1/-1'}}>
+                    <label style={{display:'flex',alignItems:'flex-start',gap:'10px',cursor:'pointer',padding:'10px 14px',
+                      backgroundColor: popupBonusForm.replacesBase ? '#fef3c7' : '#f9fafb',
+                      border: `1px solid ${popupBonusForm.replacesBase ? '#fbbf24' : '#e5e7eb'}`,
+                      borderRadius:'6px',transition:'all 0.15s'}}>
+                      <input type="checkbox" checked={!!popupBonusForm.replacesBase}
+                        onChange={e => setPopupBonusForm(f => ({...f, replacesBase: e.target.checked}))}
+                        style={{marginTop:'2px',accentColor:'#f59e0b',width:'16px',height:'16px',flexShrink:0}} />
+                      <div>
+                        <div style={{fontSize:'13px',fontWeight:'700',color:'#92400e'}}>🔁 Replace standard bonuses (don't stack)</div>
+                        <div style={{fontSize:'11px',color:'#78716c',marginTop:'2px'}}>
+                          When checked and the goal is hit, this campaign rate <strong>replaces</strong> the normal SDS/retainer/whitening bonuses for those starts — they won't earn both. Use this when the campaign rate IS the full payout (e.g. $50/start instead of $20/start).
+                        </div>
+                      </div>
+                    </label>
+                  </div>
                 </div>
 
                 {/* Per-type amounts */}
                 <div style={{marginBottom:'16px'}}>
                   <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'8px'}}>
-                    Bonus Amounts by Type <span style={{fontWeight:'400',color:'#9ca3af'}}>— set $0 to exclude a type</span>
+                    {popupBonusForm.replacesBase
+                      ? <>Bonus Rate — per start (all types) <span style={{fontWeight:'400',color:'#9ca3af'}}>— applies to every start when goal is hit</span></>
+                      : <>Bonus Amounts by Type <span style={{fontWeight:'400',color:'#9ca3af'}}>— set $0 to exclude a type</span></>
+                    }
                   </label>
-                  <div style={{border:'1px solid #e2e8f0',borderRadius:'6px',overflow:'hidden'}}>
-                    {[
-                      { key:'amtSDS',       icon:'💛', label:'SDS — Same Day Start',      hint:'Patient started on the day of their exam' },
-                      { key:'amtPending',   icon:'🔵', label:'Starts — Off Pending',       hint:'Patient was pending and committed to start' },
-                      { key:'amtScheduled', icon:'⚪', label:'Starts — Scheduled (ST)',    hint:'Patient had a bond date and started as scheduled' },
-                      { key:'amtRetainer',  icon:'🟢', label:'Retainers (R+)',             hint:'Retainer add-on was included with the case' },
-                      { key:'amtWhitening', icon:'🟣', label:'Whitening (W+)',             hint:'Whitening add-on was included with the case' },
-                    ].map((row, i) => (
-                      <div key={row.key} style={{display:'flex',alignItems:'center',gap:'12px',padding:'10px 14px',
-                        backgroundColor: popupBonusForm[row.key] > 0 ? '#f0fdf4' : 'white',
-                        borderBottom: i < 4 ? '1px solid #f3f4f6' : 'none',
-                        transition:'background-color 0.15s'}}>
-                        <span style={{fontSize:'16px',width:'20px',textAlign:'center'}}>{row.icon}</span>
-                        <div style={{flex:1}}>
-                          <div style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>{row.label}</div>
-                          <div style={{fontSize:'11px',color:'#9ca3af'}}>{row.hint}</div>
-                        </div>
-                        <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
-                          <span style={{fontSize:'13px',color:'#6b7280',fontWeight:'600'}}>$</span>
-                          <input
-                            type="number" min="0" step="1"
-                            value={popupBonusForm[row.key]}
-                            onChange={e => setPopupBonusForm(f => ({...f, [row.key]: Number(e.target.value)}))}
-                            style={{width:'60px',padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px',textAlign:'center',
-                              borderColor: popupBonusForm[row.key] > 0 ? '#86efac' : '#d1d5db',
-                              backgroundColor: popupBonusForm[row.key] > 0 ? '#f0fdf4' : 'white'}}
-                          />
-                        </div>
+                  {popupBonusForm.replacesBase ? (
+                    <div style={{display:'flex',alignItems:'center',gap:'12px',padding:'14px 16px',backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'6px'}}>
+                      <span style={{fontSize:'20px'}}>⭐</span>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:'13px',fontWeight:'700',color:'#92400e'}}>$ per start — all types (SDS, off-pending, scheduled)</div>
+                        <div style={{fontSize:'11px',color:'#78716c'}}>One flat rate paid for every start when the goal is reached</div>
                       </div>
-                    ))}
-                  </div>
-                  {[popupBonusForm.amtSDS, popupBonusForm.amtPending, popupBonusForm.amtScheduled, popupBonusForm.amtRetainer, popupBonusForm.amtWhitening].every(v => !v) && (
-                    <div style={{fontSize:'12px',color:'#f59e0b',marginTop:'6px'}}>⚠️ Set at least one type above $0 to create a campaign.</div>
+                      <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+                        <span style={{fontSize:'15px',color:'#92400e',fontWeight:'700'}}>$</span>
+                        <input type="number" min="0" step="1" placeholder="50"
+                          value={popupBonusForm.amtSDS || ''}
+                          onChange={e => setPopupBonusForm(f => ({...f, amtSDS: Number(e.target.value)}))}
+                          style={{width:'70px',padding:'8px',border:'2px solid #fbbf24',borderRadius:'4px',fontSize:'16px',textAlign:'center',fontWeight:'700',backgroundColor:'white'}} />
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{border:'1px solid #e2e8f0',borderRadius:'6px',overflow:'hidden'}}>
+                        {[
+                          { key:'amtSDS',       icon:'💛', label:'SDS — Same Day Start',      hint:'Patient started on the day of their exam' },
+                          { key:'amtPending',   icon:'🔵', label:'Starts — Off Pending',       hint:'Patient was pending and committed to start' },
+                          { key:'amtScheduled', icon:'⚪', label:'Starts — Scheduled (ST)',    hint:'Patient had a bond date and started as scheduled' },
+                          { key:'amtRetainer',  icon:'🟢', label:'Retainers (R+)',             hint:'Retainer add-on was included with the case' },
+                          { key:'amtWhitening', icon:'🟣', label:'Whitening (W+)',             hint:'Whitening add-on was included with the case' },
+                        ].map((row, i) => (
+                          <div key={row.key} style={{display:'flex',alignItems:'center',gap:'12px',padding:'10px 14px',
+                            backgroundColor: popupBonusForm[row.key] > 0 ? '#f0fdf4' : 'white',
+                            borderBottom: i < 4 ? '1px solid #f3f4f6' : 'none',
+                            transition:'background-color 0.15s'}}>
+                            <span style={{fontSize:'16px',width:'20px',textAlign:'center'}}>{row.icon}</span>
+                            <div style={{flex:1}}>
+                              <div style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>{row.label}</div>
+                              <div style={{fontSize:'11px',color:'#9ca3af'}}>{row.hint}</div>
+                            </div>
+                            <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+                              <span style={{fontSize:'13px',color:'#6b7280',fontWeight:'600'}}>$</span>
+                              <input
+                                type="number" min="0" step="1"
+                                value={popupBonusForm[row.key]}
+                                onChange={e => setPopupBonusForm(f => ({...f, [row.key]: Number(e.target.value)}))}
+                                style={{width:'60px',padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px',textAlign:'center',
+                                  borderColor: popupBonusForm[row.key] > 0 ? '#86efac' : '#d1d5db',
+                                  backgroundColor: popupBonusForm[row.key] > 0 ? '#f0fdf4' : 'white'}}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {[popupBonusForm.amtSDS, popupBonusForm.amtPending, popupBonusForm.amtScheduled, popupBonusForm.amtRetainer, popupBonusForm.amtWhitening].every(v => !v) && (
+                        <div style={{fontSize:'12px',color:'#f59e0b',marginTop:'6px'}}>⚠️ Set at least one type above $0 to create a campaign.</div>
+                      )}
+                    </>
                   )}
                 </div>
 
@@ -5767,7 +6819,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         const updated = [...popupBonuses, newBonus];
                         setPopupBonuses(updated);
                         await dbSaveSettings('popup-bonuses', updated);
-                        setPopupBonusForm({ name: '', startDate: '', endDate: '', description: '', tcFilter: 'All', amtSDS: 0, amtPending: 0, amtScheduled: 0, amtRetainer: 0, amtWhitening: 0 });
+                        setPopupBonusForm({ name: '', startDate: '', endDate: '', description: '', tcFilter: 'All', amtSDS: 0, amtPending: 0, amtScheduled: 0, amtRetainer: 0, amtWhitening: 0, goalThreshold: 0, replacesBase: false });
                         setSaveToast('🎯 Popup bonus campaign created!');
                         setTimeout(() => setSaveToast(''), 3000);
                       }}
@@ -5787,7 +6839,9 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                     const todayStr = new Date().toISOString().split('T')[0];
                     const isActive = todayStr >= bonus.startDate && todayStr <= bonus.endDate;
                     const isEnded = todayStr > bonus.endDate;
-                    const qualifying = patients.filter(p => popupBonusEarnings(p, bonus, null) > 0);
+                    const threshOk = isThresholdMet(bonus, null);
+                    const startCnt = bonus.goalThreshold > 0 ? thresholdStartCount(bonus, null) : 0;
+                    const qualifying = threshOk ? patients.filter(p => popupBonusEarnings(p, bonus, null) > 0) : [];
                     const earned = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, null), 0);
                     const typeLabels = bonus.amtSDS !== undefined
                       ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
@@ -5803,15 +6857,24 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                             }}>
                               {isActive ? 'ACTIVE' : isEnded ? 'ENDED' : 'UPCOMING'}
                             </span>
+                            {bonus.goalThreshold > 0 && (
+                              <span style={{fontSize:'11px',fontWeight:'700',padding:'2px 8px',borderRadius:'10px',
+                                backgroundColor: threshOk ? '#dcfce7' : '#fef9c3',
+                                color: threshOk ? '#166534' : '#92400e'
+                              }}>
+                                {threshOk ? `🏆 GOAL HIT (${startCnt}/${bonus.goalThreshold})` : `🔒 ${startCnt}/${bonus.goalThreshold} starts`}
+                              </span>
+                            )}
                           </div>
                           <div style={{fontSize:'12px',color:'#6b7280'}}>
                             {typeLabels} · {bonus.tcFilter === 'All' ? 'All TCs' : bonus.tcFilter} · {bonus.startDate} → {bonus.endDate}
+                            {bonus.replacesBase && <span style={{marginLeft:'6px',fontWeight:'700',color:'#92400e'}}>🔁 Replaces base</span>}
                             {bonus.description && <span> · <em>{bonus.description}</em></span>}
                           </div>
                         </div>
                         <div style={{textAlign:'center'}}>
-                          <div style={{fontSize:'20px',fontWeight:'800',color:'#10b981'}}>${earned}</div>
-                          <div style={{fontSize:'11px',color:'#9ca3af'}}>{qualifying.length} qualifying</div>
+                          <div style={{fontSize:'20px',fontWeight:'800',color: threshOk ? '#10b981' : '#94a3b8'}}>${earned}</div>
+                          <div style={{fontSize:'11px',color:'#9ca3af'}}>{threshOk ? `${qualifying.length} qualifying` : 'locked'}</div>
                         </div>
                         <button
                           onClick={async () => {
@@ -5831,60 +6894,7 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               )}
             </div>
 
-            {/* TC Management */}
-            <div style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'24px'}}>
-              <h3 style={{fontSize:'20px',fontWeight:'bold',color:'#202020',marginBottom:'4px'}}>👤 Treatment Coordinators</h3>
-              <p style={{fontSize:'13px',color:'#6b7280',marginBottom:'16px'}}>★ = default TC pre-selected when adding new patients. Press Enter or click + Add TC to add.</p>
-              <div style={{display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'16px'}}>
-                {tcList.map(tc => {
-                  const isDefault = tc === defaultTC;
-                  const patientCount = patients.filter(p => p.tc === tc).length;
-                  return (
-                    <div key={tc} style={{display:'flex',alignItems:'center',gap:'6px',padding:'8px 14px',
-                      backgroundColor: isDefault ? '#fefce8' : '#f0f9ff',
-                      border: isDefault ? '2px solid #fbbf24' : '1px solid #bae6fd',
-                      borderRadius:'8px'}}>
-                      {/* #8: Star to set as default TC */}
-                      <button
-                        onClick={() => { setDefaultTC(tc); localStorage.setItem('npe-default-tc', tc); setNewPatientForm(f => ({...f, tc})); }}
-                        title={isDefault ? 'Default TC' : 'Set as default TC'}
-                        style={{background:'none',border:'none',cursor:'pointer',fontSize:'16px',padding:'0',lineHeight:1,color: isDefault ? '#f59e0b' : '#d1d5db'}}
-                      >★</button>
-                      <span style={{fontWeight: isDefault ? '700' : '500'}}>{tc}</span>
-                      <span style={{fontSize:'11px',color:'#9ca3af'}}>({patientCount})</span>
-                      {tcList.length > 1 && (
-                        <button
-                          onClick={() => {
-                            // #7: warn if TC has patients
-                            if (patientCount > 0) {
-                              if (!confirm(`⚠️ ${tc} has ${patientCount} patient${patientCount>1?'s':''} assigned. They will keep "${tc}" in their records but it won't appear in new patient forms. Remove anyway?`)) return;
-                            }
-                            const next = tcList.filter(t => t !== tc);
-                            setTcList(next);
-                            if (defaultTC === tc) {
-                              const fallback = next[0] || '';
-                              setDefaultTC(fallback);
-                              localStorage.setItem('npe-default-tc', fallback);
-                            }
-                          }}
-                          style={{background:'none',border:'none',cursor:'pointer',color:'#ef4444',fontWeight:'bold',fontSize:'16px',lineHeight:1,padding:'0 2px'}}
-                        >×</button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{display:'flex',gap:'8px'}}>
-                <input ref={newTCRef} type="text" placeholder="New TC name..."
-                  style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'4px',flex:1,fontSize:'14px'}}
-                  onKeyDown={e => { if (e.key === 'Enter') { const n = e.target.value.trim(); if (n && !tcList.includes(n)) { setTcList([...tcList, n]); e.target.value = ''; } } }}
-                />
-                <button onClick={() => { const n = newTCRef.current.value.trim(); if (n && !tcList.includes(n)) { setTcList([...tcList, n]); newTCRef.current.value = ''; } }}
-                  style={{padding:'8px 20px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'4px',cursor:'pointer',fontWeight:'600'}}>
-                  + Add TC
-                </button>
-              </div>
-            </div>
+
 
             {/* Supabase Status (#9) */}
             <div style={{backgroundColor: supabase ? '#dcfce7' : '#fef3c7', padding:'16px 20px',borderRadius:'8px',border:`1px solid ${supabase ? '#86efac' : '#fde68a'}`,marginBottom:'24px'}}>
@@ -5950,14 +6960,20 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
 
               {/* Monthly Goals */}
               {(() => {
-                const curMonth = new Date().getMonth(); // 0-indexed
+                const curMonth = new Date().getMonth();
                 const curYear = new Date().getFullYear();
                 const isGoalYear = curYear === new Date().getFullYear();
-                // Annual totals (#6)
-                const totCarNPE = goals.monthly.reduce((s,m) => s + (m.carNPE||0), 0);
-                const totCarStarted = goals.monthly.reduce((s,m) => s + (m.carStarted||0), 0);
-                const totApoNPE = goals.monthly.reduce((s,m) => s + (m.apoNPE||0), 0);
-                const totApoStarted = goals.monthly.reduce((s,m) => s + (m.apoStarted||0), 0);
+                const locs = locations.length > 0 ? locations : ['Loc 1', 'Loc 2'];
+                // helpers: read/write per-location goal values (backwards-compatible with carNPE/apoNPE keys)
+                const npeKey = (li) => li === 0 ? 'carNPE' : li === 1 ? 'apoNPE' : `loc${li}NPE`;
+                const stKey  = (li) => li === 0 ? 'carStarted' : li === 1 ? 'apoStarted' : `loc${li}Started`;
+                // Annual totals per location
+                const totByLoc = locs.map((_, li) => ({
+                  npe:     goals.monthly.reduce((s,m) => s + (m[npeKey(li)]||0), 0),
+                  started: goals.monthly.reduce((s,m) => s + (m[stKey(li)]||0),  0),
+                }));
+                const totNPE     = totByLoc.reduce((s,t) => s + t.npe,     0);
+                const totStarted = totByLoc.reduce((s,t) => s + t.started, 0);
                 return (
                   <div id="guide-goals-section" style={{marginBottom:'32px'}}>
                     <h4 style={{fontSize:'18px',fontWeight:'bold',marginBottom:'16px',color:'#202020'}}>📅 Monthly Goals - {new Date().getFullYear()}</h4>
@@ -5966,65 +6982,58 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                         <thead>
                           <tr style={{borderBottom:'2px solid #e5e7eb'}}>
                             <th style={{padding:'12px 8px',textAlign:'left',fontWeight:'600',color:'#6b7280'}}>Month</th>
-                            <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#6b7280'}}>🏢 Car NPE</th>
-                            <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#6b7280'}}>🏢 Car Started</th>
-                            <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#6b7280'}}>🏖️ Apo NPE</th>
-                            <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#6b7280'}}>🏖️ Apo Started</th>
+                            {locs.map((loc, li) => (
+                              <React.Fragment key={li}>
+                                <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#6b7280'}}>📍 {loc} NPE</th>
+                                <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#6b7280'}}>📍 {loc} Started</th>
+                              </React.Fragment>
+                            ))}
                             <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#2563EB'}}>🎯 Conv %</th>
                           </tr>
                         </thead>
                         <tbody>
                           {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map((month, i) => {
-                            // #3: Past months are read-only and greyed out
                             const isPast = isGoalYear && i < curMonth;
                             const isCurrent = isGoalYear && i === curMonth;
                             return (
-                              <tr key={month} style={{
-                                borderBottom:'1px solid #F5F5F5',
-                                backgroundColor: isPast ? '#f9fafb' : isCurrent ? '#fffbeb' : 'white',
-                                opacity: isPast ? 0.7 : 1
-                              }}>
+                              <tr key={month} style={{borderBottom:'1px solid #F5F5F5',backgroundColor: isPast ? '#f9fafb' : isCurrent ? '#fffbeb' : 'white',opacity: isPast ? 0.7 : 1}}>
                                 <td style={{padding:'12px 8px',fontWeight: isCurrent ? '700' : '500', color: isPast ? '#9ca3af' : isCurrent ? '#92400e' : '#202020'}}>
                                   {month}
                                   {isCurrent && <span style={{marginLeft:'6px',fontSize:'10px',fontWeight:'700',color:'#2563EB',backgroundColor:'#fed7aa',padding:'1px 6px',borderRadius:'3px'}}>NOW</span>}
                                   {isPast && <span style={{marginLeft:'6px',fontSize:'10px',color:'#d1d5db'}}>past</span>}
                                 </td>
-                                <td style={{padding:'8px',textAlign:'center'}}>
-                                  <input type="number" value={goals.monthly[i].carNPE} readOnly={isPast}
-                                    onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, carNPE: Number(e.target.value)} : m)})}
-                                    style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #d1d5db',borderRadius:'4px',textAlign:'center', backgroundColor: isPast ? '#f3f4f6' : 'white', color: isPast ? '#9ca3af' : '#202020', cursor: isPast ? 'not-allowed' : 'auto'}} />
-                                </td>
-                                <td style={{padding:'8px',textAlign:'center'}}>
-                                  <input type="number" value={goals.monthly[i].carStarted} readOnly={isPast}
-                                    onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, carStarted: Number(e.target.value)} : m)})}
-                                    style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #d1d5db',borderRadius:'4px',textAlign:'center', backgroundColor: isPast ? '#f3f4f6' : 'white', color: isPast ? '#9ca3af' : '#202020', cursor: isPast ? 'not-allowed' : 'auto'}} />
-                                </td>
-                                <td style={{padding:'8px',textAlign:'center'}}>
-                                  <input type="number" value={goals.monthly[i].apoNPE} readOnly={isPast}
-                                    onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, apoNPE: Number(e.target.value)} : m)})}
-                                    style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #d1d5db',borderRadius:'4px',textAlign:'center', backgroundColor: isPast ? '#f3f4f6' : 'white', color: isPast ? '#9ca3af' : '#202020', cursor: isPast ? 'not-allowed' : 'auto'}} />
-                                </td>
-                                <td style={{padding:'8px',textAlign:'center'}}>
-                                  <input type="number" value={goals.monthly[i].apoStarted} readOnly={isPast}
-                                    onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, apoStarted: Number(e.target.value)} : m)})}
-                                    style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #d1d5db',borderRadius:'4px',textAlign:'center', backgroundColor: isPast ? '#f3f4f6' : 'white', color: isPast ? '#9ca3af' : '#202020', cursor: isPast ? 'not-allowed' : 'auto'}} />
-                                </td>
+                                {locs.map((_, li) => (
+                                  <React.Fragment key={li}>
+                                    <td style={{padding:'8px',textAlign:'center'}}>
+                                      <input type="number" value={goals.monthly[i][npeKey(li)] || 0} readOnly={isPast}
+                                        onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, [npeKey(li)]: Number(e.target.value)} : m)})}
+                                        style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #d1d5db',borderRadius:'4px',textAlign:'center',backgroundColor: isPast ? '#f3f4f6' : 'white',color: isPast ? '#9ca3af' : '#202020',cursor: isPast ? 'not-allowed' : 'auto'}} />
+                                    </td>
+                                    <td style={{padding:'8px',textAlign:'center'}}>
+                                      <input type="number" value={goals.monthly[i][stKey(li)] || 0} readOnly={isPast}
+                                        onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, [stKey(li)]: Number(e.target.value)} : m)})}
+                                        style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #d1d5db',borderRadius:'4px',textAlign:'center',backgroundColor: isPast ? '#f3f4f6' : 'white',color: isPast ? '#9ca3af' : '#202020',cursor: isPast ? 'not-allowed' : 'auto'}} />
+                                    </td>
+                                  </React.Fragment>
+                                ))}
                                 <td style={{padding:'8px',textAlign:'center'}}>
                                   <input type="number" value={goals.monthly[i].convGoal || 50} readOnly={isPast}
                                     onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, convGoal: Number(e.target.value)} : m)})}
-                                    style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #fed7aa',borderRadius:'4px',textAlign:'center',color: isPast ? '#9ca3af' : '#2563EB',fontWeight:'600', backgroundColor: isPast ? '#f3f4f6' : 'white', cursor: isPast ? 'not-allowed' : 'auto'}} />
+                                    style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #fed7aa',borderRadius:'4px',textAlign:'center',color: isPast ? '#9ca3af' : '#2563EB',fontWeight:'600',backgroundColor: isPast ? '#f3f4f6' : 'white',cursor: isPast ? 'not-allowed' : 'auto'}} />
                                 </td>
                               </tr>
                             );
                           })}
-                          {/* #6: Annual totals row */}
+                          {/* Annual totals row */}
                           <tr style={{borderTop:'2px solid #e5e7eb',backgroundColor:'#f0fdf4',fontWeight:'700'}}>
                             <td style={{padding:'12px 8px',color:'#166534',fontSize:'13px'}}>📊 YEAR TOTAL</td>
-                            <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{totCarNPE}</td>
-                            <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{totCarStarted}</td>
-                            <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{totApoNPE}</td>
-                            <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{totApoStarted}</td>
-                            <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{totCarNPE + totApoNPE > 0 ? Math.round(((totCarStarted + totApoStarted) / (totCarNPE + totApoNPE)) * 100) : 0}%</td>
+                            {totByLoc.map((t, li) => (
+                              <React.Fragment key={li}>
+                                <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{t.npe}</td>
+                                <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{t.started}</td>
+                              </React.Fragment>
+                            ))}
+                            <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{totNPE > 0 ? Math.round((totStarted / totNPE) * 100) : 0}%</td>
                           </tr>
                         </tbody>
                       </table>
@@ -6099,10 +7108,10 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                 </button>
                 {goalsSaveMsg && <span style={{color:'#10b981',fontWeight:'600',fontSize:'15px'}}>{goalsSaveMsg}</span>}
               </div>
-            </div>
+            </div></>)}
 
-            {/* ── Support Inbox (admin only) ── */}
-            {currentUser?.role === 'admin' && (
+            {/* ── Support Inbox (superadmin only) ── */}
+            {currentUser?.practiceId === 'miller-ortho' && currentUser?.role === 'admin' && (
               <div style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'24px'}}>
                 <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px',flexWrap:'wrap',gap:'10px'}}>
                   <div>
@@ -6616,12 +7625,13 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
               <div>
                 <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Location</label>
                 <select 
-                  value={editForm.location || 'Car'}
+                  value={editForm.location || locations[0] || ''}
                   onChange={(e) => setEditForm({...editForm, location: e.target.value})}
                   style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
                 >
-                  <option value="Car">Carrollwood</option>
-                  <option value="Apo">Apollo Beach</option>
+                  {(locations.length > 0 ? locations : ['Car', 'Apo']).map(loc => (
+                    <option key={loc} value={loc}>{loc}</option>
+                  ))}
                 </select>
               </div>
               <div>
@@ -6806,10 +7816,10 @@ const NPEDashboard = ({ currentUser, onSignOut }) => {
                   );
                 })}
               </div>
-              {/* R+/W+ add-ons when DB/RETS is selected */}
-              {editForm.DBRETS && (
+              {/* R+/W+ add-ons for any started patient */}
+              {(editForm.DBRETS || editForm.ST || isSDS(editForm)) && (
                 <div style={{marginTop:'10px',padding:'12px 14px',backgroundColor:'#f0fdf4',borderRadius:'8px',border:'1px solid #bbf7d0'}}>
-                  <div style={{fontSize:'13px',fontWeight:'600',color:'#166534',marginBottom:'8px'}}>DB/RETS Add-ons</div>
+                  <div style={{fontSize:'13px',fontWeight:'600',color:'#166534',marginBottom:'8px'}}>Add-ons</div>
                   <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
                     {[['R+','Retainers',`+$${bonusRates.ret}`],['W+','Whitening',`+$${bonusRates.white}`]].map(([key, label, bonus]) => (
                       <label key={key} style={{display:'flex',alignItems:'center',cursor:'pointer',padding:'6px 12px',
@@ -7145,4 +8155,10 @@ const MetricCard = ({label, value, color, goal, goalLabel, sub, badge, badgeColo
 
 
 
-export default App;
+const AppWithBoundary = () => (
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
+
+export default AppWithBoundary;
