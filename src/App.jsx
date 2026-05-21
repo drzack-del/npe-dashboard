@@ -867,7 +867,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     ]
   };
   const [goals, setGoals] = useState(() => {
-    const saved = localStorage.getItem('npe-goals');
+    const saved = localStorage.getItem('npe-goals') || localStorage.getItem('goals');
     return saved ? JSON.parse(saved) : defaultGoalsData;
   });
   const [goalsSaveMsg, setGoalsSaveMsg] = useState('');
@@ -914,8 +914,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (loading || patients.length === 0) return;
     const toFix = patients.filter(p => {
       if (p.MP) {
-        const effObstacle = p.obstacle || 'Waiting to Hear from Medicaid';
-        const correctNext = calcNextTouchDate(p.npeDate, effObstacle, p.contactAttempts || 0, p.lastContactDate || '');
         return !p.obstacle || !p.nextTouchDate;
       }
       if (p.OBS) {
@@ -938,10 +936,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       return p;
     });
     setPatients(fixed);
-    toFix.forEach(p => {
+    Promise.all(toFix.map(p => {
       const fp = fixed.find(f => f.id === p.id);
-      if (fp) dbUpsert(fp);
-    });
+      return fp ? dbUpsert(fp) : Promise.resolve();
+    }));
   }, [loading]);
 
   // Always backup to localStorage — safety net even when Supabase is active
@@ -969,7 +967,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contact_log: patient.contact_log || [],
       from_pending: patient.fromPending || false,
       practice_id: managedPracticeId || currentUser.practiceId
-    });
+    }, { onConflict: 'id' });
     if (error) {
       console.error('Supabase upsert error:', error);
       setSaveError('⚠️ Cloud save failed for ' + patient.name + ' — ' + (error.message || error.code || 'unknown error') + '. Saved locally only.');
@@ -1056,7 +1054,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       if (cloudLocations && Array.isArray(cloudLocations)) { setLocations(cloudLocations); localStorage.setItem('npe-locations', JSON.stringify(cloudLocations)); }
     };
     loadSettings();
-  }, [currentUser?.practiceId]);
+  }, [currentUser?.practiceId, managedPracticeId]);
   // ─────────────────────────────────────────────────────────────────────
 
   // ── Team Management helpers ───────────────────────────────────────────
@@ -1153,14 +1151,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   const switchBackToAdmin = async () => {
     const orig = superadminOriginalUser;
-    setSuperadminOriginalUser(null);
-    setManagedPracticeId(null);
     const [locData, usersData] = await Promise.all([
       supabase.from('settings').select('value').eq('key','locations').eq('practice_id', orig.practiceId).maybeSingle(),
       supabase.from('tc_users').select('*').eq('practice_id', orig.practiceId).order('created_at', { ascending: true }),
     ]);
     setLocations(locData?.data?.value || []);
     setTcUsers(usersData?.data || []);
+    setSuperadminOriginalUser(null);
+    setManagedPracticeId(null);
     onUserChange(orig);
     setCurrentView('settings');
   };
@@ -1179,7 +1177,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       const dismissed = localStorage.getItem(`onboarding-dismissed-${currentUser?.practiceId}`);
       if (!dismissed) setShowOnboarding(true);
     }
-  }, [loading, patients.length]);
+  }, [loading, patients.length, currentUser?.practiceId]);
   // ── Practice Metrics Supabase helpers ────────────────────────────────
   const loadPracticeMetrics = async () => {
     if (currentUser?.id === 'demo') {
@@ -1223,13 +1221,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     }
     if (!supabase) return;
     const [{ data: metrics }, { data: goals }] = await Promise.all([
-      supabase.from('practice_metrics').select('*').eq('practice_id', currentUser.practiceId).order('year', { ascending: true }).order('month', { ascending: true }),
-      supabase.from('practice_goals').select('*').eq('practice_id', currentUser.practiceId).order('year', { ascending: true }).order('month', { ascending: true })
+      supabase.from('practice_metrics').select('*').eq('practice_id', managedPracticeId || currentUser.practiceId).order('year', { ascending: true }).order('month', { ascending: true }),
+      supabase.from('practice_goals').select('*').eq('practice_id', managedPracticeId || currentUser.practiceId).order('year', { ascending: true }).order('month', { ascending: true })
     ]);
     if (metrics) setPracticeMetrics(metrics);
     if (goals) setPracticeGoals(goals);
   };
-  useEffect(() => { if (metricsUnlocked) loadPracticeMetrics(); }, [metricsUnlocked, currentUser?.practiceId]);
+  useEffect(() => { if (metricsUnlocked) loadPracticeMetrics(); }, [metricsUnlocked, currentUser?.practiceId, managedPracticeId]);
 
   // Pull shows, starts, OBS for a given month directly from patient data
   const getDashboardMonthData = (year, month) => {
@@ -1707,8 +1705,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setSaveToast('✅ ' + patient.name + ' saved!' + nextInfo);
     setTimeout(() => setSaveToast(''), 4000);
     setNewPatientForm({
-      name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: locations[0] || newPatientForm.location || '', dp: '',
-      tc: tcNames[0] || newPatientForm.tc || '', status: '',
+      name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: newPatientForm.location || locations[0] || '', dp: '',
+      tc: newPatientForm.tc || tcNames[0] || '', status: '',
       BR: false, INV: false, PH1: false, PH2: false, LTD: false,
       'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: ''
     });
@@ -5261,7 +5259,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const avg_fee      = starts > 0 ? net_prod / starts : null;
             if (supabase) {
               await supabase.from('practice_metrics').upsert({
-                year: y, month: mo, practice_id: currentUser.practiceId,
+                year: y, month: mo, practice_id: managedPracticeId || currentUser.practiceId,
                 net_production: net_prod, collections, npe_scheduled: npe_sched,
                 npe_showed, obs_added, starts,
                 show_up_rate, conversion_rate: conv_rate, avg_case_fee: avg_fee,
@@ -5270,7 +5268,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               if (prod_goal > 0 || starts_goal > 0 || npe_goal_v > 0) {
                 const existingGoal = practiceGoals.find(g => g.year === y && g.month === mo);
                 await supabase.from('practice_goals').upsert({
-                  year: y, month: mo, practice_id: currentUser.practiceId,
+                  year: y, month: mo, practice_id: managedPracticeId || currentUser.practiceId,
                   production_goal: prod_goal   > 0 ? prod_goal   : (existingGoal?.production_goal || 0),
                   start_goal:      starts_goal > 0 ? starts_goal : (existingGoal?.start_goal || 0),
                   npe_goal:        npe_goal_v  > 0 ? npe_goal_v  : (existingGoal?.npe_goal || 0),
@@ -5291,7 +5289,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const num = parseFloat(raw) || 0;
             const existing = practiceGoals.find(g => g.year === edit.year && g.month === edit.month);
             await supabase.from('practice_goals').upsert({
-              year: edit.year, month: edit.month, practice_id: currentUser.practiceId,
+              year: edit.year, month: edit.month, practice_id: managedPracticeId || currentUser.practiceId,
               production_goal:   edit.field === 'prod'   ? num                  : (existing?.production_goal || 0),
               start_goal:        edit.field === 'starts' ? num                  : (existing?.start_goal || 0),
               npe_goal:          edit.field === 'npe'    ? num                  : (existing?.npe_goal || 0),
@@ -5306,7 +5304,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             if (!supabase || !yearGoals.length) return;
             const factor = 1 + pct / 100;
             const updates = yearGoals.map(g => ({
-              year: g.year, month: g.month, practice_id: currentUser.practiceId,
+              year: g.year, month: g.month, practice_id: managedPracticeId || currentUser.practiceId,
               production_goal:   g.production_goal ? Math.round(g.production_goal * factor / 100) * 100 : 0,
               start_goal:        g.start_goal       ? Math.round(g.start_goal * factor)              : 0,
               npe_goal:          g.npe_goal         ? Math.round(g.npe_goal * factor)                : 0,
@@ -5915,7 +5913,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               if (supabase) {
                                 await Promise.all(yearSuggestions.map(s =>
                                   supabase.from('practice_goals').upsert({
-                                    year: s.year, month: s.month, practice_id: currentUser.practiceId,
+                                    year: s.year, month: s.month, practice_id: managedPracticeId || currentUser.practiceId,
                                     production_goal: s.production_goal, npe_goal: s.npe_goal,
                                     start_goal: s.start_goal, conversion_goal: s.conversion_goal,
                                     avg_case_fee_goal: s.avg_case_fee_goal
@@ -6647,7 +6645,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         localStorage.setItem('npe-bonus-rates', JSON.stringify(bonusRates));
                         setSaveToast('⏳ Saving bonus rates...');
                         const { error } = await supabase.from('settings').upsert(
-                          { key: 'bonus-rates', value: bonusRates, practice_id: currentUser.practiceId },
+                          { key: 'bonus-rates', value: bonusRates, practice_id: managedPracticeId || currentUser.practiceId },
                           { onConflict: 'key,practice_id' }
                         );
                         if (error) {
@@ -7777,9 +7775,26 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             </div>
 
             <div style={{marginBottom:'16px'}}>
+              <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'8px'}}>Treatment Type</label>
+              <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+                {[['BR','Braces'],['INV','Invisalign'],['PH1','Phase 1'],['PH2','Phase 2'],['LTD','Limited']].map(([key, label]) => (
+                  <label key={key} style={{display:'flex',alignItems:'center',cursor:'pointer',padding:'8px 12px',
+                    border:`2px solid ${editForm[key] ? '#3b82f6' : '#d1d5db'}`,
+                    backgroundColor: editForm[key] ? '#eff6ff' : 'white',borderRadius:'6px',gap:'6px'}}>
+                    <input type="checkbox" checked={editForm[key] || false}
+                      onChange={e => setEditForm({...editForm, [key]: e.target.checked})}
+                      style={{marginRight:'2px'}} />
+                    <span style={{fontSize:'13px'}}>{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div style={{marginBottom:'16px'}}>
               <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'8px'}}>Status</label>
               <div style={{display:'grid',gridTemplateColumns:'repeat(4, 1fr)',gap:'8px'}}>
                 {[
+                  {value: 'SDS',    label: 'SDS — Same Day'},
                   {value: 'ST',     label: 'ST — Started'},
                   {value: 'SCH',    label: 'SCH — Scheduled'},
                   {value: 'PEN',    label: 'PEN — Pending'},
@@ -7789,7 +7804,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   {value: 'DBRETS', label: 'DB/RETS'},
                 ].map(status => {
                   const allStatuses = ['ST','SCH','PEN','OBS','MP','NOTX','DBRETS'];
-                  const isActive = editForm[status.value] || false;
+                  const isActive = status.value === 'SDS' ? isSDS(editForm) : (editForm[status.value] || false);
                   return (
                     <label key={status.value} style={{display:'flex',alignItems:'center',cursor:'pointer',padding:'8px 10px',
                       border:`2px solid ${isActive ? '#2563EB' : '#e5e7eb'}`,borderRadius:'6px',
@@ -7799,10 +7814,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         name="edit-status"
                         checked={isActive}
                         onChange={() => {
-                          // Clear all statuses then set the selected one
                           const updated = {...editForm};
                           allStatuses.forEach(s => { updated[s] = false; });
-                          updated[status.value] = true;
+                          // SDS = no status flags set + treatment type checked — just clear all flags
+                          if (status.value !== 'SDS') updated[status.value] = true;
                           if (status.value === 'MP') {
                             if (!updated.obstacle) updated.obstacle = 'Waiting to Hear from Medicaid';
                             if (updated.npeDate) updated.nextTouchDate = calcNextTouchDate(updated.npeDate, updated.obstacle, updated.contactAttempts || 0, updated.lastContactDate || '');
