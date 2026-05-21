@@ -747,6 +747,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [demoTourStep, setDemoTourStep] = useState(null);
   const [activeHelpTip, setActiveHelpTip] = useState(null);
 
+  // Medicaid submission pipeline
+  const [medWfModal, setMedWfModal] = useState(null); // { patient, stage: 1|2|3|4 }
+  const [medWfForm, setMedWfForm] = useState({});
+
   // Support / feedback
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [feedbackForm, setFeedbackForm] = useState({ category: '', description: '' });
@@ -897,7 +901,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             nextTouchDate: r.next_touch_date || '',
             lastContactDate: r.last_contact_date || '',
             contact_log: r.contact_log || [],
-            fromPending: r.from_pending || false
+            fromPending: r.from_pending || false,
+            insuranceWorkflow: r.insurance_workflow || null
           })));
         }
       } else {
@@ -968,6 +973,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       last_contact_date: patient.lastContactDate,
       contact_log: patient.contact_log || [],
       from_pending: patient.fromPending || false,
+      insurance_workflow: patient.insuranceWorkflow || null,
       practice_id: managedPracticeId || currentUser.practiceId
     });
     if (error) {
@@ -1488,7 +1494,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         reachedPatient: contactForm.reachedPatient,
         outcome: contactForm.outcome,
         sentText: contactForm.sentText,
-        notes: contactForm.notes
+        notes: contactForm.notes,
+        logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
       };
       const updatedObstacle = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
       const effectiveObstacle = updatedObstacle || (p.MP ? 'Waiting to Hear from Medicaid' : '');
@@ -1525,7 +1532,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         reachedPatient: contactForm.reachedPatient,
         outcome: 'Not interested — converted to No Treatment',
         sentText: contactForm.sentText,
-        notes: contactForm.notes
+        notes: contactForm.notes,
+        logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
       };
       updatedPatient = {
         ...p,
@@ -1604,7 +1612,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       reachedPatient: 'Missed appointment',
       outcome: `Missed initial bond scheduled for ${patient.bondDate} — returned to Pending`,
       sentText: false,
-      notes: notes
+      notes: notes,
+      logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
     };
     const updatedPatient = {
       ...patient,
@@ -1630,7 +1639,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       reachedPatient: 'Rescheduled',
       outcome: `Bond appointment rescheduled from ${patient.bondDate} to ${newBondDate}`,
       sentText: false,
-      notes: notes
+      notes: notes,
+      logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
     };
     const updatedPatient = {
       ...patient,
@@ -1872,8 +1882,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       <nav style={{backgroundColor:'white',borderBottom:'1px solid #e5e7eb'}}>
         <div style={{maxWidth:'1400px',margin:'0 auto',padding:'0 16px',display:'flex',gap:'8px',overflowX:'auto'}}>
           {(currentUser?.role === 'tc'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'settings']
-            : ['dashboard', 'followup', 'add', 'patients', 'bonus', 'ontime', 'metrics', 'settings',
+            ? ['dashboard', 'followup', 'add', 'patients', 'medicaid', ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'settings']
+            : ['dashboard', 'followup', 'add', 'patients', 'medicaid', 'bonus', 'ontime', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
             <button
@@ -1900,6 +1910,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {view === 'followup' && '🔔 Follow-Up Queue'}
               {view === 'add' && '➕ Add NPE'}
               {view === 'patients' && '👥 All Patients'}
+              {view === 'medicaid' && '🏥 Medicaid Pipeline'}
               {view === 'monthly' && '📊 Monthly Reports'}
               {view === 'bonus' && '💰 Bonus Audit'}
               {view === 'ontime' && '⏱️ On-Time Audit'}
@@ -2034,12 +2045,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
             // Per-TC data
             const perTCNew = tcNames.map(tcName => {
-              // On-time rate for selected month
+              // On-time rate for selected month — credit who logged the call, not the patient's TC
               let tcOT=0, tcOTTotal=0;
               patients.forEach(p => {
-                if (p.tc !== tcName) return;
                 (p.contact_log||[]).forEach(entry => {
                   if (!entry.scheduledDate || !entry.date || !entry.date.startsWith(selMonthStr)) return;
+                  const logger = entry.logged_by || p.tc;
+                  if (logger !== tcName) return;
                   tcOTTotal++;
                   if (entry.date <= entry.scheduledDate) tcOT++;
                 });
@@ -2077,41 +2089,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               }).length;
               // Starts this month (for campaign threshold display)
               const tcStartsThisMonth = selStartPts.filter(p => p.tc===tcName && (isSDS(p)||p.ST)).length;
-              // Reach rate — all time from contact logs
-              let tcTotalContacts=0, tcReached=0, tcVoicemail=0, tcNoAnswer=0;
-              patients.filter(p=>p.tc===tcName).forEach(p => {
-                (p.contact_log||[]).forEach(entry => {
-                  if (!entry.reachedPatient) return;
-                  if (entry.reachedPatient === "Waiting on Medicaid — didn't call") return;
-                  tcTotalContacts++;
-                  if (entry.reachedPatient === 'Spoke with patient') tcReached++;
-                  else if (entry.reachedPatient === 'Left voicemail') tcVoicemail++;
-                  else if (entry.reachedPatient === 'No answer') tcNoAnswer++;
-                });
-              });
-              const tcReachRate = tcTotalContacts > 0 ? Math.round((tcReached/tcTotalContacts)*100) : null;
-              // Best time to call buckets
-              const tcTimeBuckets = [
-                { label:'8–10 AM',  start:8,  end:10 },
-                { label:'10–12 PM', start:10, end:12 },
-                { label:'12–2 PM',  start:12, end:14 },
-                { label:'2–4 PM',   start:14, end:16 },
-                { label:'4–6 PM',   start:16, end:18 },
-                { label:'6+ PM',    start:18, end:24 },
-              ].map(bucket => {
-                let tot=0, hit=0;
-                patients.filter(p=>p.tc===tcName).forEach(p => {
-                  (p.contact_log||[]).forEach(entry => {
-                    if (!entry.time || !entry.reachedPatient) return;
-                    const hr = parseInt(entry.time.split(':')[0]);
-                    if (hr >= bucket.start && hr < bucket.end) {
-                      tot++;
-                      if (entry.reachedPatient === 'Spoke with patient') hit++;
-                    }
-                  });
-                });
-                return { ...bucket, total:tot, reached:hit, rate: tot>=3 ? Math.round((hit/tot)*100) : null };
-              }).filter(b=>b.total>0);
               return {
                 name: tcName,
                 onTimeRate: tcOTTotal>0 ? Math.round((tcOT/tcOTTotal)*100) : null,
@@ -2122,14 +2099,46 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 dueToday: tcDueToday,
                 startsThisMonth: tcStartsThisMonth,
                 activeCampaigns,
-                reachRate: tcReachRate,
-                reachedCount: tcReached,
-                voicemailCount: tcVoicemail,
-                noAnswerCount: tcNoAnswer,
-                totalContacts: tcTotalContacts,
-                timeBuckets: tcTimeBuckets,
               };
             });
+
+            // Call performance grouped by who LOGGED the call (logged_by), filtered to selected month
+            const callLoggerMap = {};
+            patients.forEach(p => {
+              (p.contact_log||[]).forEach(entry => {
+                if (!entry.reachedPatient) return;
+                if (entry.reachedPatient === "Waiting on Medicaid — didn't call") return;
+                if (!entry.date || !entry.date.startsWith(selMonthStr)) return;
+                const logger = entry.logged_by || p.tc || 'Unknown';
+                if (!callLoggerMap[logger]) callLoggerMap[logger] = { total:0, reached:0, voicemail:0, noAnswer:0, missed:0, textWithMissed:0, buckets:{} };
+                const s = callLoggerMap[logger];
+                s.total++;
+                if (entry.reachedPatient === 'Spoke with patient') s.reached++;
+                else if (entry.reachedPatient === 'Left voicemail') { s.voicemail++; s.missed++; if (entry.sentText) s.textWithMissed++; }
+                else if (entry.reachedPatient === 'No answer') { s.noAnswer++; s.missed++; if (entry.sentText) s.textWithMissed++; }
+                if (entry.time) {
+                  const hr = parseInt(entry.time.split(':')[0]);
+                  const bl = hr<10?'8–10 AM':hr<12?'10–12 PM':hr<14?'12–2 PM':hr<16?'2–4 PM':hr<18?'4–6 PM':'6+ PM';
+                  if (!s.buckets[bl]) s.buckets[bl] = { label:bl, start:hr, total:0, reached:0 };
+                  s.buckets[bl].total++;
+                  if (entry.reachedPatient === 'Spoke with patient') s.buckets[bl].reached++;
+                }
+              });
+            });
+            const callPerLogger = Object.entries(callLoggerMap).map(([name, s]) => ({
+              name,
+              totalContacts: s.total,
+              reachRate: s.total>0 ? Math.round((s.reached/s.total)*100) : null,
+              reachedCount: s.reached,
+              voicemailCount: s.voicemail,
+              noAnswerCount: s.noAnswer,
+              missedCalls: s.missed,
+              textWithMissed: s.textWithMissed,
+              textFollowUpRate: s.missed>0 ? Math.round((s.textWithMissed/s.missed)*100) : null,
+              timeBuckets: Object.values(s.buckets).sort((a,b)=>a.start-b.start)
+                .map(b=>({ ...b, rate: b.total>=3 ? Math.round((b.reached/b.total)*100) : null }))
+                .filter(b=>b.total>0),
+            })).filter(l => l.totalContacts > 0);
 
             // Queue health (always today-based)
             const allDueTodayNew = patients.filter(p => {
@@ -2178,10 +2187,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </div>
                     <button onClick={()=>setCurrentView('ontime')} style={{padding:'8px 16px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
                   </div>
-                  <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(perTCNew.length,1)},1fr)`,gap:'14px'}}>
-                    {perTCNew.length === 0
+                  {(() => {
+                    const activeTCNew = perTCNew.filter(tc => tc.onTimeTotal > 0);
+                    const displayTCNew = activeTCNew.length > 0 ? activeTCNew : perTCNew;
+                    return (
+                  <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(displayTCNew.length,1)},1fr)`,gap:'14px'}}>
+                    {displayTCNew.length === 0
                       ? <div style={{backgroundColor:'white',borderRadius:'12px',padding:'24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',color:'#9ca3af',fontSize:'14px'}}>No TCs configured</div>
-                      : perTCNew.map(tc => {
+                      : displayTCNew.map(tc => {
                         const r = tc.onTimeRate;
                         const statusLabel = r===null?'No calls logged yet':r>=80?'On track':r>=60?'Needs improvement':'Falling behind';
                         const statusIcon  = r===null?'—':r>=80?'✓':r>=60?'⚠️':'🔴';
@@ -2201,6 +2214,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         );
                       })}
                   </div>
+                    );
+                  })()}
                 </div>
 
                 {/* KPI Row */}
@@ -2373,13 +2388,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const bestBucketRate = allTimeBuckets.length > 0 ? Math.max(...allTimeBuckets.filter(b=>b.rate!==null).map(b=>b.rate), 0) : 0;
                   const bClr = r=>r===null?'#9ca3af':r>=50?'#10b981':r>=30?'#f59e0b':'#ef4444';
 
-                  if (winRates.length === 0 && callPerTC.length === 0) return null;
+                  if (winRates.length === 0 && callPerLogger.length === 0) return null;
                   return (
                     <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
                       {winRates.length > 0 && (
                         <>
                           <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'16px',marginTop:0}}>🚧 Obstacle Intelligence — Win Rates</h3>
-                          <div style={{display:'flex',flexDirection:'column',gap:'12px',marginBottom: callPerTC.length>0 ? '20px' : '0'}}>
+                          <div style={{display:'flex',flexDirection:'column',gap:'12px',marginBottom: callPerLogger.length>0 ? '20px' : '0'}}>
                             {winRates.map(({obs,total,started,active,rate}) => (
                               <div key={obs}>
                                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:'4px'}}>
@@ -2401,12 +2416,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </>
                       )}
 
-                      {/* Pick-Up Rate + Best Time to Call per TC */}
-                      {callPerTC.length > 0 && (
+                      {/* Pick-Up Rate + Best Time to Call per logger */}
+                      {callPerLogger.length > 0 && (
                         <div style={{paddingTop: winRates.length>0 ? '20px' : '0', borderTop: winRates.length>0 ? '1px solid #f3f4f6' : 'none'}}>
                           <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'14px',marginTop:0}}>📞 Call Performance</h3>
-                          <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(callPerTC.length,1)},1fr)`,gap:'20px'}}>
-                            {callPerTC.map(tc => (
+                          <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(callPerLogger.length,1)},1fr)`,gap:'20px'}}>
+                            {callPerLogger.map(tc => (
                               <div key={tc.name}>
                                 <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'10px'}}>{tc.name}</div>
                                 {/* Pick-up rate */}
@@ -3023,9 +3038,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const perTC = tcNames.map(tcName => {
             let tcOT = 0, tcOTTotal = 0;
             patients.forEach(p => {
-              if (p.tc !== tcName) return;
               (p.contact_log || []).forEach(entry => {
                 if (!entry.scheduledDate || !entry.date || !entry.date.startsWith(monthStr)) return;
+                // Credit the person who logged the call, not the patient's TC
+                const logger = entry.logged_by || p.tc;
+                if (logger !== tcName) return;
                 tcOTTotal++;
                 if (entry.date <= entry.scheduledDate) tcOT++;
               });
@@ -3089,6 +3106,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             { label:'On-Time %', value: onTimeRate !== null ? `${onTimeRate}%` : '—', goal: '80%', color: otColor },
           ];
 
+          // Only show TCs who logged calls this month (filters out departed TCs like Reaghan)
+          const activePerTC = perTC.filter(tc => tc.onTimeTotal > 0);
+          const displayPerTC = activePerTC.length > 0 ? activePerTC : perTC;
+
           const useNewDashboard = hasFeature('newDashboard', currentUser?.practiceId);
 
           // ── NEW DASHBOARD LAYOUT (miller-ortho only) ──────────────────
@@ -3111,10 +3132,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     Full Audit →
                   </button>
                 </div>
-                <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(perTC.length, 1)}, 1fr)`,gap:'14px'}}>
-                  {perTC.length === 0 ? (
+                <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(displayPerTC.length, 1)}, 1fr)`,gap:'14px'}}>
+                  {displayPerTC.length === 0 ? (
                     <div style={{backgroundColor:'white',borderRadius:'12px',padding:'24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',color:'#9ca3af',fontSize:'14px'}}>No TCs configured</div>
-                  ) : perTC.map(tc => {
+                  ) : displayPerTC.map(tc => {
                     const rate = tc.onTimeRate;
                     const bg = rate === null ? '#f9fafb' : rate >= 80 ? '#f0fdf4' : rate >= 60 ? '#fffbeb' : '#fef2f2';
                     const border = rate === null ? '#e5e7eb' : rate >= 80 ? '#86efac' : rate >= 60 ? '#fde68a' : '#fca5a5';
@@ -4668,6 +4689,347 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             })()}
           </div>
         )}
+
+        {/* MEDICAID PIPELINE */}
+        {currentView === 'medicaid' && (() => {
+          const todayStr = new Date().toISOString().split('T')[0];
+          const mpPatients = patients.filter(p => p.MP);
+
+          // Stage helpers
+          const getStage = p => {
+            const w = p.insuranceWorkflow;
+            if (!w || !w.submittedDate) return 1;
+            if (!w.decisionDate) return 2;
+            if (!w.patientContactedDate) return 3;
+            if (!w.patientDecision) return 4;
+            return 5; // completed
+          };
+
+          const stagePatients = [1,2,3,4,5].map(s => mpPatients.filter(p => getStage(p) === s));
+          const [s1, s2, s3, s4, s5] = stagePatients;
+
+          const stageConfig = [
+            { stage: 1, label: 'Needs Submission', color: '#ef4444', bg: '#fef2f2', border: '#fecaca', icon: '📤', desc: 'Claim not yet submitted to Medicaid' },
+            { stage: 2, label: 'Awaiting Decision', color: '#d97706', bg: '#fffbeb', border: '#fde68a', icon: '⏳', desc: 'Claim submitted — waiting for approval or denial' },
+            { stage: 3, label: 'Decision Received — Call Patient', color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe', icon: '📞', desc: 'Got the decision — patient needs to be contacted' },
+            { stage: 4, label: 'Awaiting Patient Decision', color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe', icon: '🤔', desc: 'Patient was contacted — record their decision' },
+            { stage: 5, label: 'Completed', color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0', icon: '✅', desc: 'Pipeline complete' },
+          ];
+
+          const openModal = (patient, stage) => {
+            setMedWfModal({ patient, stage });
+            setMedWfForm({});
+          };
+
+          const saveWorkflow = async (patient, updates) => {
+            const newWorkflow = { ...(patient.insuranceWorkflow || {}), ...updates };
+            let patientUpdates = { insuranceWorkflow: newWorkflow };
+
+            // Stage 4 — if scheduling, convert to SCH
+            if (updates.patientDecision === 'scheduling') {
+              patientUpdates = {
+                ...patientUpdates,
+                SCH: true, MP: false, PEN: false,
+                obstacle: '',
+                bondDate: updates.bondDate || '',
+              };
+            }
+            // If not interested / went elsewhere → NOTX
+            if (updates.patientDecision === 'not_interested' || updates.patientDecision === 'went_elsewhere') {
+              patientUpdates = { ...patientUpdates, NOTX: true, MP: false };
+            }
+            // Needs more time → stays MP but reset cadence
+            if (updates.patientDecision === 'needs_time') {
+              patientUpdates = { ...patientUpdates, MP: true };
+            }
+
+            const updated = { ...patient, ...patientUpdates };
+            setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
+            await dbUpsert(updated);
+            setMedWfModal(null);
+            setMedWfForm({});
+          };
+
+          const formatDate = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+
+          // Days since NPE
+          const daysSince = npeDate => {
+            if (!npeDate) return null;
+            const diff = Math.floor((new Date(todayStr) - new Date(npeDate + 'T00:00:00')) / 86400000);
+            return diff;
+          };
+
+          // Compact kanban card
+          const KanbanCard = ({ p, cfg }) => {
+            const w = p.insuranceWorkflow || {};
+            const days = daysSince(p.npeDate);
+            const ageBg  = days > 60 ? '#fee2e2' : days > 30 ? '#fef3c7' : '#f3f4f6';
+            const ageClr = days > 60 ? '#991b1b' : days > 30 ? '#92400e' : '#6b7280';
+            return (
+              <div style={{backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'8px',padding:'12px',borderTop:`3px solid ${cfg.color}`}}>
+                {/* Name + age badge */}
+                <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'6px',marginBottom:'6px'}}>
+                  <span style={{fontWeight:'700',fontSize:'13px',color:'#111827',lineHeight:'1.3'}}>{p.name}</span>
+                  {days !== null && (
+                    <span style={{fontSize:'10px',padding:'2px 5px',borderRadius:'4px',fontWeight:'700',backgroundColor:ageBg,color:ageClr,whiteSpace:'nowrap',flexShrink:0}}>
+                      {days}d
+                    </span>
+                  )}
+                </div>
+
+                {/* Meta row */}
+                <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'8px',lineHeight:'1.4'}}>
+                  {p.tc && <span style={{marginRight:'6px'}}>{p.tc}</span>}
+                  {p.npeDate && <span>NPE {formatDate(p.npeDate)}</span>}
+                </div>
+
+                {/* Stage-specific detail */}
+                {cfg.stage >= 2 && w.submittedDate && (
+                  <div style={{fontSize:'11px',color:'#6b7280',marginBottom:'4px'}}>
+                    Submitted {formatDate(w.submittedDate)}
+                  </div>
+                )}
+                {cfg.stage >= 3 && w.decisionResult && (
+                  <div style={{fontSize:'11px',fontWeight:'700',marginBottom:'4px',color: w.decisionResult === 'approved' ? '#16a34a' : '#dc2626'}}>
+                    {w.decisionResult === 'approved' ? '✅ Approved' : '❌ Denied'}
+                  </div>
+                )}
+                {cfg.stage >= 4 && w.contactNotes && (
+                  <div style={{fontSize:'11px',color:'#6b7280',marginBottom:'4px',fontStyle:'italic'}}>
+                    "{w.contactNotes.slice(0, 50)}{w.contactNotes.length > 50 ? '…' : ''}"
+                  </div>
+                )}
+                {cfg.stage === 5 && w.patientDecision && (
+                  <div style={{fontSize:'11px',fontWeight:'600',color:'#16a34a',marginBottom:'4px'}}>
+                    {w.patientDecision === 'scheduling'     ? '🎉 Scheduling'    :
+                     w.patientDecision === 'needs_time'     ? '⏳ Needs time'    :
+                     w.patientDecision === 'not_interested' ? 'Not interested'   :
+                     w.patientDecision === 'went_elsewhere' ? 'Went elsewhere'   : w.patientDecision}
+                  </div>
+                )}
+
+                {/* Action button */}
+                {cfg.stage < 5 && (
+                  <button onClick={() => openModal(p, cfg.stage)}
+                    style={{width:'100%',marginTop:'8px',padding:'7px 0',backgroundColor:cfg.color,color:'white',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
+                    {cfg.stage === 1 ? 'Mark Submitted →' :
+                     cfg.stage === 2 ? 'Enter Decision →' :
+                     cfg.stage === 3 ? 'Log Call →'       :
+                     'Record Outcome →'}
+                  </button>
+                )}
+              </div>
+            );
+          };
+
+          return (
+            <div>
+              {/* Header */}
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'20px',flexWrap:'wrap',gap:'12px'}}>
+                <div>
+                  <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',margin:0}}>🏥 Medicaid Pipeline</h2>
+                  <p style={{fontSize:'13px',color:'#6b7280',marginTop:'4px',marginBottom:0}}>
+                    {mpPatients.length} patients · {s5.length} completed · {mpPatients.length - s5.length} in progress
+                  </p>
+                </div>
+              </div>
+
+              {mpPatients.length === 0 && (
+                <div style={{backgroundColor:'white',borderRadius:'10px',padding:'48px',textAlign:'center',color:'#9ca3af',border:'1px solid #e5e7eb'}}>
+                  <div style={{fontSize:'40px',marginBottom:'12px'}}>🏥</div>
+                  <div style={{fontSize:'16px',fontWeight:'600'}}>No Medicaid patients yet</div>
+                  <div style={{fontSize:'13px',marginTop:'4px'}}>Add a patient with MP status to start tracking submissions here.</div>
+                </div>
+              )}
+
+              {/* Kanban board — 4 active columns + completed */}
+              {mpPatients.length > 0 && (
+                <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'14px',alignItems:'start'}}>
+                  {stageConfig.slice(0,4).map(cfg => {
+                    const pts = stagePatients[cfg.stage - 1];
+                    return (
+                      <div key={cfg.stage} style={{backgroundColor:'#f9fafb',border:'1px solid #e5e7eb',borderRadius:'10px',overflow:'hidden'}}>
+                        {/* Column header */}
+                        <div style={{padding:'12px 14px',borderBottom:'1px solid #e5e7eb',backgroundColor:cfg.bg}}>
+                          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                            <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                              <span style={{fontSize:'14px'}}>{cfg.icon}</span>
+                              <span style={{fontWeight:'700',fontSize:'13px',color:cfg.color}}>{cfg.label}</span>
+                            </div>
+                            <span style={{fontSize:'12px',fontWeight:'800',color:cfg.color,backgroundColor:'white',border:`1px solid ${cfg.border}`,borderRadius:'10px',padding:'1px 8px',minWidth:'20px',textAlign:'center'}}>
+                              {pts.length}
+                            </span>
+                          </div>
+                        </div>
+                        {/* Cards */}
+                        <div style={{padding:'10px',display:'flex',flexDirection:'column',gap:'8px',minHeight:'80px'}}>
+                          {pts.length === 0 && (
+                            <div style={{textAlign:'center',color:'#d1d5db',fontSize:'12px',padding:'16px 0'}}>No patients</div>
+                          )}
+                          {pts.map(p => <KanbanCard key={p.id} p={p} cfg={cfg} />)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Completed — collapsed below the board */}
+              {s5.length > 0 && (() => {
+                const [showCompleted, setShowCompleted] = React.useState(false);
+                const cfg = stageConfig[4];
+                return (
+                  <div style={{marginTop:'20px'}}>
+                    <button onClick={() => setShowCompleted(v => !v)}
+                      style={{display:'flex',alignItems:'center',gap:'8px',background:'none',border:'1px solid #e5e7eb',borderRadius:'8px',cursor:'pointer',padding:'10px 16px',backgroundColor:'white',width:'100%'}}>
+                      <span style={{fontSize:'16px'}}>{cfg.icon}</span>
+                      <span style={{fontWeight:'700',fontSize:'14px',color:cfg.color}}>Completed</span>
+                      <span style={{fontSize:'12px',fontWeight:'700',backgroundColor:cfg.bg,color:cfg.color,padding:'1px 8px',borderRadius:'10px',border:`1px solid ${cfg.border}`}}>{s5.length}</span>
+                      <span style={{fontSize:'12px',color:'#9ca3af',marginLeft:'auto'}}>{showCompleted ? '▲ hide' : '▼ show'}</span>
+                    </button>
+                    {showCompleted && (
+                      <div style={{marginTop:'10px',display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'10px'}}>
+                        {s5.map(p => <KanbanCard key={p.id} p={p} cfg={cfg} />)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Stage Modal */}
+              {medWfModal && (() => {
+                const { patient: p, stage } = medWfModal;
+                const w = p.insuranceWorkflow || {};
+                const isStage1 = stage === 1;
+                const isStage2 = stage === 2;
+                const isStage3 = stage === 3;
+                const isStage4 = stage === 4;
+
+                return (
+                  <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:'16px'}}>
+                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'28px',width:'100%',maxWidth:'480px',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+                      <div style={{marginBottom:'20px'}}>
+                        <div style={{fontSize:'11px',fontWeight:'700',textTransform:'uppercase',letterSpacing:'0.08em',color:'#9ca3af',marginBottom:'4px'}}>
+                          {isStage1 ? 'Stage 1 → 2' : isStage2 ? 'Stage 2 → 3' : isStage3 ? 'Stage 3 → 4' : 'Stage 4 → Complete'}
+                        </div>
+                        <h3 style={{fontSize:'20px',fontWeight:'800',color:'#111827',margin:0}}>{p.name}</h3>
+                        <div style={{fontSize:'13px',color:'#6b7280',marginTop:'2px'}}>NPE: {formatDate(p.npeDate)} · {p.tc}</div>
+                      </div>
+
+                      {isStage1 && (
+                        <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
+                          <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
+                            Date claim was submitted to Medicaid
+                            <input type="date" value={medWfForm.submittedDate || todayStr}
+                              onChange={e => setMedWfForm(f => ({...f, submittedDate: e.target.value}))}
+                              style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box'}} />
+                          </label>
+                        </div>
+                      )}
+
+                      {isStage2 && (
+                        <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
+                          <div>
+                            <div style={{fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'6px'}}>Medicaid decision</div>
+                            <div style={{display:'flex',gap:'10px'}}>
+                              {['approved','denied'].map(opt => (
+                                <button key={opt} onClick={() => setMedWfForm(f => ({...f, decisionResult: opt}))}
+                                  style={{flex:1,padding:'12px',border:`2px solid ${medWfForm.decisionResult===opt ? (opt==='approved'?'#16a34a':'#dc2626') : '#e5e7eb'}`,borderRadius:'8px',backgroundColor: medWfForm.decisionResult===opt ? (opt==='approved'?'#f0fdf4':'#fef2f2') : 'white',fontWeight:'700',fontSize:'15px',cursor:'pointer',color: opt==='approved'?'#16a34a':'#dc2626'}}>
+                                  {opt === 'approved' ? '✅ Approved' : '❌ Denied'}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
+                            Date decision received
+                            <input type="date" value={medWfForm.decisionDate || todayStr}
+                              onChange={e => setMedWfForm(f => ({...f, decisionDate: e.target.value}))}
+                              style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box'}} />
+                          </label>
+                        </div>
+                      )}
+
+                      {isStage3 && (
+                        <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
+                          <div style={{padding:'12px',borderRadius:'8px',backgroundColor: w.decisionResult==='approved'?'#f0fdf4':'#fef2f2',border:`1px solid ${w.decisionResult==='approved'?'#bbf7d0':'#fecaca'}`}}>
+                            <span style={{fontWeight:'700',fontSize:'14px',color:w.decisionResult==='approved'?'#16a34a':'#dc2626'}}>
+                              Decision: {w.decisionResult==='approved'?'✅ Approved':'❌ Denied'}
+                            </span>
+                          </div>
+                          <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
+                            Date patient was contacted
+                            <input type="date" value={medWfForm.patientContactedDate || todayStr}
+                              onChange={e => setMedWfForm(f => ({...f, patientContactedDate: e.target.value}))}
+                              style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box'}} />
+                          </label>
+                          <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
+                            Notes from the call (optional)
+                            <textarea value={medWfForm.contactNotes || ''}
+                              onChange={e => setMedWfForm(f => ({...f, contactNotes: e.target.value}))}
+                              placeholder="What did the patient say?"
+                              rows={3}
+                              style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box',resize:'vertical'}} />
+                          </label>
+                        </div>
+                      )}
+
+                      {isStage4 && (
+                        <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
+                          <div>
+                            <div style={{fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'8px'}}>What did the patient decide?</div>
+                            <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+                              {[
+                                { value: 'scheduling', label: '🎉 Ready to schedule a start', color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0' },
+                                { value: 'needs_time', label: '⏳ Needs more time to think', color: '#d97706', bg: '#fffbeb', border: '#fde68a' },
+                                { value: 'not_interested', label: '❌ Not interested in treatment', color: '#dc2626', bg: '#fef2f2', border: '#fecaca' },
+                                { value: 'went_elsewhere', label: '🏃 Going to another practice', color: '#6b7280', bg: '#f9fafb', border: '#e5e7eb' },
+                              ].map(opt => (
+                                <button key={opt.value} onClick={() => setMedWfForm(f => ({...f, patientDecision: opt.value}))}
+                                  style={{padding:'12px 16px',border:`2px solid ${medWfForm.patientDecision===opt.value ? opt.border : '#e5e7eb'}`,borderRadius:'8px',backgroundColor: medWfForm.patientDecision===opt.value ? opt.bg : 'white',fontWeight:'600',fontSize:'14px',cursor:'pointer',color:opt.color,textAlign:'left'}}>
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          {medWfForm.patientDecision === 'scheduling' && (
+                            <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
+                              Bond appointment date (optional — can set later)
+                              <input type="date" value={medWfForm.bondDate || ''}
+                                onChange={e => setMedWfForm(f => ({...f, bondDate: e.target.value}))}
+                                style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box'}} />
+                            </label>
+                          )}
+                        </div>
+                      )}
+
+                      <div style={{display:'flex',gap:'10px',marginTop:'24px'}}>
+                        <button onClick={() => { setMedWfModal(null); setMedWfForm({}); }}
+                          style={{flex:1,padding:'11px',border:'1px solid #e5e7eb',borderRadius:'7px',backgroundColor:'white',fontSize:'14px',cursor:'pointer',color:'#6b7280',fontWeight:'600'}}>
+                          Cancel
+                        </button>
+                        <button
+                          disabled={
+                            (isStage2 && !medWfForm.decisionResult) ||
+                            (isStage4 && !medWfForm.patientDecision)
+                          }
+                          onClick={() => {
+                            if (isStage1) saveWorkflow(p, { submittedDate: medWfForm.submittedDate || todayStr });
+                            if (isStage2) saveWorkflow(p, { decisionDate: medWfForm.decisionDate || todayStr, decisionResult: medWfForm.decisionResult });
+                            if (isStage3) saveWorkflow(p, { patientContactedDate: medWfForm.patientContactedDate || todayStr, contactNotes: medWfForm.contactNotes || '' });
+                            if (isStage4) saveWorkflow(p, { patientDecision: medWfForm.patientDecision, bondDate: medWfForm.bondDate || '', completedDate: todayStr });
+                          }}
+                          style={{flex:2,padding:'11px',border:'none',borderRadius:'7px',fontSize:'14px',cursor:'pointer',fontWeight:'700',color:'white',
+                            backgroundColor: (isStage2 && !medWfForm.decisionResult)||(isStage4 && !medWfForm.patientDecision) ? '#9ca3af' : '#2563EB'}}>
+                          {isStage1 ? 'Confirm Submitted ✓' : isStage2 ? 'Save Decision' : isStage3 ? 'Patient Contacted ✓' : 'Save Outcome'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          );
+        })()}
 
         {/* BONUS AUDIT */}
         {currentView === 'bonus' && (currentUser?.role !== 'tc' || currentUser?.bonusEnabled) && (() => {
