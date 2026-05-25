@@ -324,6 +324,21 @@ import { createClient } from '@supabase/supabase-js';
           d.setDate(d.getDate() + 1);
           return skipWeekend(d.toISOString().split('T')[0]);
         };
+        const getOBSCheckDate = (p) => {
+          if (!p.OBS || !p.obsApptDate) return null;
+          const d = new Date(p.obsApptDate + 'T12:00:00');
+          if (isNaN(d.getTime())) return null;
+          d.setDate(d.getDate() + 1);
+          return skipWeekend(d.toISOString().split('T')[0]);
+        };
+        // Returns the booking-call date for an OBS not-scheduled patient: anticipatedDate minus leadMonths
+        const getOBSBookingCallDate = (anticipatedDate, leadMonths) => {
+          if (!anticipatedDate || !leadMonths) return null;
+          const d = new Date(anticipatedDate + 'T12:00:00');
+          if (isNaN(d.getTime())) return null;
+          d.setMonth(d.getMonth() - leadMonths);
+          return skipWeekend(d.toISOString().split('T')[0]);
+        };
         // ────────────────────────────────────────────────────────────────
 
         // Main App with Supabase Auth
@@ -788,6 +803,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackList, setFeedbackList] = useState([]);
   const [feedbackListLoading, setFeedbackListLoading] = useState(false);
+  const [newFeedbackCount, setNewFeedbackCount] = useState(0);
+  const [showFeedbackAlert, setShowFeedbackAlert] = useState(false);
 
   // Password visibility toggles (#10)
   const [showDashPw, setShowDashPw] = useState(false);
@@ -805,7 +822,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [newPatientForm, setNewPatientForm] = useState({
     name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: '', dp: '', contractAmount: '', tc: '', status: '',
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
-    'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: ''
+    'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: ''
   });
   const [addPatientError, setAddPatientError] = useState('');
 
@@ -864,6 +881,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [locations, setLocations] = useState([]);
   const [newLocationName, setNewLocationName] = useState('');
+  const [medicaidEnabled, setMedicaidEnabled] = useState(true);
+  const [obsRecallMonths, setObsRecallMonths] = useState(4); // months BEFORE anticipated OBS date to schedule booking call
   const [locationMsg, setLocationMsg] = useState('');
   const [guidedHighlight, setGuidedHighlight] = useState(null);
   // ── Super-admin (add new practice) ────────────────────────────────────
@@ -916,7 +935,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             BR: r.br, INV: r.inv, PH1: r.ph1, PH2: r.ph2, LTD: r.ltd,
             'R+': r.r_plus, 'W+': r.w_plus, PIF: r.pif,
             ST: r.st, SCH: r.sch, PEN: r.pen, OBS: r.obs, MP: r.mp, NOTX: r.notx, DBRETS: r.dbrets || false,
-            obstacle: r.obstacle || '', notes: r.notes || '',
+            obstacle: r.obstacle || '', notes: r.notes || '', obsApptDate: r.obs_appt_date || '', obsAnticipatedDate: r.obs_anticipated_date || '',
             bondDate: r.bond_date || '',
             startDate: r.start_date || '',
             contactAttempts: r.contact_attempts || 0,
@@ -958,8 +977,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         return { ...p, obstacle: effObstacle, nextTouchDate: correctNext };
       }
       if (p.OBS) {
-        if (p.nextTouchDate) return p;
-        return { ...p, nextTouchDate: addMonths(p.npeDate, 6) };
+        if (p.nextTouchDate || p.obsApptDate) return p;
+        // If we have an anticipated date, schedule the booking call obsRecallMonths before it
+        if (p.obsAnticipatedDate) {
+          const d = new Date(p.obsAnticipatedDate + 'T12:00:00');
+          d.setMonth(d.getMonth() - obsRecallMonths);
+          return { ...p, nextTouchDate: skipWeekend(d.toISOString().split('T')[0]) };
+        }
+        return { ...p, nextTouchDate: addMonths(p.npeDate, obsRecallMonths) };
       }
       return p;
     });
@@ -986,7 +1011,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       br: patient.BR, inv: patient.INV, ph1: patient.PH1, ph2: patient.PH2, ltd: patient.LTD,
       r_plus: patient['R+'], w_plus: patient['W+'], pif: patient.PIF,
       st: patient.ST, sch: patient.SCH, pen: patient.PEN, obs: patient.OBS, mp: patient.MP, notx: patient.NOTX, dbrets: patient.DBRETS || false,
-      obstacle: patient.obstacle, notes: patient.notes,
+      obstacle: patient.obstacle, notes: patient.notes, obs_appt_date: patient.obsApptDate || null, obs_anticipated_date: patient.obsAnticipatedDate || null,
       bond_date: patient.bondDate || '',
       start_date: patient.startDate || '',
       contact_attempts: patient.contactAttempts,
@@ -1069,18 +1094,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   useEffect(() => {
     const loadSettings = async () => {
       if (currentUser?.id === 'demo') return;
-      const [cloudGoals, cloudBonusRates, cloudAdminPw, cloudPopupBonuses, cloudLocations] = await Promise.all([
+      const [cloudGoals, cloudBonusRates, cloudAdminPw, cloudPopupBonuses, cloudLocations, cloudMedicaidEnabled, cloudObsRecall] = await Promise.all([
         dbLoadSettings('goals'),
         dbLoadSettings('bonus-rates'),
         dbLoadSettings('admin-password'),
         dbLoadSettings('popup-bonuses'),
         dbLoadSettings('locations'),
+        dbLoadSettings('medicaid-enabled'),
+        dbLoadSettings('obs-recall-months'),
       ]);
       if (cloudGoals) setGoals(cloudGoals);
       if (cloudBonusRates) setBonusRates(cloudBonusRates);
       if (cloudAdminPw) localStorage.setItem(`npe-admin-password-${currentUser.practiceId}`, cloudAdminPw);
       if (cloudPopupBonuses && Array.isArray(cloudPopupBonuses)) setPopupBonuses(cloudPopupBonuses);
       if (cloudLocations && Array.isArray(cloudLocations)) { setLocations(cloudLocations); }
+      if (cloudMedicaidEnabled !== null) setMedicaidEnabled(cloudMedicaidEnabled !== false);
+      if (cloudObsRecall && typeof cloudObsRecall === 'number' && cloudObsRecall > 0) setObsRecallMonths(cloudObsRecall);
     };
     loadSettings();
   }, [currentUser?.practiceId, managedPracticeId]);
@@ -1094,6 +1123,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (data) setTcUsers(data);
   };
   useEffect(() => { if (currentUser?.role === 'admin') loadTCUsers(); }, [currentUser, managedPracticeId]);
+
+  useEffect(() => {
+    if (!supabase || currentUser?.practiceId !== 'miller-ortho' || currentUser?.role !== 'admin') return;
+    const lastChecked = localStorage.getItem('feedbackLastChecked') || '1970-01-01T00:00:00.000Z';
+    supabase.from('feedback').select('id', { count: 'exact' }).gt('created_at', lastChecked).then(({ count }) => {
+      if (count > 0) { setNewFeedbackCount(count); setShowFeedbackAlert(true); }
+    });
+  }, [currentUser]);
 
   const APP_URL = 'https://npe-dashboard.vercel.app';
 
@@ -1305,7 +1342,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     sentText: false,
     notes: '',
     nextTouchDate: '',
-    obstacle: ''   // allows TC to update obstacle from within the contact log form
+    obstacle: '',
+    obsApptDate: '',
+    obsAnticipatedDate: ''
   });
 
   // Bond check-in notes (per patient id)
@@ -1313,6 +1352,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // Bond reschedule UI state (per patient id)
   const [bondRescheduleOpen, setBondRescheduleOpen] = useState({});
   const [bondRescheduleDate, setBondRescheduleDate] = useState({});
+  // OBS check-in notes + reschedule UI state
+  const [obsCheckNotes, setObsCheckNotes] = useState({});
+  const [obsRescheduleOpen, setObsRescheduleOpen] = useState({});
+  const [obsRescheduleDate, setObsRescheduleDate] = useState({});
 
   // Push follow-up date UI state (per patient id)
   const [pushDateOpen, setPushDateOpen] = useState({});
@@ -1483,9 +1526,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   const today = new Date().toISOString().split('T')[0];
 
-  // Follow-ups: PEN + MP + OBS (6-month cadence); NOTX excluded; past-due pinned to today
+  // Follow-ups: PEN + MP + OBS (recall cadence); NOTX excluded; OBS with scheduled appt excluded; past-due pinned to today
   const selectedFollowUps = patients.filter(p => {
     if (!p.PEN && !p.MP && !p.OBS) return false;
+    if (p.OBS && p.obsApptDate) return false; // in OBS check-in flow instead
     if (!p.nextTouchDate || p.nextTouchDate === '__MAX__') return false;
     if (followupTCFilter !== 'All' && p.tc !== followupTCFilter) return false;
     const effectiveDate = skipWeekend(p.nextTouchDate); // normalize any stored weekend date → next Monday
@@ -1503,7 +1547,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     return checkDate === selectedWeekDay;
   });
 
-  const selectedDayPatients = [...selectedFollowUps, ...selectedBondCheckins];
+  // OBS check-ins: OBS patients with a scheduled appointment, reminder = day after obsApptDate
+  const selectedOBSCheckins = patients.filter(p => {
+    if (!p.OBS || !p.obsApptDate) return false;
+    if (followupTCFilter !== 'All' && p.tc !== followupTCFilter) return false;
+    const checkDate = getOBSCheckDate(p);
+    if (!checkDate) return false;
+    if (selectedWeekDay === today) return checkDate <= today;
+    return checkDate === selectedWeekDay;
+  });
+
+  const selectedDayPatients = [...selectedOBSCheckins, ...selectedBondCheckins, ...selectedFollowUps];
 
   const getWeekMonday = (offset) => {
     const d = new Date();
@@ -1524,6 +1578,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const updated = patients.map(p => {
       if (p.id !== patientId) return p;
       const isSkipMedicaid = contactForm.reachedPatient === "Waiting on Medicaid — didn't call";
+      const isObsScheduling = p.OBS && contactForm.outcome === 'OBS is now scheduled!';
+      const isObsAnticipatedUpdate = p.OBS && !p.obsApptDate && contactForm.outcome === 'Still on track — update anticipated date';
       const newAttempts = (p.OBS || isSkipMedicaid) ? p.contactAttempts : p.contactAttempts + 1;
       const logEntry = {
         date: todayStr,
@@ -1538,16 +1594,33 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       const updatedObstacle = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
       const effectiveObstacle = updatedObstacle || (p.MP ? 'Waiting to Hear from Medicaid' : '');
       const d14 = new Date(todayStr + 'T12:00:00'); d14.setDate(d14.getDate() + 14);
-      let nextDate = isSkipMedicaid
-        ? skipWeekend(d14.toISOString().split('T')[0])
-        : (contactForm.nextTouchDate ? skipWeekend(contactForm.nextTouchDate) : null)
-          || (p.OBS ? addMonths(todayStr, 6) : calcNextTouchDate(p.npeDate, effectiveObstacle, newAttempts, todayStr));
+      let nextDate, newObsApptDate = p.obsApptDate || '', newObsAnticipatedDate = p.obsAnticipatedDate || '';
+      if (isObsScheduling && contactForm.obsApptDate) {
+        // Patient now has a real appointment — move to OBS Scheduled flow
+        newObsApptDate = contactForm.obsApptDate;
+        newObsAnticipatedDate = '';
+        nextDate = getOBSCheckDate({ OBS: true, obsApptDate: contactForm.obsApptDate }) || '';
+      } else if (isObsAnticipatedUpdate && contactForm.obsAnticipatedDate) {
+        // TC updated the anticipated date — recalculate the pre-booking call
+        newObsAnticipatedDate = contactForm.obsAnticipatedDate;
+        nextDate = getOBSBookingCallDate(contactForm.obsAnticipatedDate, obsRecallMonths) || addMonths(todayStr, obsRecallMonths);
+      } else {
+        nextDate = isSkipMedicaid
+          ? skipWeekend(d14.toISOString().split('T')[0])
+          : (contactForm.nextTouchDate ? skipWeekend(contactForm.nextTouchDate) : null)
+            || (p.OBS && p.obsAnticipatedDate
+                ? (getOBSBookingCallDate(p.obsAnticipatedDate, obsRecallMonths) || addMonths(todayStr, obsRecallMonths))
+                : p.OBS ? addMonths(todayStr, obsRecallMonths)
+                : calcNextTouchDate(p.npeDate, effectiveObstacle, newAttempts, todayStr));
+      }
       const result = {
         ...p,
         obstacle: updatedObstacle,
         contactAttempts: newAttempts,
         lastContactDate: todayStr,
         nextTouchDate: nextDate,
+        obsApptDate: newObsApptDate,
+        obsAnticipatedDate: newObsAnticipatedDate,
         contact_log: [...(p.contact_log || []), logEntry]
       };
       updatedPatient = result;
@@ -1556,7 +1629,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setPatients(updated);
     if (updatedPatient) await dbUpsert(updatedPatient);
     setShowContactLog(null);
-    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '' });
+    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '' });
   };
 
   const handleConvertToNotx = async (patientId) => {
@@ -1585,7 +1658,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setPatients(updated);
     if (updatedPatient) await dbUpsert(updatedPatient);
     setShowContactLog(null);
-    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '' });
+    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '' });
     setSaveToast('✅ ' + (updatedPatient?.name || '') + ' moved to No Treatment');
     setTimeout(() => setSaveToast(''), 3000);
   };
@@ -1629,7 +1702,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       ...patient,
       ST: !isSameDay,
       fromPending: patient.PEN || patient.MP || patient.SCH || patient.fromPending || false,
-      PEN: false, SCH: false, OBS: false, MP: false, bondDate: '',
+      PEN: false, SCH: false, OBS: false, MP: false, bondDate: '', obsApptDate: '', obsAnticipatedDate: '',
       startDate: startedForm.startDate,
       dp: startedForm.dp || patient.dp,
       contractAmount: startedForm.contractAmount || patient.contractAmount || '',
@@ -1694,6 +1767,85 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setBondRescheduleDate(prev => ({ ...prev, [patient.id]: '' }));
   };
 
+  // OBS check-in: patient attended but not ready → clear appt, schedule next recall
+  const handleOBSAttended = async (patient, notes = '') => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const logEntry = {
+      date: todayStr,
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      reachedPatient: 'Attended OBS appointment',
+      outcome: `Attended OBS appointment — not ready yet. Next re-check in ${obsRecallMonths} month${obsRecallMonths !== 1 ? 's' : ''}.`,
+      sentText: false,
+      notes,
+      logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
+    };
+    const updatedPatient = {
+      ...patient,
+      obsApptDate: '',
+      nextTouchDate: addMonths(todayStr, obsRecallMonths),
+      lastContactDate: todayStr,
+      contact_log: [...(patient.contact_log || []), logEntry]
+    };
+    setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
+    await dbUpsert(updatedPatient);
+    setObsCheckNotes(prev => ({ ...prev, [patient.id]: '' }));
+    setSaveToast(`♻️ ${patient.name} — re-check scheduled for ${new Date(updatedPatient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`);
+    setTimeout(() => setSaveToast(''), 4000);
+  };
+
+  // OBS check-in: no-show → clear appt, push back into follow-up queue for reschedule call
+  const handleOBSNoShow = async (patient, notes = '') => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const d = new Date(todayStr + 'T12:00:00'); d.setDate(d.getDate() + 14);
+    const nextDate = skipWeekend(d.toISOString().split('T')[0]);
+    const logEntry = {
+      date: todayStr,
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      reachedPatient: 'No-show',
+      outcome: `No-show for OBS appointment on ${patient.obsApptDate} — returned to follow-up queue`,
+      sentText: false,
+      notes,
+      logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
+    };
+    const updatedPatient = {
+      ...patient,
+      obsApptDate: '',
+      nextTouchDate: nextDate,
+      lastContactDate: todayStr,
+      contact_log: [...(patient.contact_log || []), logEntry]
+    };
+    setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
+    await dbUpsert(updatedPatient);
+    setObsCheckNotes(prev => ({ ...prev, [patient.id]: '' }));
+    setSaveToast(`⚠️ ${patient.name} — no-show logged, follow-up scheduled for ${new Date(nextDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
+    setTimeout(() => setSaveToast(''), 4000);
+  };
+
+  // OBS check-in: reschedule the OBS appointment to a new date
+  const handleRescheduleOBS = async (patient, newApptDate, notes = '') => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const newCheckDate = getOBSCheckDate({ OBS: true, obsApptDate: newApptDate });
+    const logEntry = {
+      date: todayStr,
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      reachedPatient: 'Rescheduled',
+      outcome: `OBS appointment rescheduled from ${patient.obsApptDate} to ${newApptDate}`,
+      sentText: false,
+      notes,
+      logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
+    };
+    const updatedPatient = {
+      ...patient,
+      obsApptDate: newApptDate,
+      nextTouchDate: newCheckDate || '',
+      contact_log: [...(patient.contact_log || []), logEntry]
+    };
+    setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
+    await dbUpsert(updatedPatient);
+    setObsRescheduleOpen(prev => ({ ...prev, [patient.id]: false }));
+    setObsRescheduleDate(prev => ({ ...prev, [patient.id]: '' }));
+  };
+
   const handleAddPatient = async () => {
     setAddPatientError('');
     if (!newPatientForm.name.trim()) { setAddPatientError('Please enter a patient name.'); return; }
@@ -1703,20 +1855,28 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const isPending = ['PEN', 'MP'].includes(newPatientForm.status);
     if (isSCH && !newPatientForm.bondDate) { setAddPatientError('Please enter the Initial Bond Date for Scheduled patients.'); return; }
     // Determine next touch date
+    const obsHasAppt = isOBS && !!newPatientForm.obsApptDate;
+    const obsHasAnticipated = isOBS && !obsHasAppt && !!newPatientForm.obsAnticipatedDate;
     const autoNext = isSCH
       ? (newPatientForm.nextTouchOverride
           ? skipWeekend(newPatientForm.nextTouchOverride)
           : getBondCheckDate({ SCH: true, bondDate: newPatientForm.bondDate }))
-      : newPatientForm.nextTouchOverride
-        ? skipWeekend(newPatientForm.nextTouchOverride)
-        : isOBS
-          ? addMonths(newPatientForm.npeDate, 6)   // OBS: 6-month re-check cadence
-          : isPending
-            ? calcNextTouchDate(
-                newPatientForm.npeDate,
-                newPatientForm.obstacle || (newPatientForm.status === 'MP' ? 'Waiting to Hear from Medicaid' : ''),
-                0, '')
-            : '';
+      : obsHasAppt
+        ? (getOBSCheckDate({ OBS: true, obsApptDate: newPatientForm.obsApptDate }) || '')
+        : obsHasAnticipated
+          ? (newPatientForm.nextTouchOverride
+              ? skipWeekend(newPatientForm.nextTouchOverride)
+              : getOBSBookingCallDate(newPatientForm.obsAnticipatedDate, obsRecallMonths) || '')
+          : newPatientForm.nextTouchOverride
+            ? skipWeekend(newPatientForm.nextTouchOverride)
+            : isOBS
+              ? '' // OBS with no anticipated date and no appt — no auto-schedule
+              : isPending
+                ? calcNextTouchDate(
+                    newPatientForm.npeDate,
+                    newPatientForm.obstacle || (newPatientForm.status === 'MP' ? 'Waiting to Hear from Medicaid' : ''),
+                    0, '')
+                : '';
     // Start date: SDS = npeDate, ST = npeDate (already started), others = ''
     const isSameDay = newPatientForm.status === 'SDS';
     const isST = newPatientForm.status === 'ST';
@@ -1743,6 +1903,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       obstacle: newPatientForm.obstacle,
       notes: newPatientForm.notes,
       bondDate: newPatientForm.bondDate || '',
+      obsApptDate: isOBS ? (newPatientForm.obsApptDate || '') : '',
+      obsAnticipatedDate: isOBS && !newPatientForm.obsApptDate ? (newPatientForm.obsAnticipatedDate || '') : '',
       startDate: (isSameDay || isST) ? newPatientForm.npeDate : '',
       contactAttempts: 0,
       nextTouchDate: autoNext === '__MAX__' ? '' : (autoNext || ''),
@@ -1761,7 +1923,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: newPatientForm.location || locations[0] || '', dp: '', contractAmount: '',
       tc: newPatientForm.tc || tcNames[0] || '', status: '',
       BR: false, INV: false, PH1: false, PH2: false, LTD: false,
-      'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: ''
+      'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: ''
     });
     setSearchTerm('');
     setCurrentView('patients');
@@ -1923,8 +2085,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       <nav style={{backgroundColor:'white',borderBottom:'1px solid #e5e7eb'}}>
         <div style={{maxWidth:'1400px',margin:'0 auto',padding:'0 16px',display:'flex',gap:'8px',overflowX:'auto'}}>
           {(currentUser?.role === 'tc'
-            ? ['dashboard', 'followup', 'add', 'patients', 'medicaid', ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'settings']
-            : ['dashboard', 'followup', 'add', 'patients', 'medicaid', 'bonus', 'ontime', 'metrics', 'settings',
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'settings']
+            : ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'ontime', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
             <button
@@ -2046,6 +2208,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const todayStr = new Date().toISOString().split('T')[0];
           const todayFollowCount = patients.filter(p => {
             if (!p.PEN && !p.MP && !p.OBS) return false;
+            if (p.OBS && p.obsApptDate) return false;
             if (!p.nextTouchDate || p.nextTouchDate === '__MAX__') return false;
             return skipWeekend(p.nextTouchDate) <= todayStr;
           }).length;
@@ -2054,7 +2217,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const cd = getBondCheckDate(p);
             return cd && cd <= todayStr;
           }).length;
-          const todayTotal = todayFollowCount + todayBondCount;
+          const todayOBSCount = patients.filter(p => {
+            if (!p.OBS || !p.obsApptDate) return false;
+            const cd = getOBSCheckDate(p);
+            return cd && cd <= todayStr;
+          }).length;
+          const todayTotal = todayFollowCount + todayBondCount + todayOBSCount;
 
           // Formatted date
           const dateLabel = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'});
@@ -2587,6 +2755,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
                 {todayFollowCount > 0 && <div style={{background:'rgba(255,255,255,0.15)',border:'1px solid rgba(255,255,255,0.25)',borderRadius:'20px',padding:'6px 14px',fontSize:'13px',color:'white',fontWeight:'500'}}>{todayFollowCount} follow-up{todayFollowCount !== 1 ? 's' : ''}</div>}
                 {todayBondCount > 0 && <div style={{background:'rgba(251,191,36,0.2)',border:'1px solid rgba(251,191,36,0.5)',borderRadius:'20px',padding:'6px 14px',fontSize:'13px',color:'white',fontWeight:'500'}}>📅 {todayBondCount} bond check-in{todayBondCount !== 1 ? 's' : ''}</div>}
+                {todayOBSCount > 0 && <div style={{background:'rgba(16,185,129,0.2)',border:'1px solid rgba(16,185,129,0.5)',borderRadius:'20px',padding:'6px 14px',fontSize:'13px',color:'white',fontWeight:'500'}}>🔄 {todayOBSCount} OBS check-in{todayOBSCount !== 1 ? 's' : ''}</div>}
               </div>
               <button onClick={() => setCurrentView('followup')}
                 style={{background:'white',color:'#1e40af',border:'none',borderRadius:'8px',padding:'12px 22px',fontSize:'14px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
@@ -3480,14 +3649,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const count = isWeekend ? 0 : patients.filter(p => {
                       // TC filter
                       if (followupTCFilter !== 'All' && p.tc !== followupTCFilter) return false;
-                      // Regular follow-ups — normalize stored dates to skip weekends
-                      const hasPending = (p.PEN || p.MP || p.OBS) && p.nextTouchDate && p.nextTouchDate !== '__MAX__';
+                      // Regular follow-ups — exclude OBS with scheduled appt
+                      const hasPending = (p.PEN || p.MP || p.OBS) && p.nextTouchDate && p.nextTouchDate !== '__MAX__' && !(p.OBS && p.obsApptDate);
                       const effectiveTouchDate = p.nextTouchDate ? skipWeekend(p.nextTouchDate) : '';
                       const followUpMatch = hasPending && (isToday ? effectiveTouchDate <= todayStr : effectiveTouchDate === dateStr);
                       // Bond check-ins
                       const checkDate = getBondCheckDate(p);
                       const bondMatch = checkDate && (isToday ? checkDate <= todayStr : checkDate === dateStr);
-                      return followUpMatch || bondMatch;
+                      // OBS check-ins
+                      const obsCheckDate = getOBSCheckDate(p);
+                      const obsMatch = obsCheckDate && (isToday ? obsCheckDate <= todayStr : obsCheckDate === dateStr);
+                      return followUpMatch || bondMatch || obsMatch;
                     }).length;
 
                     days.push({ dayName, dateLabel: `${month}/${day}`, count, isToday, isSelected, dateStr, isWeekend });
@@ -3529,6 +3701,108 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </h3>
 
               {/* BOND CHECK-INS */}
+              {selectedOBSCheckins.length > 0 && (
+                <div style={{marginBottom:'24px'}}>
+                  <h4 style={{fontSize:'16px',fontWeight:'700',color:'#166534',marginBottom:'12px',display:'flex',alignItems:'center',gap:'8px'}}>
+                    <span style={{padding:'4px 12px',backgroundColor:'#dcfce7',border:'1px solid #86efac',borderRadius:'20px'}}>🔄 OBS Appointment Check-Ins ({selectedOBSCheckins.length})</span>
+                  </h4>
+                  {selectedOBSCheckins.map(patient => {
+                    const obsCheckDate = getOBSCheckDate(patient);
+                    const daysAgo = Math.floor((new Date(today + 'T12:00:00') - new Date((obsCheckDate || today) + 'T12:00:00')) / 86400000);
+                    return (
+                      <div key={patient.id} style={{backgroundColor:'#f0fdf4',padding:'20px',borderRadius:'8px',border:'2px solid #86efac',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'16px'}}>
+                        <div style={{marginBottom:'12px'}}>
+                          <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'6px',flexWrap:'wrap'}}>
+                            <h4 style={{fontSize:'18px',fontWeight:'bold',color:'#166534',margin:0}}>{patient.name}</h4>
+                            <span style={{fontSize:'12px',padding:'3px 10px',backgroundColor:'#dcfce7',border:'1px solid #86efac',borderRadius:'4px',fontWeight:'600',color:'#166534'}}>OBS — APPOINTMENT CHECK-IN</span>
+                            {daysAgo > 0 && <span style={{fontSize:'12px',color:'#ef4444',fontWeight:'600'}}>⚠️ {daysAgo} day{daysAgo>1?'s':''} overdue</span>}
+                          </div>
+                          {patient.phone && (
+                            <a href={`tel:${patient.phone}`} style={{display:'inline-flex',alignItems:'center',gap:'6px',fontSize:'17px',fontWeight:'700',color:'#166534',textDecoration:'none',marginBottom:'6px',padding:'4px 10px',backgroundColor:'#dcfce7',borderRadius:'6px',border:'1px solid #86efac'}}>
+                              📞 {patient.phone}
+                            </a>
+                          )}
+                          <div style={{fontSize:'14px',color:'#6b7280'}}>
+                            📅 NPE: {new Date(patient.npeDate + 'T12:00:00').toLocaleDateString()} • 📍 {patient.location} • 👤 {patient.tc}
+                          </div>
+                          <div style={{fontSize:'14px',color:'#166534',marginTop:'4px',fontWeight:'500'}}>
+                            🔄 OBS appointment was scheduled for: <strong>{new Date(patient.obsApptDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</strong>
+                          </div>
+                        </div>
+                        <p style={{fontSize:'14px',color:'#374151',marginBottom:'12px',fontStyle:'italic'}}>Did the patient attend their observation appointment?</p>
+                        <div style={{marginBottom:'12px'}}>
+                          <label style={{fontSize:'13px',fontWeight:'500',display:'block',marginBottom:'4px',color:'#374151'}}>Notes (optional — saved to contact log)</label>
+                          <textarea
+                            value={obsCheckNotes[patient.id] || ''}
+                            onChange={(e) => setObsCheckNotes(prev => ({...prev, [patient.id]: e.target.value}))}
+                            placeholder="e.g. Confirmed with mom, everything on track..."
+                            style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'13px',resize:'vertical'}}
+                            rows={2}
+                          />
+                        </div>
+                        <div style={{display:'flex',gap:'12px',flexWrap:'wrap'}}>
+                          <button
+                            onClick={() => handleMarkStarted(patient)}
+                            style={{padding:'12px 24px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'15px'}}
+                          >
+                            ✅ Yes — Ready to Start!
+                          </button>
+                          <button
+                            onClick={() => { if (confirm(`${patient.name} attended but isn't ready yet? This will schedule the next re-check in ${obsRecallMonths} month${obsRecallMonths!==1?'s':''}.`)) handleOBSAttended(patient, obsCheckNotes[patient.id] || ''); }}
+                            style={{padding:'12px 24px',backgroundColor:'#6366f1',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'15px'}}
+                          >
+                            🔄 Attended — Not Ready Yet
+                          </button>
+                          <button
+                            onClick={() => handleOBSNoShow(patient, obsCheckNotes[patient.id] || '')}
+                            style={{padding:'12px 24px',backgroundColor:'#ef4444',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'15px'}}
+                          >
+                            ❌ No-Show
+                          </button>
+                          <button
+                            onClick={() => setObsRescheduleOpen(prev => ({ ...prev, [patient.id]: !prev[patient.id] }))}
+                            style={{padding:'12px 24px',backgroundColor:'#f59e0b',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'15px'}}
+                          >
+                            📅 Rescheduled
+                          </button>
+                        </div>
+                        {obsRescheduleOpen[patient.id] && (
+                          <div style={{marginTop:'14px',padding:'14px',backgroundColor:'#f0fdf4',border:'1px solid #86efac',borderRadius:'6px'}}>
+                            <label style={{fontSize:'13px',fontWeight:'600',display:'block',marginBottom:'6px',color:'#166534'}}>New OBS Appointment Date</label>
+                            <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
+                              <input
+                                type="date"
+                                value={obsRescheduleDate[patient.id] || ''}
+                                onChange={e => setObsRescheduleDate(prev => ({ ...prev, [patient.id]: e.target.value }))}
+                                style={{padding:'8px 10px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
+                              />
+                              <button
+                                disabled={!obsRescheduleDate[patient.id]}
+                                onClick={() => handleRescheduleOBS(patient, obsRescheduleDate[patient.id], obsCheckNotes[patient.id] || '')}
+                                style={{padding:'8px 18px',backgroundColor: obsRescheduleDate[patient.id] ? '#16a34a' : '#d1d5db',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor: obsRescheduleDate[patient.id] ? 'pointer' : 'not-allowed',fontSize:'14px'}}
+                              >
+                                Save New Date
+                              </button>
+                              <button
+                                onClick={() => setObsRescheduleOpen(prev => ({ ...prev, [patient.id]: false }))}
+                                style={{padding:'8px 14px',backgroundColor:'transparent',color:'#6b7280',border:'1px solid #d1d5db',borderRadius:'6px',cursor:'pointer',fontSize:'13px'}}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                            {obsRescheduleDate[patient.id] && (
+                              <div style={{fontSize:'12px',color:'#166534',marginTop:'6px',fontWeight:'500'}}>
+                                📅 New check-in reminder: <strong>{new Date((getOBSCheckDate({OBS:true, obsApptDate: obsRescheduleDate[patient.id]}) || obsRescheduleDate[patient.id]) + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</strong>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               {selectedBondCheckins.length > 0 && (
                 <div style={{marginBottom:'24px'}}>
                   <h4 style={{fontSize:'16px',fontWeight:'700',color:'#92400e',marginBottom:'12px',display:'flex',alignItems:'center',gap:'8px'}}>
@@ -3651,7 +3925,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           {priority === 'HOT' ? '🔴 HOT' : priority === 'WARM' ? '🟠 WARM' : '🟡 FRESH'} — {daysOld}d
                         </span>
                         {/* Status badge */}
-                        {patient.OBS && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#F5F5F5',color:'#374151',borderRadius:'4px',fontWeight:'600'}}>OBS — 6mo Re-check</span>}
+                        {patient.OBS && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#f0fdf4',color:'#166534',borderRadius:'4px',fontWeight:'600'}}>
+                          {patient.obsApptDate
+                            ? `OBS — Appt ${new Date(patient.obsApptDate+'T12:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}`
+                            : patient.obsAnticipatedDate
+                              ? `OBS — Book call for ${new Date(patient.obsAnticipatedDate+'T12:00:00').toLocaleDateString('en-US',{month:'numeric',year:'2-digit'})}`
+                              : `OBS — Pending schedule`}
+                        </span>}
                         {patient.MP && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#fef3c7',color:'#92400e',borderRadius:'4px',fontWeight:'600'}}>MEDICAID PENDING</span>}
                         {/* Treatment type badges */}
                         {[['BR','Braces'],['INV','Invisalign'],['PH1','Phase 1'],['PH2','Phase 2'],['LTD','Limited']].filter(([k]) => patient[k]).map(([k,l]) => (
@@ -3674,7 +3954,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       )}
                       <div style={{fontSize:'13px',color:'#6b7280',marginTop:'2px'}}>
                         {patient.OBS
-                          ? '🔄 Observation re-check'
+                          ? patient.obsAnticipatedDate
+                            ? `📞 Call to book OBS appointment — anticipated: ${new Date(patient.obsAnticipatedDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
+                            : '🔄 Observation — call to discuss scheduling'
                           : `🎯 Attempt #${patient.contactAttempts + 1} of ${(CADENCES[patient.obstacle] || DEFAULT_CADENCE).length}: ${patient.contactAttempts === 0 ? 'Initial follow-up' : patient.contactAttempts === 1 ? 'Check-in call' : patient.contactAttempts === 2 ? 'Week follow-up — identify obstacles' : 'Final attempt'}`}
                         {!patient.OBS && patient.contactAttempts >= 4 && <span style={{marginLeft:'8px',padding:'2px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}}>⚠️ Max Attempts Reached</span>}
                       </div>
@@ -3781,25 +4063,81 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       {contactForm.reachedPatient === 'Spoke with patient' && (
                         <div style={{marginBottom:'12px',paddingLeft:'16px',borderLeft:'3px solid #10b981'}}>
                           {patient.OBS ? (
-                            /* #8: OBS-specific outcomes */
-                            <>
-                              <div style={{fontSize:'13px',fontWeight:'500',marginBottom:'8px'}}>What's the status?</div>
-                              {['Not ready yet — re-check in 6 months', 'Ready to start treatment! 🎉'].map(option => (
-                                <label key={option} style={{display:'block',marginBottom:'4px',cursor:'pointer'}}>
-                                  <input type="radio" name={`outcome-${patient.id}`} value={option}
-                                    checked={contactForm.outcome === option}
-                                    onChange={(e) => setContactForm({...contactForm, outcome: e.target.value})}
-                                    style={{marginRight:'8px'}} />
-                                  {option}
-                                </label>
-                              ))}
-                              {/* #9: OBS re-check preview */}
-                              {contactForm.outcome === 'Not ready yet — re-check in 6 months' && (
-                                <div style={{marginTop:'8px',padding:'8px 12px',backgroundColor:'#eff6ff',borderRadius:'6px',fontSize:'12px',color:'#1e40af',fontWeight:'500'}}>
-                                  📅 Next re-check: <strong>{new Date(addMonths(new Date().toISOString().split('T')[0], 6) + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'long',day:'numeric',year:'numeric'})}</strong>
-                                </div>
-                              )}
-                            </>
+                            /* OBS-specific outcomes — two sub-flows */
+                            patient.obsApptDate ? (
+                              /* Already scheduled — check-in outcomes handled in OBS check-in section above;
+                                 this handles the rare case they open the regular log form */
+                              <>
+                                <div style={{fontSize:'13px',fontWeight:'500',marginBottom:'8px'}}>What's the status?</div>
+                                {['Not ready yet — will recheck after appointment', 'Ready to start treatment! 🎉'].map(option => (
+                                  <label key={option} style={{display:'block',marginBottom:'4px',cursor:'pointer'}}>
+                                    <input type="radio" name={`outcome-${patient.id}`} value={option}
+                                      checked={contactForm.outcome === option}
+                                      onChange={(e) => setContactForm({...contactForm, outcome: e.target.value})}
+                                      style={{marginRight:'8px'}} />
+                                    {option}
+                                  </label>
+                                ))}
+                              </>
+                            ) : (
+                              /* Not yet scheduled — booking call flow */
+                              <>
+                                <div style={{fontSize:'13px',fontWeight:'500',marginBottom:'8px'}}>How did the call go?</div>
+                                {[
+                                  'Still on track — update anticipated date',
+                                  'OBS is now scheduled!',
+                                  'Ready to start treatment! 🎉'
+                                ].map(option => (
+                                  <label key={option} style={{display:'block',marginBottom:'4px',cursor:'pointer'}}>
+                                    <input type="radio" name={`outcome-${patient.id}`} value={option}
+                                      checked={contactForm.outcome === option}
+                                      onChange={(e) => setContactForm({...contactForm, outcome: e.target.value, obsApptDate: '', obsAnticipatedDate: ''})}
+                                      style={{marginRight:'8px'}} />
+                                    {option}
+                                  </label>
+                                ))}
+
+                                {contactForm.outcome === 'Still on track — update anticipated date' && (
+                                  <div style={{marginTop:'8px',padding:'10px 12px',backgroundColor:'#f0fdf4',borderRadius:'6px',border:'1px solid #86efac'}}>
+                                    <label style={{fontSize:'13px',fontWeight:'600',display:'block',marginBottom:'6px',color:'#166534'}}>
+                                      Anticipated OBS Date {patient.obsAnticipatedDate && <span style={{fontWeight:'400',color:'#6b7280'}}>(currently: {new Date(patient.obsAnticipatedDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})})</span>}
+                                    </label>
+                                    <input
+                                      type="date"
+                                      value={contactForm.obsAnticipatedDate || patient.obsAnticipatedDate || ''}
+                                      onChange={e => setContactForm({...contactForm, obsAnticipatedDate: e.target.value})}
+                                      style={{padding:'6px 8px',border:'1px solid #86efac',borderRadius:'4px',fontSize:'13px'}}
+                                    />
+                                    {(contactForm.obsAnticipatedDate || patient.obsAnticipatedDate) && (() => {
+                                      const ad = contactForm.obsAnticipatedDate || patient.obsAnticipatedDate;
+                                      const bd = getOBSBookingCallDate(ad, obsRecallMonths);
+                                      return bd ? (
+                                        <div style={{fontSize:'12px',color:'#166534',marginTop:'6px',fontWeight:'500'}}>
+                                          📞 Next booking call: <strong>{new Date(bd+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'long',day:'numeric',year:'numeric'})}</strong>
+                                        </div>
+                                      ) : null;
+                                    })()}
+                                  </div>
+                                )}
+
+                                {contactForm.outcome === 'OBS is now scheduled!' && (
+                                  <div style={{marginTop:'8px',padding:'10px 12px',backgroundColor:'#f0fdf4',borderRadius:'6px',border:'1px solid #86efac'}}>
+                                    <label style={{fontSize:'13px',fontWeight:'600',display:'block',marginBottom:'6px',color:'#166534'}}>Actual appointment date</label>
+                                    <input
+                                      type="date"
+                                      value={contactForm.obsApptDate || ''}
+                                      onChange={e => setContactForm({...contactForm, obsApptDate: e.target.value})}
+                                      style={{padding:'6px 8px',border:'1px solid #86efac',borderRadius:'4px',fontSize:'13px'}}
+                                    />
+                                    {contactForm.obsApptDate && (
+                                      <div style={{fontSize:'12px',color:'#166534',marginTop:'6px',fontWeight:'500'}}>
+                                        ✅ Check-in reminder: <strong>{new Date((getOBSCheckDate({OBS:true,obsApptDate:contactForm.obsApptDate})||contactForm.obsApptDate)+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'long',day:'numeric',year:'numeric'})}</strong>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </>
+                            )
                           ) : patient.MP ? (
                             /* #7: MP-specific outcomes */
                             <>
@@ -3901,11 +4239,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           )}
                         </div>
                       )}
-                      {patient.OBS && (
-                        <div style={{marginBottom:'12px',padding:'8px 12px',backgroundColor:'#f0fdf4',borderRadius:'6px',fontSize:'12px',color:'#166534',fontWeight:'500'}}>
-                          ♻️ Saving will auto-schedule next re-check for <strong>{new Date(addMonths(new Date().toISOString().split('T')[0], 6) + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}</strong>
-                        </div>
-                      )}
+                      {patient.OBS && !patient.obsApptDate && (() => {
+                        if (contactForm.outcome === 'OBS is now scheduled!' && contactForm.obsApptDate) {
+                          return <div style={{marginBottom:'12px',padding:'8px 12px',backgroundColor:'#dcfce7',borderRadius:'6px',fontSize:'12px',color:'#166534',fontWeight:'500'}}>✅ Saving will book OBS appointment for {new Date(contactForm.obsApptDate+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}</div>;
+                        }
+                        if (contactForm.outcome === 'Still on track — update anticipated date') {
+                          const ad = contactForm.obsAnticipatedDate || patient.obsAnticipatedDate;
+                          const bd = ad ? getOBSBookingCallDate(ad, obsRecallMonths) : null;
+                          return bd ? <div style={{marginBottom:'12px',padding:'8px 12px',backgroundColor:'#f0fdf4',borderRadius:'6px',fontSize:'12px',color:'#166534',fontWeight:'500'}}>📞 Saving will schedule next booking call for {new Date(bd+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}</div> : null;
+                        }
+                        return null;
+                      })()}
 
                       <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
                         <button
@@ -4246,33 +4590,91 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   );
                 }
                 if (s === 'OBS') {
-                  const autoRecheck = addMonths(newPatientForm.npeDate, 6);
-                  const displayDate = newPatientForm.nextTouchOverride ? skipWeekend(newPatientForm.nextTouchOverride) : autoRecheck;
+                  const hasAppt = !!newPatientForm.obsApptDate;
+                  // Not Scheduled path
+                  const anticipatedDate = newPatientForm.obsAnticipatedDate;
+                  const bookingCallDate = anticipatedDate
+                    ? (newPatientForm.nextTouchOverride ? skipWeekend(newPatientForm.nextTouchOverride) : getOBSBookingCallDate(anticipatedDate, obsRecallMonths))
+                    : null;
+                  // Scheduled path
+                  const apptCheckDate = hasAppt ? (getOBSCheckDate({ OBS: true, obsApptDate: newPatientForm.obsApptDate }) || newPatientForm.obsApptDate) : null;
                   return (
-                    <div style={{padding:'14px 16px',backgroundColor:'#F5F5F5',borderRadius:'8px',border:'1px solid #d1d5db',marginBottom:'16px'}}>
-                      <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'10px'}}>
-                        <span style={{fontSize:'22px'}}>🔄</span>
-                        <div>
-                          <div style={{fontWeight:'700',color:'#374151'}}>Re-check: {new Date(displayDate+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div>
-                          <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>{newPatientForm.nextTouchOverride ? 'Custom date set' : '6-month auto-scheduled'} — will reappear in follow-up queue</div>
-                        </div>
+                    <div style={{padding:'14px 16px',backgroundColor:'#f0fdf4',borderRadius:'8px',border:'1px solid #86efac',marginBottom:'16px'}}>
+                      {/* OBS path toggle */}
+                      <div style={{display:'flex',gap:'8px',marginBottom:'14px'}}>
+                        <button type="button"
+                          onClick={() => setNewPatientForm({...newPatientForm, obsApptDate: '', nextTouchOverride: ''})}
+                          style={{flex:1,padding:'8px',borderRadius:'6px',border:`2px solid ${!hasAppt?'#16a34a':'#d1d5db'}`,backgroundColor: !hasAppt?'#dcfce7':'white',fontWeight:'700',fontSize:'13px',cursor:'pointer',color: !hasAppt?'#166534':'#6b7280'}}
+                        >
+                          Not Scheduled Yet
+                        </button>
+                        <button type="button"
+                          onClick={() => setNewPatientForm({...newPatientForm, nextTouchOverride: '', obsAnticipatedDate: '', obsApptDate: newPatientForm.obsApptDate || new Date().toISOString().split('T')[0]})}
+                          style={{flex:1,padding:'8px',borderRadius:'6px',border:`2px solid ${hasAppt?'#16a34a':'#d1d5db'}`,backgroundColor: hasAppt?'#dcfce7':'white',fontWeight:'700',fontSize:'13px',cursor:'pointer',color: hasAppt?'#166534':'#6b7280'}}
+                        >
+                          Appointment Confirmed
+                        </button>
                       </div>
-                      <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
-                        <label style={{fontSize:'13px',color:'#374151',fontWeight:'500'}}>Override date:</label>
-                        <input
-                          type="date"
-                          value={newPatientForm.nextTouchOverride || ''}
-                          onChange={e => setNewPatientForm({...newPatientForm, nextTouchOverride: e.target.value})}
-                          style={{padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'13px'}}
-                        />
-                        {newPatientForm.nextTouchOverride && (
-                          <button
-                            type="button"
-                            onClick={() => setNewPatientForm({...newPatientForm, nextTouchOverride: ''})}
-                            style={{fontSize:'12px',color:'#6b7280',background:'none',border:'1px solid #d1d5db',borderRadius:'4px',padding:'4px 8px',cursor:'pointer'}}
-                          >Reset to 6 months</button>
-                        )}
-                      </div>
+
+                      {hasAppt ? (
+                        /* SCHEDULED path */
+                        <>
+                          <div style={{marginBottom:'8px'}}>
+                            <label style={{fontSize:'13px',fontWeight:'600',display:'block',marginBottom:'4px',color:'#166534'}}>OBS Appointment Date *</label>
+                            <input
+                              type="date"
+                              value={newPatientForm.obsApptDate || ''}
+                              onChange={e => setNewPatientForm({...newPatientForm, obsApptDate: e.target.value})}
+                              style={{padding:'6px 8px',border:'1px solid #86efac',borderRadius:'4px',fontSize:'13px',width:'100%'}}
+                            />
+                          </div>
+                          {newPatientForm.obsApptDate && (
+                            <div style={{fontSize:'12px',color:'#166534',fontWeight:'500',padding:'8px 10px',backgroundColor:'#dcfce7',borderRadius:'6px'}}>
+                              ✅ Check-in reminder auto-set for <strong>{new Date(apptCheckDate+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</strong> (day after appointment)
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        /* NOT SCHEDULED path */
+                        <>
+                          <div style={{fontSize:'12px',color:'#166534',marginBottom:'10px',padding:'8px 10px',backgroundColor:'#dcfce7',borderRadius:'6px',lineHeight:'1.5'}}>
+                            📅 Enter the <strong>approximate date</strong> this patient should return for their OBS visit. CadenceIQ will auto-schedule a follow-up call <strong>{obsRecallMonths} months before</strong> that date — so your TC can call and book the appointment once the schedule opens.
+                          </div>
+                          <div style={{marginBottom:'10px'}}>
+                            <label style={{fontSize:'13px',fontWeight:'600',display:'block',marginBottom:'4px',color:'#166534'}}>Anticipated OBS Date</label>
+                            <input
+                              type="date"
+                              value={newPatientForm.obsAnticipatedDate || ''}
+                              onChange={e => setNewPatientForm({...newPatientForm, obsAnticipatedDate: e.target.value, nextTouchOverride: ''})}
+                              style={{padding:'6px 8px',border:'1px solid #86efac',borderRadius:'4px',fontSize:'13px'}}
+                            />
+                          </div>
+                          {anticipatedDate && bookingCallDate && (
+                            <div style={{fontSize:'12px',color:'#166534',fontWeight:'500',padding:'8px 10px',backgroundColor:'#dcfce7',borderRadius:'6px'}}>
+                              📞 Booking call auto-scheduled: <strong>{new Date(bookingCallDate+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</strong>
+                              <span style={{color:'#4ade80',marginLeft:'6px'}}>({obsRecallMonths} months before anticipated OBS)</span>
+                            </div>
+                          )}
+                          {!anticipatedDate && (
+                            <div style={{fontSize:'12px',color:'#6b7280',fontStyle:'italic'}}>Enter an anticipated date above to auto-schedule the booking call.</div>
+                          )}
+                          {anticipatedDate && (
+                            <div style={{marginTop:'8px',display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                              <label style={{fontSize:'12px',color:'#6b7280'}}>Override call date:</label>
+                              <input
+                                type="date"
+                                value={newPatientForm.nextTouchOverride || ''}
+                                onChange={e => setNewPatientForm({...newPatientForm, nextTouchOverride: e.target.value})}
+                                style={{padding:'4px 8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'12px'}}
+                              />
+                              {newPatientForm.nextTouchOverride && (
+                                <button type="button" onClick={() => setNewPatientForm({...newPatientForm, nextTouchOverride: ''})}
+                                  style={{fontSize:'11px',color:'#6b7280',background:'none',border:'1px solid #d1d5db',borderRadius:'4px',padding:'3px 7px',cursor:'pointer'}}>Reset</button>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      )}
                     </div>
                   );
                 }
@@ -4705,7 +5107,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         )}
 
         {/* MEDICAID PIPELINE */}
-        {currentView === 'medicaid' && (() => {
+        {currentView === 'medicaid' && medicaidEnabled && (() => {
           const todayStr = new Date().toISOString().split('T')[0];
           const mpPatients = patients.filter(p => p.MP);
 
@@ -6712,6 +7114,63 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </div>
                   )}
 
+                  {/* Feature Toggles */}
+                  <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
+                    <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>🔧 Feature Toggles</h4>
+                    <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Enable or disable features for your practice.</p>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 16px',backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'8px',marginBottom:'10px'}}>
+                      <div>
+                        <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>🏥 Medicaid Pipeline</div>
+                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>Kanban board for tracking patients waiting on Medicaid approval.</div>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          const next = !medicaidEnabled;
+                          setMedicaidEnabled(next);
+                          await dbSaveSettings('medicaid-enabled', next);
+                        }}
+                        style={{
+                          padding:'7px 18px',
+                          backgroundColor: medicaidEnabled ? '#16a34a' : '#6b7280',
+                          color:'white',
+                          border:'none',
+                          borderRadius:'20px',
+                          fontSize:'13px',
+                          fontWeight:'700',
+                          cursor:'pointer',
+                          whiteSpace:'nowrap',
+                          flexShrink:0,
+                          marginLeft:'16px',
+                        }}
+                      >
+                        {medicaidEnabled ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 16px',backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'8px'}}>
+                      <div>
+                        <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>🔄 OBS Booking Call Lead Time</div>
+                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>How many months <em>before</em> the anticipated OBS date to auto-schedule the booking call. Default is 4 months — so when the TC calls, the schedule should be opening up.</div>
+                      </div>
+                      <div style={{display:'flex',alignItems:'center',gap:'8px',flexShrink:0,marginLeft:'16px'}}>
+                        <input
+                          type="number"
+                          min="1"
+                          max="12"
+                          value={obsRecallMonths}
+                          onChange={e => setObsRecallMonths(Math.max(1, Math.min(12, parseInt(e.target.value) || 4)))}
+                          style={{width:'60px',padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px',fontWeight:'700',textAlign:'center'}}
+                        />
+                        <span style={{fontSize:'13px',color:'#6b7280'}}>months before</span>
+                        <button
+                          onClick={async () => { await dbSaveSettings('obs-recall-months', obsRecallMonths); setSaveToast('✅ OBS lead time saved'); setTimeout(() => setSaveToast(''), 2500); }}
+                          style={{padding:'7px 14px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'6px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Locations */}
                   <div id="guide-locations-section" style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>📍 Office Locations</h4>
@@ -7495,10 +7954,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <p style={{fontSize:'13px',color:'#9ca3af',marginTop:'4px'}}>Issues submitted by your team via the Report Issue button.</p>
                   </div>
                   <button
-                    onClick={loadFeedback}
+                    onClick={() => { loadFeedback(); localStorage.setItem('feedbackLastChecked', new Date().toISOString()); setNewFeedbackCount(0); setShowFeedbackAlert(false); }}
                     style={{padding:'8px 18px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer',fontSize:'13px'}}
                   >
-                    {feedbackListLoading ? '⏳ Loading...' : '🔄 Load Reports'}
+                    {feedbackListLoading ? '⏳ Loading...' : `🔄 Load Reports${newFeedbackCount > 0 ? ` (${newFeedbackCount} new)` : ''}`}
                   </button>
                 </div>
                 {feedbackList.length === 0 && !feedbackListLoading && (
@@ -7795,14 +8254,50 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
       </main>
 
-      {/* Floating Support Button */}
-      <button
-        onClick={() => setShowFeedbackModal(true)}
-        style={{position:'fixed',bottom:'24px',left:'24px',zIndex:9000,backgroundColor:'#202020',color:'white',border:'none',borderRadius:'50px',padding:'10px 18px',fontSize:'13px',fontWeight:'600',cursor:'pointer',boxShadow:'0 4px 12px rgba(0,0,0,0.25)',display:'flex',alignItems:'center',gap:'7px',opacity:0.85}}
-        title="Report an issue or give feedback"
-      >
-        🐛 Report Issue
-      </button>
+      {/* Floating Support Button — hidden for demo */}
+      {currentUser?.id !== 'demo' && (
+        <button
+          onClick={() => setShowFeedbackModal(true)}
+          style={{position:'fixed',bottom:'24px',left:'24px',zIndex:9000,backgroundColor:'#202020',color:'white',border:'none',borderRadius:'50px',padding:'10px 18px',fontSize:'13px',fontWeight:'600',cursor:'pointer',boxShadow:'0 4px 12px rgba(0,0,0,0.25)',display:'flex',alignItems:'center',gap:'7px',opacity:0.85}}
+          title="Report an issue or give feedback"
+        >
+          🐛 Report Issue
+        </button>
+      )}
+
+      {/* New feedback alert — miller-ortho admin only */}
+      {showFeedbackAlert && (
+        <div style={{position:'fixed',top:'24px',right:'24px',zIndex:10000,backgroundColor:'white',border:'2px solid #f59e0b',borderRadius:'12px',padding:'16px 20px',boxShadow:'0 8px 24px rgba(0,0,0,0.15)',maxWidth:'320px',display:'flex',flexDirection:'column',gap:'10px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+            <span style={{fontSize:'22px'}}>🐛</span>
+            <div>
+              <div style={{fontWeight:'700',fontSize:'15px',color:'#202020'}}>{newFeedbackCount} new bug report{newFeedbackCount !== 1 ? 's' : ''}</div>
+              <div style={{fontSize:'12px',color:'#6b7280'}}>Submitted since your last login</div>
+            </div>
+          </div>
+          <div style={{display:'flex',gap:'8px'}}>
+            <button
+              onClick={() => {
+                setShowFeedbackAlert(false);
+                localStorage.setItem('feedbackLastChecked', new Date().toISOString());
+                setCurrentView('settings');
+              }}
+              style={{flex:1,padding:'8px',backgroundColor:'#f59e0b',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer',fontSize:'13px'}}
+            >
+              View Reports
+            </button>
+            <button
+              onClick={() => {
+                setShowFeedbackAlert(false);
+                localStorage.setItem('feedbackLastChecked', new Date().toISOString());
+              }}
+              style={{padding:'8px 14px',backgroundColor:'#f3f4f6',color:'#374151',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer',fontSize:'13px'}}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Feedback Modal */}
       {showFeedbackModal && (
@@ -7984,6 +8479,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             if (!updated.obstacle) updated.obstacle = 'Waiting to Hear from Medicaid';
                             if (updated.npeDate) updated.nextTouchDate = calcNextTouchDate(updated.npeDate, updated.obstacle, updated.contactAttempts || 0, updated.lastContactDate || '');
                           }
+                          if (status.value !== 'OBS') { updated.obsApptDate = ''; updated.obsAnticipatedDate = ''; }
                           setEditForm(updated);
                         }}
                         style={{marginRight:'2px'}} />
@@ -8043,9 +8539,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       // Touch 1 is NPE-based — recalculate from new date
                       const effObstacle = editForm.obstacle || (editForm.MP ? 'Waiting to Hear from Medicaid' : '');
                       updated.nextTouchDate = calcNextTouchDate(newNpeDate, effObstacle, 0, '');
-                    } else if (editForm.OBS) {
-                      // OBS cadence is always NPE + 6 months
-                      updated.nextTouchDate = addMonths(newNpeDate, 6);
+                    } else if (editForm.OBS && !editForm.obsApptDate) {
+                      updated.nextTouchDate = addMonths(newNpeDate, obsRecallMonths);
                     }
                     setEditForm(updated);
                   }}
@@ -8122,18 +8617,79 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               const todayStr = new Date().toISOString().split('T')[0];
 
               if (editForm.OBS) {
-                const nextCheck = addMonths(editForm.npeDate, 6);
+                const hasAppt = !!editForm.obsApptDate;
+                const nextCheck = hasAppt
+                  ? (getOBSCheckDate({ OBS: true, obsApptDate: editForm.obsApptDate }) || editForm.obsApptDate)
+                  : (editForm.nextTouchDate || addMonths(editForm.npeDate, obsRecallMonths));
                 const overdue = nextCheck < todayStr;
                 return (
                   <div style={{marginBottom:'16px',padding:'14px',backgroundColor:'#f0fdf4',borderRadius:'8px',border:'1px solid #86efac'}}>
-                    <div style={{fontSize:'12px',fontWeight:'700',color:'#166534',marginBottom:'8px',textTransform:'uppercase',letterSpacing:'0.06em'}}>📅 Observation Re-Check Schedule</div>
-                    <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
-                      <div style={{width:'24px',height:'24px',borderRadius:'50%',backgroundColor:'#16a34a',display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontSize:'12px',fontWeight:'700',flexShrink:0}}>1</div>
-                      <span style={{fontSize:'13px',fontWeight:'700',color:'#166534'}}>
-                        6-month re-check — {new Date(nextCheck + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}
-                      </span>
-                      {overdue && <span style={{backgroundColor:'#ef4444',color:'white',padding:'1px 7px',borderRadius:'10px',fontSize:'11px',fontWeight:'700'}}>OVERDUE</span>}
-                    </div>
+                    <div style={{fontSize:'12px',fontWeight:'700',color:'#166534',marginBottom:'8px',textTransform:'uppercase',letterSpacing:'0.06em'}}>📅 Observation Schedule</div>
+                    {hasAppt ? (
+                      <div>
+                        <div style={{fontSize:'13px',fontWeight:'700',color:'#166534',marginBottom:'4px'}}>
+                          📅 Appointment: <strong>{new Date(editForm.obsApptDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}</strong>
+                        </div>
+                        <div style={{fontSize:'12px',color:'#166534'}}>
+                          Check-in reminder: {new Date(nextCheck + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}
+                          {overdue && <span style={{marginLeft:'8px',backgroundColor:'#ef4444',color:'white',padding:'1px 7px',borderRadius:'10px',fontSize:'11px',fontWeight:'700'}}>OVERDUE</span>}
+                        </div>
+                        <div style={{marginTop:'8px'}}>
+                          <label style={{fontSize:'12px',fontWeight:'600',display:'block',marginBottom:'4px',color:'#166534'}}>OBS Appointment Date</label>
+                          <input
+                            type="date"
+                            value={editForm.obsApptDate || ''}
+                            onChange={e => {
+                              const newAppt = e.target.value;
+                              const newCheck = getOBSCheckDate({ OBS: true, obsApptDate: newAppt });
+                              setEditForm({...editForm, obsApptDate: newAppt, nextTouchDate: newCheck || ''});
+                            }}
+                            style={{padding:'6px 8px',border:'1px solid #86efac',borderRadius:'4px',fontSize:'13px'}}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const bd = editForm.obsAnticipatedDate ? getOBSBookingCallDate(editForm.obsAnticipatedDate, obsRecallMonths) : '';
+                              setEditForm({...editForm, obsApptDate: '', nextTouchDate: bd || ''});
+                            }}
+                            style={{marginLeft:'8px',fontSize:'12px',color:'#6b7280',background:'none',border:'1px solid #d1d5db',borderRadius:'4px',padding:'4px 8px',cursor:'pointer'}}
+                          >Clear appointment</button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Not scheduled — show anticipated date + booking call */
+                      <div>
+                        <div style={{marginBottom:'10px'}}>
+                          <label style={{fontSize:'12px',fontWeight:'600',display:'block',marginBottom:'4px',color:'#166534'}}>Anticipated OBS Date</label>
+                          <input
+                            type="date"
+                            value={editForm.obsAnticipatedDate || ''}
+                            onChange={e => {
+                              const ad = e.target.value;
+                              const bd = getOBSBookingCallDate(ad, obsRecallMonths);
+                              setEditForm({...editForm, obsAnticipatedDate: ad, nextTouchDate: bd || ''});
+                            }}
+                            style={{padding:'6px 8px',border:'1px solid #86efac',borderRadius:'4px',fontSize:'13px'}}
+                          />
+                        </div>
+                        {editForm.obsAnticipatedDate && (() => {
+                          const bd = getOBSBookingCallDate(editForm.obsAnticipatedDate, obsRecallMonths);
+                          const bOverdue = bd && bd < todayStr;
+                          return bd ? (
+                            <div style={{fontSize:'12px',color:'#166534',fontWeight:'500',marginBottom:'8px'}}>
+                              📞 Booking call: <strong>{new Date(bd+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}</strong>
+                              {bOverdue && <span style={{marginLeft:'6px',backgroundColor:'#ef4444',color:'white',padding:'1px 7px',borderRadius:'10px',fontSize:'11px',fontWeight:'700'}}>OVERDUE</span>}
+                              <span style={{marginLeft:'6px',color:'#6b7280'}}>({obsRecallMonths} months before anticipated)</span>
+                            </div>
+                          ) : null;
+                        })()}
+                        <button
+                          type="button"
+                          onClick={() => setEditForm({...editForm, obsApptDate: new Date().toISOString().split('T')[0], obsAnticipatedDate: ''})}
+                          style={{fontSize:'12px',color:'#166534',background:'none',border:'1px solid #86efac',borderRadius:'4px',padding:'4px 10px',cursor:'pointer',fontWeight:'600'}}
+                        >+ Appointment is now confirmed</button>
+                      </div>
+                    )}
                   </div>
                 );
               }
