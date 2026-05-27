@@ -796,6 +796,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // Medicaid submission pipeline
   const [medWfModal, setMedWfModal] = useState(null); // { patient, stage: 1|2|3|4 }
   const [medWfForm, setMedWfForm] = useState({});
+  const [medRemoveModal, setMedRemoveModal] = useState(null); // { patient }
 
   // Support / feedback
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
@@ -1344,7 +1345,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     nextTouchDate: '',
     obstacle: '',
     obsApptDate: '',
-    obsAnticipatedDate: ''
+    obsAnticipatedDate: '',
+    scheduledBondDate: '',
+    scheduleType: ''
   });
 
   // Bond check-in notes (per patient id)
@@ -1457,8 +1460,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const medicaidPending = pts.filter(p => p.MP === true).length;
     const noTx = pts.filter(p => p.NOTX === true).length;
 
-    const retainers = _sp.filter(p => (isSDS(p) || p.DBRETS) && p['R+'] === true).length;
-    const whitening = _sp.filter(p => (isSDS(p) || p.DBRETS) && p['W+'] === true).length;
+    const retainers = _sp.filter(p => (isSDS(p) || p.ST || p.DBRETS) && p['R+'] === true).length;
+    const whitening = _sp.filter(p => (isSDS(p) || p.ST || p.DBRETS) && p['W+'] === true).length;
     const pif = started.filter(p => p.PIF === true).length;
 
     const overallConv = total > 0 ? Math.round((started.length / total) * 100) : 0;
@@ -1629,7 +1632,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setPatients(updated);
     if (updatedPatient) await dbUpsert(updatedPatient);
     setShowContactLog(null);
-    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '' });
+    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
   };
 
   const handleConvertToNotx = async (patientId) => {
@@ -1658,7 +1661,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setPatients(updated);
     if (updatedPatient) await dbUpsert(updatedPatient);
     setShowContactLog(null);
-    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '' });
+    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
     setSaveToast('✅ ' + (updatedPatient?.name || '') + ' moved to No Treatment');
     setTimeout(() => setSaveToast(''), 3000);
   };
@@ -1714,6 +1717,44 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     await dbUpsert(updated);
     setShowStartedModal(null);
     setSaveToast(`🎯 ${updated.name} marked as Started — removed from follow-up queue!`);
+    setTimeout(() => setSaveToast(''), 4000);
+  };
+
+  const handleMarkScheduled = async (patient) => {
+    const bondDate = contactForm.scheduledBondDate;
+    if (!bondDate) {
+      alert('Please enter the scheduled bond date before saving.');
+      return;
+    }
+    const todayStr = new Date().toISOString().split('T')[0];
+    const checkDate = getBondCheckDate({ SCH: true, bondDate });
+    const logEntry = {
+      date: todayStr,
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      scheduledDate: patient.nextTouchDate || '',
+      reachedPatient: contactForm.reachedPatient,
+      outcome: `Scheduled — no down payment collected. Bond date: ${new Date(bondDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+      sentText: contactForm.sentText,
+      notes: contactForm.notes,
+      logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
+    };
+    const updatedPatient = {
+      ...patient,
+      SCH: true,
+      PEN: false,
+      MP: false,
+      bondDate,
+      nextTouchDate: checkDate || '',
+      obstacle: '',
+      contactAttempts: 0,
+      lastContactDate: todayStr,
+      contact_log: [...(patient.contact_log || []), logEntry]
+    };
+    setPatients(prev => prev.map(p => p.id === patient.id ? updatedPatient : p));
+    await dbUpsert(updatedPatient);
+    setShowContactLog(null);
+    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
+    setSaveToast(`📅 ${patient.name} marked Scheduled — bond check-in set for ${checkDate ? new Date(checkDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : bondDate}`);
     setTimeout(() => setSaveToast(''), 4000);
   };
 
@@ -2274,8 +2315,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 const replacing = getReplacingCampaign(p, tcName);
                 if (!replacing) {
                   if (isSDS(p)) tcBaseBonus += bonusRates.sds;
-                  if ((isSDS(p)||p.DBRETS) && p['R+']) tcBaseBonus += bonusRates.ret;
-                  if ((isSDS(p)||p.DBRETS) && p['W+']) tcBaseBonus += bonusRates.white;
+                  if ((isSDS(p)||p.ST||p.DBRETS) && p['R+']) tcBaseBonus += bonusRates.ret;
+                  if ((isSDS(p)||p.ST||p.DBRETS) && p['W+']) tcBaseBonus += bonusRates.white;
                   if ((isSDS(p)||p.ST) && p.PIF) tcBaseBonus += bonusRates.pif;
                 }
               });
@@ -3550,7 +3591,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         {currentView === 'followup' && (
           <div style={{display:'flex',flexDirection:'column',gap:'24px'}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'12px'}}>
-              <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',display:'flex',alignItems:'center',gap:'4px',margin:0}}>Follow-Up Queue <HelpTip id="followup-queue" tip={"This is where you spend most of your day. Every patient who didn't start same-day is here.\n\nPriority labels:\n• FRESH = NPE within the last 7 days\n• WARM = 8–30 days\n• HOT = over 30 days (overdue)\n\nThe system auto-schedules who's due today based on their obstacle. Work through every patient on today's list before the day ends."} /></h2>
+              <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',display:'flex',alignItems:'center',gap:'4px',margin:0}}>Follow-Up Queue <HelpTip id="followup-queue" tip={"This is where you spend most of your day. Every patient who didn't start same-day is here.\n\nPriority labels:\n• NEW = NPE within the last 7 days\n• ACTIVE = 8–21 days\n• OVERDUE = 22+ days (needs immediate attention)\n\nThe system auto-schedules who's due today based on their obstacle. Work through every patient on today's list before the day ends."} /></h2>
               {tcNames.length > 1 && (
                 <select value={followupTCFilter} onChange={e => setFollowupTCFilter(e.target.value)}
                   style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',color:'#374151',backgroundColor:'white'}}>
@@ -3910,7 +3951,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   {selectedFollowUps.map(patient => {
                     const npeDateSafe = patient.npeDate || today;
                     const daysOld = Math.floor((new Date() - new Date(npeDateSafe + 'T12:00:00')) / 86400000);
-                    const priority = daysOld <= 7 ? 'FRESH' : daysOld <= 21 ? 'WARM' : 'HOT';
+                    const priority = daysOld <= 7 ? 'NEW' : daysOld <= 21 ? 'ACTIVE' : 'OVERDUE';
                     return (
                 <div key={patient.id} style={{backgroundColor:'white',padding:'20px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'16px'}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'start',marginBottom:'12px'}}>
@@ -3919,10 +3960,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         <h4 style={{fontSize:'18px',fontWeight:'bold',color:'#202020',margin:0}}>{patient.name}</h4>
                         <span style={{
                           padding:'3px 8px', fontSize:'12px', fontWeight:'600', borderRadius:'4px',
-                          backgroundColor: priority === 'HOT' ? '#fee2e2' : priority === 'WARM' ? '#fed7aa' : '#fef3c7',
-                          color: priority === 'HOT' ? '#991b1b' : priority === 'WARM' ? '#9a3412' : '#92400e'
+                          backgroundColor: priority === 'OVERDUE' ? '#fee2e2' : priority === 'ACTIVE' ? '#fed7aa' : '#dcfce7',
+                          color: priority === 'OVERDUE' ? '#991b1b' : priority === 'ACTIVE' ? '#9a3412' : '#166534'
                         }}>
-                          {priority === 'HOT' ? '🔴 HOT' : priority === 'WARM' ? '🟠 WARM' : '🟡 FRESH'} — {daysOld}d
+                          {priority === 'OVERDUE' ? '🔴 OVERDUE' : priority === 'ACTIVE' ? '🟡 ACTIVE' : '🟢 NEW'} — {daysOld}d
                         </span>
                         {/* Status badge */}
                         {patient.OBS && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#f0fdf4',color:'#166534',borderRadius:'4px',fontWeight:'600'}}>
@@ -4146,11 +4187,52 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 <label key={option} style={{display:'block',marginBottom:'4px',cursor:'pointer'}}>
                                   <input type="radio" name={`outcome-${patient.id}`} value={option}
                                     checked={contactForm.outcome === option}
-                                    onChange={(e) => setContactForm({...contactForm, outcome: e.target.value})}
+                                    onChange={(e) => setContactForm({...contactForm, outcome: e.target.value, scheduledBondDate: '', scheduleType: ''})}
                                     style={{marginRight:'8px'}} />
                                   {option}
                                 </label>
                               ))}
+                              {/* Sub-prompt: when Medicaid approved — ask about down payment */}
+                              {contactForm.outcome === 'Medicaid approved — ready to schedule! 🎉' && (
+                                <div style={{marginTop:'10px',padding:'12px',backgroundColor:'#f0fdf4',borderRadius:'8px',border:'1px solid #86efac'}}>
+                                  <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px',color:'#166534'}}>💰 Are they collecting a down payment?</div>
+                                  <label style={{display:'block',marginBottom:'6px',cursor:'pointer'}}>
+                                    <input type="radio" name={`scheduleType-${patient.id}`} value="dp"
+                                      checked={contactForm.scheduleType === 'dp'}
+                                      onChange={() => setContactForm({...contactForm, scheduleType: 'dp', scheduledBondDate: ''})}
+                                      style={{marginRight:'8px'}} />
+                                    Yes — collecting a down payment now
+                                  </label>
+                                  <label style={{display:'block',cursor:'pointer'}}>
+                                    <input type="radio" name={`scheduleType-${patient.id}`} value="no_dp"
+                                      checked={contactForm.scheduleType === 'no_dp'}
+                                      onChange={() => setContactForm({...contactForm, scheduleType: 'no_dp'})}
+                                      style={{marginRight:'8px'}} />
+                                    No — just scheduling the bond appointment
+                                  </label>
+                                  {contactForm.scheduleType === 'no_dp' && (
+                                    <div style={{marginTop:'10px',padding:'10px',backgroundColor:'#eff6ff',borderRadius:'6px',border:'1px solid #bfdbfe'}}>
+                                      <label style={{fontSize:'13px',fontWeight:'600',display:'block',marginBottom:'6px',color:'#1e40af'}}>
+                                        📅 Enter Scheduled Bond Date <span style={{color:'#dc2626'}}>*</span>
+                                      </label>
+                                      <input
+                                        type="date"
+                                        value={contactForm.scheduledBondDate || ''}
+                                        onChange={e => setContactForm({...contactForm, scheduledBondDate: e.target.value})}
+                                        style={{padding:'8px',border:'1px solid #93c5fd',borderRadius:'4px',fontSize:'14px'}}
+                                      />
+                                      {contactForm.scheduledBondDate && (() => {
+                                        const checkDate = getBondCheckDate({ SCH: true, bondDate: contactForm.scheduledBondDate });
+                                        return checkDate ? (
+                                          <div style={{marginTop:'8px',fontSize:'12px',color:'#166534',fontWeight:'500'}}>
+                                            ✅ Bond check-in reminder: <strong>{new Date(checkDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' })}</strong>
+                                          </div>
+                                        ) : null;
+                                      })()}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </>
                           ) : (
                             /* Standard PEN outcomes */
@@ -4160,18 +4242,60 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 <label key={option} style={{display:'block',marginBottom:'4px',cursor:'pointer'}}>
                                   <input type="radio" name={`outcome-${patient.id}`} value={option}
                                     checked={contactForm.outcome === option}
-                                    onChange={(e) => setContactForm({...contactForm, outcome: e.target.value})}
+                                    onChange={(e) => setContactForm({...contactForm, outcome: e.target.value, scheduledBondDate: '', scheduleType: ''})}
                                     style={{marginRight:'8px'}} />
                                   {option}
                                 </label>
                               ))}
+                              {/* Sub-prompt: when "Ready to schedule" — ask about down payment */}
+                              {contactForm.outcome === 'Ready to schedule! 🎉' && (
+                                <div style={{marginTop:'10px',padding:'12px',backgroundColor:'#f0fdf4',borderRadius:'8px',border:'1px solid #86efac'}}>
+                                  <div style={{fontSize:'13px',fontWeight:'600',marginBottom:'8px',color:'#166534'}}>💰 Are they collecting a down payment?</div>
+                                  <label style={{display:'block',marginBottom:'6px',cursor:'pointer'}}>
+                                    <input type="radio" name={`scheduleType-${patient.id}`} value="dp"
+                                      checked={contactForm.scheduleType === 'dp'}
+                                      onChange={() => setContactForm({...contactForm, scheduleType: 'dp', scheduledBondDate: ''})}
+                                      style={{marginRight:'8px'}} />
+                                    Yes — collecting a down payment now
+                                  </label>
+                                  <label style={{display:'block',cursor:'pointer'}}>
+                                    <input type="radio" name={`scheduleType-${patient.id}`} value="no_dp"
+                                      checked={contactForm.scheduleType === 'no_dp'}
+                                      onChange={() => setContactForm({...contactForm, scheduleType: 'no_dp'})}
+                                      style={{marginRight:'8px'}} />
+                                    No — just scheduling the bond appointment
+                                  </label>
+                                  {/* Bond date field for no-down-payment path */}
+                                  {contactForm.scheduleType === 'no_dp' && (
+                                    <div style={{marginTop:'10px',padding:'10px',backgroundColor:'#eff6ff',borderRadius:'6px',border:'1px solid #bfdbfe'}}>
+                                      <label style={{fontSize:'13px',fontWeight:'600',display:'block',marginBottom:'6px',color:'#1e40af'}}>
+                                        📅 Enter Scheduled Bond Date <span style={{color:'#dc2626'}}>*</span>
+                                      </label>
+                                      <input
+                                        type="date"
+                                        value={contactForm.scheduledBondDate || ''}
+                                        onChange={e => setContactForm({...contactForm, scheduledBondDate: e.target.value})}
+                                        style={{padding:'8px',border:'1px solid #93c5fd',borderRadius:'4px',fontSize:'14px'}}
+                                      />
+                                      {contactForm.scheduledBondDate && (() => {
+                                        const checkDate = getBondCheckDate({ SCH: true, bondDate: contactForm.scheduledBondDate });
+                                        return checkDate ? (
+                                          <div style={{marginTop:'8px',fontSize:'12px',color:'#166534',fontWeight:'500'}}>
+                                            ✅ Bond check-in reminder: <strong>{new Date(checkDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' })}</strong>
+                                          </div>
+                                        ) : null;
+                                      })()}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </>
                           )}
                         </div>
                       )}
 
-                      {/* #6: Obstacle update field for PEN/MP patients */}
-                      {(patient.PEN || patient.MP) && (
+                      {/* #6: Obstacle update field for PEN/MP patients — hide when scheduling without DP */}
+                      {(patient.PEN || patient.MP) && contactForm.scheduleType !== 'no_dp' && (
                         <div style={{marginBottom:'12px'}}>
                           <label style={{fontSize:'13px',fontWeight:'500',display:'block',marginBottom:'4px'}}>
                             Update Obstacle <span style={{color:'#6b7280',fontWeight:'400'}}>(optional — leave blank to keep current)</span>
@@ -4207,8 +4331,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         />
                       </div>
 
-                      {/* Next touch date — hidden for OBS (always auto +6mo) */}
-                      {!patient.OBS && (
+                      {/* Next touch date — hidden for OBS (always auto +6mo) and when scheduling without DP (bond date drives it) */}
+                      {!patient.OBS && contactForm.scheduleType !== 'no_dp' && (
                         <div style={{marginBottom:'12px'}}>
                           <label style={{fontSize:'13px',fontWeight:'500',display:'block',marginBottom:'4px'}}>
                             Next Touch Date <span style={{color:'#6b7280',fontWeight:'400'}}>(optional — leave blank to auto-calculate)</span>
@@ -4258,13 +4382,25 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         >
                           💾 Save Contact
                         </button>
-                        {/* Mark Started: Ready to schedule (PEN) OR Medicaid approved (MP) OR Ready to start (OBS) */}
-                        {(contactForm.outcome === 'Ready to schedule! 🎉' || contactForm.outcome === 'Medicaid approved — ready to schedule! 🎉' || contactForm.outcome === 'Ready to start treatment! 🎉') && (
+                        {/* Mark Started: collecting DP (scheduleType=dp) OR OBS ready to start — needs down payment sub-answer */}
+                        {((contactForm.outcome === 'Ready to schedule! 🎉' && contactForm.scheduleType === 'dp') ||
+                          (contactForm.outcome === 'Medicaid approved — ready to schedule! 🎉' && contactForm.scheduleType === 'dp') ||
+                          contactForm.outcome === 'Ready to start treatment! 🎉') && (
                           <button
                             onClick={() => handleMarkStarted(patient)}
                             style={{padding:'10px 20px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer'}}
                           >
                             🎯 Mark Started
+                          </button>
+                        )}
+                        {/* Mark Scheduled: scheduling only, no down payment */}
+                        {((contactForm.outcome === 'Ready to schedule! 🎉' && contactForm.scheduleType === 'no_dp') ||
+                          (contactForm.outcome === 'Medicaid approved — ready to schedule! 🎉' && contactForm.scheduleType === 'no_dp')) && (
+                          <button
+                            onClick={() => handleMarkScheduled(patient)}
+                            style={{padding:'10px 20px',backgroundColor:'#1e40af',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer'}}
+                          >
+                            📅 Mark Scheduled
                           </button>
                         )}
                         {/* #4: Convert to NOTX when Not interested */}
@@ -4277,7 +4413,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           </button>
                         )}
                         <button
-                          onClick={() => {setShowContactLog(null); setContactForm({reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: ''});}}
+                          onClick={() => {setShowContactLog(null); setContactForm({reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: ''});}}
                           style={{padding:'10px 20px',backgroundColor:'#e5e7eb',color:'#374151',border:'none',borderRadius:'6px',cursor:'pointer'}}
                         >
                           Cancel
@@ -4287,7 +4423,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   ) : (
                     <div style={{display:'flex',gap:'8px'}}>
                       <button
-                        onClick={() => { setShowContactLog(patient.id); setContactForm({reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: ''}); }}
+                        onClick={() => { setShowContactLog(patient.id); setContactForm({reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: ''}); }}
                         style={{padding:'8px 16px',backgroundColor:'#3b82f6',color:'white',border:'none',borderRadius:'6px',cursor:'pointer',fontSize:'14px'}}
                       >
                         LOG CONTACT ▼
@@ -5137,6 +5273,28 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             setMedWfForm({});
           };
 
+          const removeFromPipeline = async (patient, disposition, obstacle) => {
+            // disposition: 'pending' → convert to PEN with obstacle, 'notx' → mark NOTX
+            let updates = { MP: false, insuranceWorkflow: {} };
+            if (disposition === 'pending') {
+              const nextDate = calcNextTouchDate(patient.npeDate, obstacle, 0, '');
+              updates = {
+                ...updates,
+                PEN: true, SCH: false, NOTX: false,
+                obstacle,
+                contactAttempts: 0,
+                lastContactDate: '',
+                nextTouchDate: nextDate,
+              };
+            } else {
+              updates = { ...updates, NOTX: true, PEN: false, SCH: false };
+            }
+            const updated = { ...patient, ...updates };
+            setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
+            await dbUpsert(updated);
+            setMedRemoveModal(null);
+          };
+
           const saveWorkflow = async (patient, updates) => {
             const newWorkflow = { ...(patient.insuranceWorkflow || {}), ...updates };
             let patientUpdates = { insuranceWorkflow: newWorkflow };
@@ -5234,6 +5392,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                      'Record Outcome →'}
                   </button>
                 )}
+                {/* Remove from pipeline */}
+                <button onClick={() => setMedRemoveModal({ patient: p })}
+                  style={{width:'100%',marginTop:'6px',padding:'5px 0',backgroundColor:'transparent',color:'#9ca3af',border:'1px solid #e5e7eb',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>
+                  ✕ Remove from pipeline
+                </button>
               </div>
             );
           };
@@ -5308,6 +5471,77 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         {s5.map(p => <KanbanCard key={p.id} p={p} cfg={cfg} />)}
                       </div>
                     )}
+                  </div>
+                );
+              })()}
+
+              {/* Remove from Pipeline Modal */}
+              {medRemoveModal && (() => {
+                const { patient: p, step = 'choose', selectedObstacle = '' } = medRemoveModal;
+                const update = patch => setMedRemoveModal(prev => ({ ...prev, ...patch }));
+                return (
+                  <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:'16px'}}>
+                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'28px',width:'100%',maxWidth:'440px',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+
+                      {/* Header */}
+                      <div style={{marginBottom:'20px'}}>
+                        <div style={{fontSize:'11px',fontWeight:'700',textTransform:'uppercase',letterSpacing:'0.08em',color:'#9ca3af',marginBottom:'4px'}}>
+                          {step === 'choose' ? 'Remove from Medicaid Pipeline' : 'Set Follow-Up Obstacle'}
+                        </div>
+                        <h3 style={{fontSize:'20px',fontWeight:'800',color:'#111827',margin:0}}>{p.name}</h3>
+                        <div style={{fontSize:'13px',color:'#6b7280',marginTop:'4px'}}>
+                          {step === 'choose' ? 'What happens to this patient after removal?' : 'Pick the obstacle — this drives the new follow-up cadence'}
+                        </div>
+                      </div>
+
+                      {/* Step 1: choose disposition */}
+                      {step === 'choose' && (
+                        <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'20px'}}>
+                          <button onClick={() => update({ step: 'obstacle' })}
+                            style={{padding:'14px 16px',border:'2px solid #bfdbfe',borderRadius:'10px',backgroundColor:'#eff6ff',textAlign:'left',cursor:'pointer'}}>
+                            <div style={{fontWeight:'700',fontSize:'14px',color:'#1d4ed8',marginBottom:'2px'}}>🔄 Convert to Pending</div>
+                            <div style={{fontSize:'12px',color:'#3b82f6'}}>Keep in follow-up queue — pursuing private pay or other options</div>
+                          </button>
+                          <button onClick={() => removeFromPipeline(p, 'notx')}
+                            style={{padding:'14px 16px',border:'2px solid #fecaca',borderRadius:'10px',backgroundColor:'#fef2f2',textAlign:'left',cursor:'pointer'}}>
+                            <div style={{fontWeight:'700',fontSize:'14px',color:'#dc2626',marginBottom:'2px'}}>✕ No Treatment</div>
+                            <div style={{fontSize:'12px',color:'#ef4444'}}>Patient is not moving forward — remove from all queues</div>
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Step 2: obstacle picker */}
+                      {step === 'obstacle' && (
+                        <div style={{marginBottom:'18px'}}>
+                          <div style={{display:'flex',flexDirection:'column',gap:'6px',marginBottom:'16px'}}>
+                            {OBSTACLE_OPTIONS.filter(o => o !== 'Waiting to Hear from Medicaid').map(obs => {
+                              const cadence = CADENCES[obs] || DEFAULT_CADENCE;
+                              const selected = selectedObstacle === obs;
+                              return (
+                                <button key={obs} onClick={() => update({ selectedObstacle: obs })}
+                                  style={{padding:'10px 14px',border:`2px solid ${selected ? '#2563eb' : '#e5e7eb'}`,borderRadius:'8px',backgroundColor: selected ? '#eff6ff' : 'white',textAlign:'left',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px'}}>
+                                  <span style={{fontWeight: selected ? '700' : '500',fontSize:'13px',color: selected ? '#1d4ed8' : '#374151'}}>{obs}</span>
+                                  <span style={{fontSize:'11px',color:'#9ca3af',whiteSpace:'nowrap',flexShrink:0}}>
+                                    {cadence.reduce((acc, d, i) => { const total = cadence.slice(0,i+1).reduce((a,b)=>a+b,0); acc.push(`Day ${total}`); return acc; }, []).join(' · ')}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <button
+                            disabled={!selectedObstacle}
+                            onClick={() => removeFromPipeline(p, 'pending', selectedObstacle)}
+                            style={{width:'100%',padding:'12px',border:'none',borderRadius:'8px',fontSize:'14px',fontWeight:'700',cursor: selectedObstacle ? 'pointer' : 'not-allowed',color:'white',backgroundColor: selectedObstacle ? '#2563eb' : '#9ca3af'}}>
+                            Set Obstacle &amp; Start Follow-Up Cadence →
+                          </button>
+                        </div>
+                      )}
+
+                      <button onClick={() => step === 'obstacle' ? update({ step: 'choose', selectedObstacle: '' }) : setMedRemoveModal(null)}
+                        style={{width:'100%',padding:'10px',border:'1px solid #e5e7eb',borderRadius:'7px',backgroundColor:'white',fontSize:'14px',cursor:'pointer',color:'#6b7280',fontWeight:'600'}}>
+                        {step === 'obstacle' ? '← Back' : 'Cancel'}
+                      </button>
+                    </div>
                   </div>
                 );
               })()}
@@ -5613,7 +5847,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       perTC[tc].sds++;
                       perTC[tc].total += bonusRates.sds;
                     }
-                    if ((isSDS(p) || p.DBRETS) && !replacing) {
+                    if ((isSDS(p) || p.ST || p.DBRETS) && !replacing) {
                       if (p['R+']) { perTC[tc].ret++; perTC[tc].total += bonusRates.ret; }
                       if (p['W+']) { perTC[tc].white++; perTC[tc].total += bonusRates.white; }
                     }
@@ -5670,10 +5904,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           if (isSDS(p) && !replacing) {
                             bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'SDS', amount: bonusRates.sds});
                           }
-                          if ((isSDS(p) || p.DBRETS) && p['R+'] && !replacing) {
+                          if ((isSDS(p) || p.ST || p.DBRETS) && p['R+'] && !replacing) {
                             bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Retainer', amount: bonusRates.ret});
                           }
-                          if ((isSDS(p) || p.DBRETS) && p['W+'] && !replacing) {
+                          if ((isSDS(p) || p.ST || p.DBRETS) && p['W+'] && !replacing) {
                             bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Whitening', amount: bonusRates.white});
                           }
                           if (started.find(s => s.id === p.id) && p.PIF && !replacing) {
@@ -5741,8 +5975,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         const replacing = getReplacingCampaign(p, null);
                         if (!replacing) {
                           if (isSDS(p)) rows.push([sd, p.name, p.tc||'', 'SDS', bonusRates.sds]);
-                          if (isSDS(p) && p['R+']) rows.push([sd, p.name, p.tc||'', 'Retainer', bonusRates.ret]);
-                          if (isSDS(p) && p['W+']) rows.push([sd, p.name, p.tc||'', 'Whitening', bonusRates.white]);
+                          if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) rows.push([sd, p.name, p.tc||'', 'Retainer', bonusRates.ret]);
+                          if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) rows.push([sd, p.name, p.tc||'', 'Whitening', bonusRates.white]);
                           if (started.find(s=>s.id===p.id) && p.PIF) rows.push([sd, p.name, p.tc||'', 'PIF', bonusRates.pif]);
                         } else {
                           if (isSDS(p) || p.ST) rows.push([sd, p.name, p.tc||'', `Goal Bonus (${replacing.name})`, popupBonusEarnings(p, replacing, null)]);
