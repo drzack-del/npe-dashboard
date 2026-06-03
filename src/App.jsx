@@ -184,6 +184,13 @@ import { createClient } from '@supabase/supabase-js';
           { label: 'Final Push — Best offer', color: '#dc2626', bg: '#fef2f2', border: '#fecaca' },
         ];
 
+        const localDateStr = (d) => {
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          return `${y}-${m}-${day}`;
+        };
+
         const skipWeekend = (dateStr) => {
           if (!dateStr) return dateStr;
           const d = new Date(dateStr + 'T12:00:00');
@@ -766,7 +773,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [editForm, setEditForm] = useState({});
   const [showStartedModal, setShowStartedModal] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedWeekDay, setSelectedWeekDay] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedWeekDay, setSelectedWeekDay] = useState(localDateStr(new Date()));
   const [weekOffset, setWeekOffset] = useState(0);
 
   const [patients, setPatients] = useState([]);
@@ -904,9 +911,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // ─────────────────────────────────────────────────────────────────────
 
   const defaultGoalsData = {
+    overallMode: false,
     monthly: Array.from({length: 12}, (_, i) => ({
       carNPE: i === 1 ? 40 : 35, carStarted: i === 1 ? 20 : 18,
       apoNPE: i === 1 ? 15 : 12, apoStarted: i === 1 ? 8 : 6,
+      totalNPE: i === 1 ? 55 : 47, totalStarted: i === 1 ? 28 : 24,
       convGoal: 50,
     })),
     quarterly: [
@@ -1527,7 +1536,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (tcNames.length > 0) setNewPatientForm(f => f.tc ? f : {...f, tc: tcNames[0]});
   }, [tcUsers, patients]);
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = localDateStr(new Date());
 
   // Follow-ups: PEN + MP + OBS (recall cadence); NOTX excluded; OBS with scheduled appt excluded; past-due pinned to today
   const selectedFollowUps = patients.filter(p => {
@@ -1568,6 +1577,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
     const monday = new Date(d);
     monday.setDate(d.getDate() + daysToMonday + (offset * 7));
+    monday.setHours(12, 0, 0, 0);
     return monday;
   };
 
@@ -1907,7 +1917,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         : obsHasAnticipated
           ? (newPatientForm.nextTouchOverride
               ? skipWeekend(newPatientForm.nextTouchOverride)
-              : getOBSBookingCallDate(newPatientForm.obsAnticipatedDate, obsRecallMonths) || '')
+              : (() => { const t = localDateStr(new Date()); const d = getOBSBookingCallDate(newPatientForm.obsAnticipatedDate, obsRecallMonths); return d && d >= t ? d : skipWeekend(t); })())
           : newPatientForm.nextTouchOverride
             ? skipWeekend(newPatientForm.nextTouchOverride)
             : isOBS
@@ -2242,8 +2252,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const apoNPEGoal = mGoal.apoNPE || 0;
           const apoStartedGoal = mGoal.apoStarted || 0;
           const convGoal = mGoal.convGoal || 50;
-          const totalNPEGoal = carNPEGoal + apoNPEGoal;
-          const totalStartedGoal = carStartedGoal + apoStartedGoal;
+          const totalNPEGoal = goals.overallMode ? (mGoal.totalNPE || 0) : (carNPEGoal + apoNPEGoal);
+          const totalStartedGoal = goals.overallMode ? (mGoal.totalStarted || 0) : (carStartedGoal + apoStartedGoal);
 
           // Today's queue counts
           const todayStr = new Date().toISOString().split('T')[0];
@@ -2289,8 +2299,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const selStartPts = patients.filter(p => { const sd=effectiveStartDate(p); if(!sd) return false; const d=new Date(sd+'T12:00:00'); return d.getMonth()===dashMonth && d.getFullYear()===dashYear; });
             const nm = calculateMetrics(selNPEPts, selStartPts);
             const nmGoal = goals.monthly[dashMonth] || {};
-            const nmNPEGoal     = (nmGoal.carNPE||0)+(nmGoal.apoNPE||0);
-            const nmStartedGoal = (nmGoal.carStarted||0)+(nmGoal.apoStarted||0);
+            const nmNPEGoal     = goals.overallMode ? (nmGoal.totalNPE||0) : (nmGoal.carNPE||0)+(nmGoal.apoNPE||0);
+            const nmStartedGoal = goals.overallMode ? (nmGoal.totalStarted||0) : (nmGoal.carStarted||0)+(nmGoal.apoStarted||0);
             const nmConvGoal    = nmGoal.convGoal || 50;
 
             // Per-TC data
@@ -3236,8 +3246,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
           // Goals
           const mGoal = goals.monthly[curM] || {};
-          const totalNPEGoal = (mGoal.carNPE || 0) + (mGoal.apoNPE || 0);
-          const totalStartedGoal = (mGoal.carStarted || 0) + (mGoal.apoStarted || 0);
+          const totalNPEGoal = goals.overallMode ? (mGoal.totalNPE || 0) : (mGoal.carNPE || 0) + (mGoal.apoNPE || 0);
+          const totalStartedGoal = goals.overallMode ? (mGoal.totalStarted || 0) : (mGoal.carStarted || 0) + (mGoal.apoStarted || 0);
           const convGoal = mGoal.convGoal || 50;
 
           // Practice-wide on-time rate (current month, all patients)
@@ -3640,7 +3650,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             <div style={{backgroundColor:'white',padding:'16px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
                 <button
-                  onClick={() => { const n = weekOffset - 1; setWeekOffset(n); const m = getWeekMonday(n); setSelectedWeekDay(m.toISOString().split('T')[0]); }}
+                  onClick={() => { const n = weekOffset - 1; setWeekOffset(n); const m = getWeekMonday(n); setSelectedWeekDay(localDateStr(m)); }}
                   style={{padding:'8px 16px',backgroundColor:'#F5F5F5',border:'1px solid #d1d5db',borderRadius:'6px',cursor:'pointer',fontWeight:'600',fontSize:'14px'}}
                 >
                   ◀ Prev
@@ -3656,7 +3666,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   </h3>
                   {weekOffset !== 0 && (
                     <button
-                      onClick={() => { setWeekOffset(0); setSelectedWeekDay(new Date().toISOString().split('T')[0]); }}
+                      onClick={() => { setWeekOffset(0); setSelectedWeekDay(localDateStr(new Date())); }}
                       style={{marginTop:'4px',padding:'4px 12px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'4px',cursor:'pointer',fontSize:'12px',fontWeight:'600'}}
                     >
                       Back to Today
@@ -3664,7 +3674,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   )}
                 </div>
                 <button
-                  onClick={() => { const n = weekOffset + 1; setWeekOffset(n); const m = getWeekMonday(n); setSelectedWeekDay(m.toISOString().split('T')[0]); }}
+                  onClick={() => { const n = weekOffset + 1; setWeekOffset(n); const m = getWeekMonday(n); setSelectedWeekDay(localDateStr(m)); }}
                   style={{padding:'8px 16px',backgroundColor:'#F5F5F5',border:'1px solid #d1d5db',borderRadius:'6px',cursor:'pointer',fontWeight:'600',fontSize:'14px'}}
                 >
                   Next ▶
@@ -3674,7 +3684,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <div style={{display:'grid',gridTemplateColumns:'repeat(7, 1fr)',gap:'8px'}}>
                 {(() => {
                   const monday = getWeekMonday(weekOffset);
-                  const todayStr = new Date().toISOString().split('T')[0];
+                  const todayStr = localDateStr(new Date());
 
                   const days = [];
                   for (let i = 0; i < 7; i++) {
@@ -3683,7 +3693,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
                     const month = date.getMonth() + 1;
                     const day = date.getDate();
-                    const dateStr = date.toISOString().split('T')[0];
+                    const dateStr = localDateStr(date);
                     const isToday = dateStr === todayStr;
                     const isSelected = dateStr === selectedWeekDay;
                     const isWeekend = date.getDay() === 0 || date.getDay() === 6;
@@ -4547,14 +4557,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               </div>
 
-              {/* Down Payment + Age + TC */}
-              <div style={{display:'grid',gridTemplateColumns:'1fr 80px 1fr',gap:'16px',marginBottom:'16px'}}>
+              {/* Down Payment + Contract Amount + Age + TC */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 80px 1fr',gap:'16px',marginBottom:'16px'}}>
                 <div>
                   <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Down Payment</label>
                   <input type="text"
                     placeholder={newPatientForm.status === 'MP' ? '$0' : '$500'}
                     value={newPatientForm.dp}
                     onChange={e => setNewPatientForm({...newPatientForm, dp: e.target.value})}
+                    style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}} />
+                </div>
+                <div>
+                  <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Contract Amount</label>
+                  <input type="text"
+                    placeholder="$5,800"
+                    value={newPatientForm.contractAmount}
+                    onChange={e => setNewPatientForm({...newPatientForm, contractAmount: e.target.value})}
                     style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}} />
                 </div>
                 <div>
@@ -5944,18 +5962,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <tr style={{borderTop:'2px solid #202020',backgroundColor:'#f9fafb'}}>
                         <td colSpan={bonusTCFilter ? 3 : 4} style={{padding:'12px',fontSize:'16px',fontWeight:'bold'}}>TOTAL — {bonusMonthFilter}</td>
                         <td style={{padding:'12px',fontSize:'20px',fontWeight:'bold',textAlign:'right',color:'#10b981'}}>
-                          ${patients.filter(p => (isSDS(p) || p.ST) && (!bonusTCFilter || p.tc === bonusTCFilter)).reduce((sum, p) => {
+                          ${patients.filter(p => !bonusTCFilter || p.tc === bonusTCFilter).reduce((sum, p) => {
                             let amt = 0;
                             const sd = effectiveStartDate(p);
-                            if (sd && sd.startsWith(bonusMonthFilter)) {
-                              const replacing = getReplacingCampaign(p, bonusTCFilter || null);
-                              if (!replacing) {
-                                if (isSDS(p)) amt += bonusRates.sds;
-                                if (isSDS(p) && p['R+']) amt += bonusRates.ret;
-                                if (isSDS(p) && p['W+']) amt += bonusRates.white;
-                                if (p.PIF) amt += bonusRates.pif;
-                              }
-                            }
+                            if (!sd || !sd.startsWith(bonusMonthFilter)) return sum;
+                            const replacing = getReplacingCampaign(p, bonusTCFilter || null);
+                            if (replacing) return sum;
+                            if (isSDS(p)) amt += bonusRates.sds;
+                            if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) amt += bonusRates.ret;
+                            if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) amt += bonusRates.white;
+                            if ((isSDS(p) || p.ST) && p.PIF) amt += bonusRates.pif;
                             return sum + amt;
                           }, 0)}
                         </td>
@@ -8043,15 +8059,36 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 }));
                 const totNPE     = totByLoc.reduce((s,t) => s + t.npe,     0);
                 const totStarted = totByLoc.reduce((s,t) => s + t.started, 0);
+                const overallMode = goals.overallMode || false;
+                const totOverallNPE = goals.monthly.reduce((s,m) => s + (m.totalNPE||0), 0);
+                const totOverallStarted = goals.monthly.reduce((s,m) => s + (m.totalStarted||0), 0);
                 return (
                   <div id="guide-goals-section" style={{marginBottom:'32px'}}>
-                    <h4 style={{fontSize:'18px',fontWeight:'bold',marginBottom:'16px',color:'#202020'}}>📅 Monthly Goals - {new Date().getFullYear()}</h4>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px',flexWrap:'wrap',gap:'8px'}}>
+                      <h4 style={{fontSize:'18px',fontWeight:'bold',color:'#202020',margin:0}}>📅 Monthly Goals - {new Date().getFullYear()}</h4>
+                      <div style={{display:'flex',alignItems:'center',gap:'10px',backgroundColor:'#f3f4f6',padding:'6px 12px',borderRadius:'8px'}}>
+                        <span style={{fontSize:'13px',color:'#6b7280',fontWeight:'500'}}>Mode:</span>
+                        <button onClick={() => setGoals({...goals, overallMode: false})}
+                          style={{padding:'4px 12px',borderRadius:'5px',border:'none',cursor:'pointer',fontSize:'12px',fontWeight:'600',
+                            backgroundColor: !overallMode ? '#2563EB' : '#e5e7eb',
+                            color: !overallMode ? 'white' : '#6b7280'}}>Per Location</button>
+                        <button onClick={() => setGoals({...goals, overallMode: true})}
+                          style={{padding:'4px 12px',borderRadius:'5px',border:'none',cursor:'pointer',fontSize:'12px',fontWeight:'600',
+                            backgroundColor: overallMode ? '#2563EB' : '#e5e7eb',
+                            color: overallMode ? 'white' : '#6b7280'}}>Overall</button>
+                      </div>
+                    </div>
                     <div style={{overflowX:'auto'}}>
                       <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
                         <thead>
                           <tr style={{borderBottom:'2px solid #e5e7eb'}}>
                             <th style={{padding:'12px 8px',textAlign:'left',fontWeight:'600',color:'#6b7280'}}>Month</th>
-                            {locs.map((loc, li) => (
+                            {overallMode ? (
+                              <>
+                                <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#6b7280'}}>🎯 Total NPE</th>
+                                <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#10b981'}}>🎯 Total Starts</th>
+                              </>
+                            ) : locs.map((loc, li) => (
                               <React.Fragment key={li}>
                                 <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#6b7280'}}>📍 {loc} NPE</th>
                                 <th style={{padding:'12px 8px',textAlign:'center',fontWeight:'600',color:'#6b7280'}}>📍 {loc} Started</th>
@@ -8071,7 +8108,20 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   {isCurrent && <span style={{marginLeft:'6px',fontSize:'10px',fontWeight:'700',color:'#2563EB',backgroundColor:'#fed7aa',padding:'1px 6px',borderRadius:'3px'}}>NOW</span>}
                                   {isPast && <span style={{marginLeft:'6px',fontSize:'10px',color:'#d1d5db'}}>past</span>}
                                 </td>
-                                {locs.map((_, li) => (
+                                {overallMode ? (
+                                  <>
+                                    <td style={{padding:'8px',textAlign:'center'}}>
+                                      <input type="number" value={goals.monthly[i].totalNPE ?? (( goals.monthly[i].carNPE||0)+(goals.monthly[i].apoNPE||0))} readOnly={isPast}
+                                        onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, totalNPE: Number(e.target.value)} : m)})}
+                                        style={{width:'70px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #d1d5db',borderRadius:'4px',textAlign:'center',backgroundColor: isPast ? '#f3f4f6' : 'white',color: isPast ? '#9ca3af' : '#202020',cursor: isPast ? 'not-allowed' : 'auto'}} />
+                                    </td>
+                                    <td style={{padding:'8px',textAlign:'center'}}>
+                                      <input type="number" value={goals.monthly[i].totalStarted ?? ((goals.monthly[i].carStarted||0)+(goals.monthly[i].apoStarted||0))} readOnly={isPast}
+                                        onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, totalStarted: Number(e.target.value)} : m)})}
+                                        style={{width:'70px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #10b98133',borderRadius:'4px',textAlign:'center',backgroundColor: isPast ? '#f3f4f6' : 'white',color: isPast ? '#9ca3af' : '#10b981',fontWeight:'600',cursor: isPast ? 'not-allowed' : 'auto'}} />
+                                    </td>
+                                  </>
+                                ) : locs.map((_, li) => (
                                   <React.Fragment key={li}>
                                     <td style={{padding:'8px',textAlign:'center'}}>
                                       <input type="number" value={goals.monthly[i][npeKey(li)] || 0} readOnly={isPast}
@@ -8096,13 +8146,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           {/* Annual totals row */}
                           <tr style={{borderTop:'2px solid #e5e7eb',backgroundColor:'#f0fdf4',fontWeight:'700'}}>
                             <td style={{padding:'12px 8px',color:'#166534',fontSize:'13px'}}>📊 YEAR TOTAL</td>
-                            {totByLoc.map((t, li) => (
+                            {overallMode ? (
+                              <>
+                                <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{totOverallNPE}</td>
+                                <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{totOverallStarted}</td>
+                              </>
+                            ) : totByLoc.map((t, li) => (
                               <React.Fragment key={li}>
                                 <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{t.npe}</td>
                                 <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{t.started}</td>
                               </React.Fragment>
                             ))}
-                            <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{totNPE > 0 ? Math.round((totStarted / totNPE) * 100) : 0}%</td>
+                            <td style={{padding:'8px',textAlign:'center',color:'#166534'}}>{(overallMode ? totOverallNPE : totNPE) > 0 ? Math.round(((overallMode ? totOverallStarted : totStarted) / (overallMode ? totOverallNPE : totNPE)) * 100) : 0}%</td>
                           </tr>
                         </tbody>
                       </table>
@@ -8122,8 +8177,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     {q: 'Q4', months: 'Oct-Dec', qi: 3, mRange: [9,10,11]}
                   ].map(quarter => {
                     // #5: compute sum of monthly goals for this quarter
-                    const monthlyNPESum = quarter.mRange.reduce((s,i) => s + (goals.monthly[i].carNPE||0) + (goals.monthly[i].apoNPE||0), 0);
-                    const monthlyStartedSum = quarter.mRange.reduce((s,i) => s + (goals.monthly[i].carStarted||0) + (goals.monthly[i].apoStarted||0), 0);
+                    const monthlyNPESum = quarter.mRange.reduce((s,i) => s + (goals.overallMode ? (goals.monthly[i].totalNPE||0) : (goals.monthly[i].carNPE||0) + (goals.monthly[i].apoNPE||0)), 0);
+                    const monthlyStartedSum = quarter.mRange.reduce((s,i) => s + (goals.overallMode ? (goals.monthly[i].totalStarted||0) : (goals.monthly[i].carStarted||0) + (goals.monthly[i].apoStarted||0)), 0);
                     const qNPE = goals.quarterly[quarter.qi].npe;
                     const qStarted = goals.quarterly[quarter.qi].started;
                     const npeMatch = monthlyNPESum === qNPE;
