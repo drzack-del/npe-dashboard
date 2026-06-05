@@ -5736,17 +5736,33 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
             ) : (
               <>
-                <div style={{backgroundColor:'#dcfce7',border:'1px solid #86efac',padding:'16px',borderRadius:'8px',marginBottom:'24px'}}>
-                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                    <div>
-                      <strong style={{color:'#166534',fontSize:'18px'}}>Total Bonus</strong>
-                      <div style={{fontSize:'14px',color:'#166534',marginTop:'4px'}}>
-                        {overall.sds} SDS • {overall.retainers} Retainers • {overall.whitening} Whitening • {overall.pif} PIF
+                {(() => {
+                  let mbSDS = 0, mbRet = 0, mbWhite = 0, mbPIF = 0, mbTotal = 0;
+                  patients.filter(p => !bonusTCFilter || p.tc === bonusTCFilter).forEach(p => {
+                    const sd = effectiveStartDate(p);
+                    if (!sd || !sd.startsWith(bonusMonthFilter)) return;
+                    const replacing = getReplacingCampaign(p, bonusTCFilter || null);
+                    if (replacing) return;
+                    if (isSDS(p)) { mbSDS++; mbTotal += bonusRates.sds; }
+                    if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) { mbRet++; mbTotal += bonusRates.ret; }
+                    if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) { mbWhite++; mbTotal += bonusRates.white; }
+                    if ((isSDS(p) || p.ST) && p.PIF) { mbPIF++; mbTotal += bonusRates.pif; }
+                  });
+                  const monthLabel = new Date(bonusMonthFilter + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                  return (
+                    <div style={{backgroundColor:'#dcfce7',border:'1px solid #86efac',padding:'16px',borderRadius:'8px',marginBottom:'24px'}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                        <div>
+                          <strong style={{color:'#166534',fontSize:'18px'}}>Total Bonus — {monthLabel}</strong>
+                          <div style={{fontSize:'14px',color:'#166534',marginTop:'4px'}}>
+                            {mbSDS} SDS • {mbRet} Retainers • {mbWhite} Whitening • {mbPIF} PIF
+                          </div>
+                        </div>
+                        <div style={{fontSize:'36px',fontWeight:'bold',color:'#10b981'}}>${mbTotal}</div>
                       </div>
                     </div>
-                    <div style={{fontSize:'36px',fontWeight:'bold',color:'#10b981'}}>${overall.totalBonus}</div>
-                  </div>
-                </div>
+                  );
+                })()}
 
                 {/* Popup Bonus Earnings */}
                 {(() => {
