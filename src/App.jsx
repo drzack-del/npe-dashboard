@@ -1854,6 +1854,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       SCH: true,
       PEN: false,
       MP: false,
+      insuranceWorkflow: {}, // clear stale Medicaid pipeline state when leaving the pipeline
       bondDate,
       nextTouchDate: checkDate || '',
       obstacle: '',
@@ -1902,6 +1903,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       PEN: false,
       MP: false,
       OBS: false,
+      insuranceWorkflow: {}, // clear stale Medicaid pipeline state when leaving the pipeline
       bondDate,
       obsApptDate: '',
       obsAnticipatedDate: '',
@@ -6631,11 +6633,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               }
               return logEntries;
             });
+          // Entries whose logger/TC isn't a visible column (e.g. a start with no TC assigned,
+          // or a departed staffer) would otherwise be counted in the summary but shown nowhere.
+          // Collect them into an "Unassigned" column so counts and detail stay consistent.
+          const orphanEntries = isTC ? [] : todayActivity.filter(e => !visibleTCNames.includes(e.logged_by || e.patientTC));
+          const displayTCNames = orphanEntries.length > 0 ? [...visibleTCNames, 'Unassigned'] : visibleTCNames;
           const totalReached = todayActivity.filter(e => e.reachedPatient === 'Spoke with patient').length;
           const totalContacts = todayActivity.filter(e => !e.isSyntheticStart && e.reachedPatient !== "Waiting on Medicaid — didn't call").length;
           const getEntriesForTC = (tcName) =>
-            todayActivity
-              .filter(e => (e.logged_by || e.patientTC) === tcName)
+            (tcName === 'Unassigned'
+              ? orphanEntries
+              : todayActivity.filter(e => (e.logged_by || e.patientTC) === tcName))
+              .slice()
               .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
           const fmt12h = (t) => {
             if (!t) return '';
@@ -6684,7 +6693,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               )}
               {/* Per-TC sections */}
-              {hasAnyActivity && visibleTCNames.map(tcName => {
+              {hasAnyActivity && displayTCNames.map(tcName => {
                 const entries = getEntriesForTC(tcName);
                 const contactCount = entries.filter(e => !e.isSyntheticStart && e.reachedPatient !== "Waiting on Medicaid — didn't call").length;
                 const startCount = entries.filter(e => e.startedToday).length;
@@ -6787,12 +6796,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const ytdGoalStarts = yearGoals.filter(g => enteredMonths.has(g.month)).reduce((s, g) => s + (g.start_goal || 0), 0);
           const convData    = yearMetrics.filter(m => m.conversion_rate != null);
           const avgConv     = convData.length ? convData.reduce((s, m) => s + m.conversion_rate, 0) / convData.length : null;
-          // Resolve a month's avg case fee live from per-start contract amounts, falling back to the stored net-production-based value
-          const monthCaseFee = (mo) => {
-            const d = getDashboardMonthData(metricsYear, mo);
-            if (d.starts_with_fee > 0) return { sum: d.starts_contract_sum, count: d.starts_with_fee, avg: d.starts_case_fee };
-            const rec = getMetric(mo);
-            return rec?.avg_case_fee != null && rec.starts ? { sum: rec.avg_case_fee * rec.starts, count: rec.starts, avg: Math.round(rec.avg_case_fee) } : null;
+          // Resolve a month's avg case fee live from per-start contract amounts, falling back to the stored net-production-based value.
+          // Memoized per render — getDashboardMonthData does two full patient scans, and this is called in a 12-month loop plus per row.
+          const _caseFeeCache = {};
+          const monthCaseFee = (mo, year = metricsYear) => {
+            const ck = year + '-' + mo;
+            if (ck in _caseFeeCache) return _caseFeeCache[ck];
+            const d = getDashboardMonthData(year, mo);
+            let result;
+            if (d.starts_with_fee > 0) {
+              result = { sum: d.starts_contract_sum, count: d.starts_with_fee, avg: d.starts_case_fee };
+            } else {
+              const rec = practiceMetrics.find(m => m.year === year && m.month === mo) || null;
+              result = rec?.avg_case_fee != null && rec.starts
+                ? { sum: rec.avg_case_fee * rec.starts, count: rec.starts, avg: Math.round(rec.avg_case_fee) }
+                : null;
+            }
+            _caseFeeCache[ck] = result;
+            return result;
           };
           // YTD avg case fee = total entered contract amounts / total starts that have amounts (weighted, so it equals the true average)
           let ytdFeeSum = 0, ytdFeeCount = 0;
@@ -7057,7 +7078,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const collRate = ytdCollRate;
                   const momProd  = momArrow(curMonthMetric?.net_production, prevMonthMetric?.net_production);
                   const momConv  = momArrow(curMonthMetric?.conversion_rate, prevMonthMetric?.conversion_rate);
-                  const momFee   = momArrow(monthCaseFee(todayMo)?.avg, monthCaseFee(prevMonthMo)?.avg);
+                  const momFee   = momArrow(monthCaseFee(todayMo)?.avg, monthCaseFee(prevMonthMo, prevMonthYr)?.avg);
                   const momShow  = momArrow(curMonthMetric?.show_up_rate, prevMonthMetric?.show_up_rate);
                   const cards = [
                     { label:'YTD Production',    value: fmt$(ytdProd),     goal: ytdGoalProd>0?fmt$(ytdGoalProd):null,     pct: ytdGoalProd>0?Math.round(ytdProd/ytdGoalProd*100):null,       color:'#202020', mom: momProd },
