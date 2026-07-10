@@ -591,11 +591,6 @@ import { createClient } from '@supabase/supabase-js';
                                 ▶ Try Demo — no login required
                             </button>
                         </div>
-                        <div style={{marginTop:'32px',textAlign:'center'}}>
-                            <div style={{fontSize:'11px',color:'rgba(255,255,255,0.3)',letterSpacing:'0.05em'}}>Powered by</div>
-                            <div style={{fontSize:'13px',color:'rgba(255,255,255,0.5)',fontWeight:'600',marginTop:'3px',fontStyle:'italic'}}>Amanda Floyd Consulting</div>
-                            <div style={{fontSize:'11px',color:'rgba(255,255,255,0.25)',marginTop:'2px',letterSpacing:'0.04em'}}>Where Growth Happens</div>
-                        </div>
                     </div>
                 );
             }
@@ -813,6 +808,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [medWfModal, setMedWfModal] = useState(null); // { patient, stage: 1|2|3|4 }
   const [medWfForm, setMedWfForm] = useState({});
   const [medRemoveModal, setMedRemoveModal] = useState(null); // { patient }
+  const [medAddStartedModal, setMedAddStartedModal] = useState(false); // picker to add an existing started patient to the pipeline
 
   // Support / feedback
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
@@ -840,14 +836,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [newPatientForm, setNewPatientForm] = useState({
     name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: '', dp: '', contractAmount: '', tc: '', status: '',
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
-    'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: ''
+    'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false
   });
   const [addPatientError, setAddPatientError] = useState('');
 
   const [startedForm, setStartedForm] = useState({
     startDate: new Date().toISOString().split('T')[0],
     dp: '', BR: false, INV: false, PH1: false, PH2: false, LTD: false,
-    'R+': false, 'W+': false, PIF: false
+    'R+': false, 'W+': false, PIF: false, recap: ''
   });
 
   const [bonusMonthFilter, setBonusMonthFilter] = useState(
@@ -903,6 +899,21 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [newLocationName, setNewLocationName] = useState('');
   const [medicaidEnabled, setMedicaidEnabled] = useState(true);
   const [obsRecallMonths, setObsRecallMonths] = useState(4); // months BEFORE anticipated OBS date to schedule booking call
+  // End-of-Day consultant report recipients (editable in Settings). Primary → aliza, CC the rest.
+  const [consultantRecipients, setConsultantRecipients] = useState({
+    to: ['aliza@fishbeingroup.com'],
+    cc: ['drzack@northtampabraces.com', 'nicole@northtampabraces.com']
+  });
+  const [recapEmailStatus, setRecapEmailStatus] = useState(''); // '' | 'sending' | 'sent' | 'error'
+  // Which day the Today's Activity / End-of-Day report is showing (UTC date; defaults to today)
+  const [activityDate, setActivityDate] = useState(new Date().toISOString().split('T')[0]);
+  // Comma-separated editing buffers for the Settings recipient inputs
+  const [recipientToStr, setRecipientToStr] = useState('');
+  const [recipientCcStr, setRecipientCcStr] = useState('');
+  useEffect(() => {
+    setRecipientToStr((consultantRecipients.to || []).join(', '));
+    setRecipientCcStr((consultantRecipients.cc || []).join(', '));
+  }, [consultantRecipients]);
   const [locationMsg, setLocationMsg] = useState('');
   const [guidedHighlight, setGuidedHighlight] = useState(null);
   // ── Super-admin (add new practice) ────────────────────────────────────
@@ -965,7 +976,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             lastContactDate: r.last_contact_date || '',
             contact_log: r.contact_log || [],
             fromPending: r.from_pending || false,
-            insuranceWorkflow: r.insurance_workflow || null
+            insuranceWorkflow: r.insurance_workflow || null,
+            medicaidPipeline: r.medicaid_pipeline || false
           })));
         }
       } else {
@@ -1074,6 +1086,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contact_log: patient.contact_log || [],
       from_pending: patient.fromPending || false,
       insurance_workflow: patient.insuranceWorkflow || null,
+      medicaid_pipeline: patient.medicaidPipeline || false,
       practice_id: managedPracticeId || currentUser.practiceId
     }, { onConflict: 'id' });
     if (error) {
@@ -1164,7 +1177,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   useEffect(() => {
     const loadSettings = async () => {
       if (currentUser?.id === 'demo') return;
-      const [cloudGoals, cloudBonusRates, cloudAdminPw, cloudPopupBonuses, cloudLocations, cloudMedicaidEnabled, cloudObsRecall] = await Promise.all([
+      const [cloudGoals, cloudBonusRates, cloudAdminPw, cloudPopupBonuses, cloudLocations, cloudMedicaidEnabled, cloudObsRecall, cloudRecipients] = await Promise.all([
         dbLoadSettings('goals'),
         dbLoadSettings('bonus-rates'),
         dbLoadSettings('admin-password'),
@@ -1172,6 +1185,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         dbLoadSettings('locations'),
         dbLoadSettings('medicaid-enabled'),
         dbLoadSettings('obs-recall-months'),
+        dbLoadSettings('consultant-recipients'),
       ]);
       if (cloudGoals) setGoals(cloudGoals);
       if (cloudBonusRates) setBonusRates(cloudBonusRates);
@@ -1180,6 +1194,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       if (cloudLocations && Array.isArray(cloudLocations)) { setLocations(cloudLocations); }
       if (cloudMedicaidEnabled !== null) setMedicaidEnabled(cloudMedicaidEnabled !== false);
       if (cloudObsRecall && typeof cloudObsRecall === 'number' && cloudObsRecall > 0) setObsRecallMonths(cloudObsRecall);
+      if (cloudRecipients && (Array.isArray(cloudRecipients.to) || Array.isArray(cloudRecipients.cc))) {
+        setConsultantRecipients({ to: cloudRecipients.to || [], cc: cloudRecipients.cc || [] });
+      }
     };
     loadSettings();
   }, [currentUser?.practiceId, managedPracticeId]);
@@ -1427,6 +1444,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     outcome: '',
     sentText: false,
     notes: '',
+    recap: '',
     nextTouchDate: '',
     obstacle: '',
     obsApptDate: '',
@@ -1619,7 +1637,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (locations.length > 0) setNewPatientForm(f => f.location ? f : {...f, location: locations[0]});
   }, [locations]);
   useEffect(() => {
-    if (tcNames.length > 0) setNewPatientForm(f => f.tc ? f : {...f, tc: tcNames[0]});
+    // A TC entering a patient defaults to assigning it to themselves; others default to the
+    // first TC. (Only self-assign when the TC's name is an actual dropdown option.)
+    const defaultTC = (currentUser?.role === 'tc' && tcNames.includes(currentUser?.name)) ? currentUser.name : tcNames[0];
+    if (tcNames.length > 0) setNewPatientForm(f => f.tc ? f : {...f, tc: defaultTC});
   }, [tcUsers, patients]);
 
   const today = localDateStr(new Date());
@@ -1667,6 +1688,138 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     return monday;
   };
 
+  // ── Day Recap (end-of-day consultant report) ─────────────────────────
+  // Composes a smart draft recap line from what the app already knows.
+  // The TC edits/finishes it; the result is stored on the contact_log entry
+  // and rolled up in the "Today's Activity" (End-of-Day) view.
+  const recapMoney = (v) => {
+    const n = String(v || '').replace(/[^0-9.]/g, '');
+    return n ? '$' + n.replace(/\.00$/, '') : '';
+  };
+  const recapAddons = (o) => {
+    const parts = [];
+    if (o && o['R+']) parts.push('rets');
+    if (o && o['W+']) parts.push('zoom');
+    if (o && o.PIF) parts.push('PIF');
+    return parts.length ? ` w/${parts.join(' + ')}` : '';
+  };
+  const recapMdy = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) : '';
+  // A down payment (> $0) means it's a Start, not a Future Start.
+  const recapHasDP = (v) => (parseFloat(String(v || '').replace(/[^0-9.]/g, '')) || 0) > 0;
+  // dispo: 'start' | 'future' | 'pending' | 'notx' | 'contact'
+  const composeRecapDraft = (dispo, o = {}) => {
+    const dp = recapMoney(o.dp);
+    const add = recapAddons(o);
+    if (dispo === 'start') {
+      const lbl = o.sameDay === false ? 'Start' : 'SDS';
+      // A scheduled (future-dated) start with a DP still lists its bond date.
+      const bond = (o.sameDay === false && o.bondDate) ? ` — bond ${recapMdy(o.bondDate)}` : '';
+      return `${lbl}${add}${bond}${dp ? ` ${dp} down` : ''}`.trim();
+    }
+    if (dispo === 'future') {
+      return `Future start — scheduled ${recapMdy(o.bondDate) || '(date)'}${dp ? `, ${dp} down` : ''}. `;
+    }
+    if (dispo === 'pending') {
+      return `Pending${o.obstacle ? ` — ${o.obstacle}` : ''}. `;
+    }
+    if (dispo === 'notx') {
+      return `No treatment${o.obstacle ? ` — ${o.obstacle}` : ''}. `;
+    }
+    return `${o.outcome || 'Follow-up'}. `;
+  };
+  // Group a Today's Activity entry into an End-of-Day section.
+  const recapGroupOf = (e) => {
+    if (e.dispo) return e.dispo;
+    if (e.startedToday || e.isSyntheticStart || e.reachedPatient === 'Started treatment') return 'start';
+    if (e.reachedPatient === "Waiting on Medicaid — didn't call") return 'other';
+    return 'pending';
+  };
+  // Reusable "Day Recap" input. Called as a function (NOT <RecapField/>) so the
+  // textarea keeps focus across keystrokes.
+  const renderRecapField = (value, onChange, draft) => (
+    <div style={{marginBottom:'12px',backgroundColor:'#fffbeb',border:'1px solid #fde68a',borderRadius:'8px',padding:'10px 12px'}}>
+      <label style={{fontSize:'13px',fontWeight:700,display:'block',marginBottom:'4px',color:'#92400e'}}>
+        📋 Day Recap <span style={{fontWeight:400,color:'#b45309'}}>— goes to the consultant's end-of-day report</span>
+      </label>
+      <textarea
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={draft || 'e.g. dad wanted to talk to mom — will follow up tomorrow'}
+        rows={2}
+        style={{width:'100%',padding:'8px',border:'1px solid #fcd34d',borderRadius:'4px',fontSize:'14px',backgroundColor:'white',boxSizing:'border-box'}}
+      />
+      {draft && (value || '') !== draft && (
+        <button type="button" onClick={() => onChange(draft)}
+          style={{marginTop:'6px',padding:'3px 10px',fontSize:'12px',fontWeight:600,backgroundColor:'#fef3c7',color:'#92400e',border:'1px solid #fcd34d',borderRadius:'6px',cursor:'pointer'}}>
+          ✨ Use suggestion: “{draft.length > 44 ? draft.slice(0, 44) + '…' : draft}”
+        </button>
+      )}
+    </div>
+  );
+  // ── End-of-Day report builder + consultant email ─────────────────────
+  const RECAP_GROUPS = [
+    ['start', '🎉 Starts'],
+    ['future', '📅 Future Starts'],
+    ['pending', '⏳ Pending / Follow-ups'],
+    ['notx', '🚫 No Treatment'],
+    ['other', '📋 Other'],
+  ];
+  const escapeHtml = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const recapLineText = (e) => (e.recap || e.outcome || e.notes || '').trim();
+  const buildRecapPayload = (entries, dateLabel) => {
+    const groups = {};
+    entries.forEach((e) => { const g = recapGroupOf(e); (groups[g] = groups[g] || []).push(e); });
+    const textParts = [];
+    const htmlParts = [];
+    RECAP_GROUPS.forEach(([key, label]) => {
+      const list = groups[key];
+      if (!list || !list.length) return;
+      textParts.push(`\n${label} (${list.length})`);
+      htmlParts.push(`<h3 style="margin:18px 0 6px;font-size:15px;color:#111">${label} (${list.length})</h3><ul style="margin:0 0 8px;padding-left:18px">`);
+      list.forEach((e) => {
+        const tc = e.logged_by || e.patientTC || '';
+        textParts.push(`• ${e.patientName}: ${recapLineText(e)}${tc ? `  (${tc})` : ''}`);
+        htmlParts.push(`<li style="margin:3px 0;font-size:14px;color:#333"><strong>${escapeHtml(e.patientName)}</strong>: ${escapeHtml(recapLineText(e))}${tc ? ` <span style="color:#9ca3af">(${escapeHtml(tc)})</span>` : ''}</li>`);
+      });
+      htmlParts.push('</ul>');
+    });
+    const body = textParts.length ? textParts.join('\n') : '\nNo activity logged today.';
+    const text = `End-of-Day Report — ${dateLabel}${body}`;
+    const html = `<div style="font-family:system-ui,-apple-system,Arial,sans-serif;max-width:640px"><h2 style="font-size:18px;color:#111;margin:0 0 2px">End-of-Day Report</h2><div style="color:#6b7280;font-size:13px;margin-bottom:6px">${escapeHtml(dateLabel)}</div>${htmlParts.join('') || '<p style="color:#6b7280;font-size:14px">No activity logged today.</p>'}<div style="margin-top:20px;color:#9ca3af;font-size:11px">Sent from CadenceIQ</div></div>`;
+    return { text, html, subject: `End-of-Day Report — ${dateLabel}` };
+  };
+  const sendRecapEmail = async (payload) => {
+    const to = (consultantRecipients.to || []).map((s) => s.trim()).filter(Boolean);
+    const cc = (consultantRecipients.cc || []).map((s) => s.trim()).filter(Boolean);
+    if (to.length === 0 && cc.length === 0) { alert('Add at least one consultant email in Settings before sending.'); return; }
+    setRecapEmailStatus('sending');
+    try {
+      // Use a plain fetch (same pattern as the set-user-password call) rather than
+      // supabase.functions.invoke — invoke attaches apikey/x-client-info headers that the
+      // deployed send-email function's CORS allow-list rejects, which fails the preflight.
+      // The live function currently only honors `to`, so send every recipient (to + cc,
+      // deduped) on `to` so nobody is dropped.
+      const allTo = [...new Set([...to, ...cc])];
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/send-email`, {
+        method: 'POST',
+        // Authorization (anon JWT) is required — send-email verifies JWT. Both `authorization`
+        // and `content-type` are in the function's CORS allow-list; `apikey` is NOT, which is
+        // why supabase.functions.invoke (which adds apikey/x-client-info) fails the preflight.
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+        body: JSON.stringify({ to: allTo, subject: payload.subject, html: payload.html }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
+      setRecapEmailStatus('sent');
+      setTimeout(() => setRecapEmailStatus(''), 6000);
+    } catch (e) {
+      console.error('Recap email failed:', e);
+      setRecapEmailStatus('error');
+      alert('Could not send the report: ' + (e.message || 'unknown error'));
+      setTimeout(() => setRecapEmailStatus(''), 6000);
+    }
+  };
+
   const handleSaveContact = async (patientId) => {
     if (!contactForm.reachedPatient) {
       alert('Please select whether you reached the patient before saving.');
@@ -1688,6 +1841,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         outcome: contactForm.outcome,
         sentText: contactForm.sentText,
         notes: contactForm.notes,
+        recap: contactForm.recap || '',
+        dispo: isObsScheduling ? 'other' : 'pending',
         logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
       };
       const updatedObstacle = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
@@ -1728,7 +1883,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setPatients(updated);
     if (updatedPatient) await dbUpsert(updatedPatient);
     setShowContactLog(null);
-    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
+    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', recap: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
     if (updatedPatient) {
       const nextLabel = updatedPatient.nextTouchDate && updatedPatient.nextTouchDate !== '__MAX__'
         ? ` — next follow-up: ${new Date(updatedPatient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}`
@@ -1750,6 +1905,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         outcome: 'Not interested — converted to No Treatment',
         sentText: contactForm.sentText,
         notes: contactForm.notes,
+        recap: contactForm.recap || '',
+        dispo: 'notx',
         logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
       };
       updatedPatient = {
@@ -1764,7 +1921,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setPatients(updated);
     if (updatedPatient) await dbUpsert(updatedPatient);
     setShowContactLog(null);
-    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
+    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', recap: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
     setSaveToast('✅ ' + (updatedPatient?.name || '') + ' moved to No Treatment');
     setTimeout(() => setSaveToast(''), 3000);
   };
@@ -1795,7 +1952,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contractAmount: patient.contractAmount || '',
       BR: patient.BR || false, INV: patient.INV || false,
       PH1: patient.PH1 || false, PH2: patient.PH2 || false, LTD: patient.LTD || false,
-      'R+': patient['R+'] || false, 'W+': patient['W+'] || false, PIF: patient.PIF || false
+      'R+': patient['R+'] || false, 'W+': patient['W+'] || false, PIF: patient.PIF || false,
+      recap: composeRecapDraft('start', {
+        dp: patient.dp, sameDay: patient.SCH ? false : true,
+        'R+': patient['R+'], 'W+': patient['W+'], PIF: patient.PIF
+      })
     });
     setShowStartedModal(patient);
   };
@@ -1812,22 +1973,44 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (!(startedForm.dp || '').trim()) { alert('Please enter the Down Payment before marking this patient as started.'); return; }
     if (!(startedForm.contractAmount || '').trim()) { alert('Please enter the Contract Amount before marking this patient as started.'); return; }
     const isSameDay = startedForm.startDate === patient.npeDate;
+    const todayStr = new Date().toISOString().split('T')[0];
+    // Record a metric-neutral start entry so the recap surfaces in the End-of-Day report.
+    // noCount + empty time/scheduledDate keep it out of every contact/on-time counter.
+    const startLog = {
+      date: todayStr,
+      time: '',
+      scheduledDate: '',
+      reachedPatient: 'Started treatment',
+      outcome: patient.PEN || patient.MP || patient.SCH || patient.fromPending ? 'Converted — started treatment' : 'Same-day start',
+      sentText: false,
+      notes: '',
+      recap: startedForm.recap || '',
+      dispo: 'start',
+      noCount: true,
+      logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
+    };
     const updated = {
       ...patient,
       ST: !isSameDay,
       fromPending: patient.PEN || patient.MP || patient.SCH || patient.fromPending || false,
       PEN: false, SCH: false, OBS: false, MP: false, bondDate: '', obsApptDate: '', obsAnticipatedDate: '',
+      // A Medicaid patient who starts before the claim is resolved keeps their spot in the
+      // pipeline (as a started-pipeline patient) so the claim still gets submitted/tracked.
+      medicaidPipeline: patient.MP || patient.medicaidPipeline || false,
       startDate: startedForm.startDate,
       dp: startedForm.dp || patient.dp,
       contractAmount: startedForm.contractAmount || patient.contractAmount || '',
       BR: startedForm.BR, INV: startedForm.INV, PH1: startedForm.PH1,
       PH2: startedForm.PH2, LTD: startedForm.LTD,
-      'R+': startedForm['R+'], 'W+': startedForm['W+'], PIF: startedForm.PIF
+      'R+': startedForm['R+'], 'W+': startedForm['W+'], PIF: startedForm.PIF,
+      contact_log: [...(patient.contact_log || []), startLog]
     };
     setPatients(prev => prev.map(p => p.id === patientId ? updated : p));
     await dbUpsert(updated);
     setShowStartedModal(null);
-    setSaveToast(`🎯 ${updated.name} marked as Started — removed from follow-up queue!`);
+    setSaveToast(updated.medicaidPipeline
+      ? `🎯 ${updated.name} marked as Started — kept in the Medicaid Pipeline for claim tracking.`
+      : `🎯 ${updated.name} marked as Started — removed from follow-up queue!`);
     setTimeout(() => setSaveToast(''), 4000);
   };
 
@@ -1847,6 +2030,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       outcome: `Scheduled — no down payment collected. Bond date: ${new Date(bondDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
       sentText: contactForm.sentText,
       notes: contactForm.notes,
+      recap: contactForm.recap || '',
+      dispo: 'future',
       logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
     };
     const updatedPatient = {
@@ -1865,7 +2050,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setPatients(prev => prev.map(p => p.id === patient.id ? updatedPatient : p));
     await dbUpsert(updatedPatient);
     setShowContactLog(null);
-    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
+    setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', recap: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
     setSaveToast(`📅 ${patient.name} marked Scheduled — bond check-in set for ${checkDate ? new Date(checkDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : bondDate}`);
     setTimeout(() => setSaveToast(''), 4000);
   };
@@ -2096,6 +2281,29 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // Start date: SDS = npeDate, ST = npeDate (already started), others = ''
     const isSameDay = newPatientForm.status === 'SDS';
     const isST = newPatientForm.status === 'ST';
+    // Seed a metric-neutral entry (noCount) so this add shows in the End-of-Day report.
+    // A scheduled patient WITH a down payment is a Start (money committed); only a
+    // scheduled patient with NO down payment is a Future Start.
+    const addHasDP = recapHasDP(newPatientForm.dp);
+    const addDispo = (isSameDay || isST) ? 'start' : isSCH ? (addHasDP ? 'start' : 'future') : isPending ? 'pending' : (newPatientForm.status === 'NOTX') ? 'notx' : 'other';
+    const schLabel = addHasDP ? 'Scheduled start' : 'Scheduled — future start';
+    const addStatusLabel = { SDS: 'Same-day start', ST: 'Start', SCH: schLabel, PEN: 'Pending', MP: 'Medicaid pending', OBS: 'Observation', NOTX: 'No treatment', DBRETS: 'DB / retainers' }[newPatientForm.status] || 'New patient';
+    const addRecapEntry = {
+      date: new Date().toISOString().split('T')[0],
+      time: '',
+      scheduledDate: '',
+      reachedPatient: (isSameDay || isST) ? 'Started treatment' : 'New patient added',
+      outcome: `New patient added — ${addStatusLabel}`,
+      sentText: false,
+      notes: '',
+      recap: newPatientForm.recap || '',
+      dispo: addDispo,
+      noCount: true,
+      // Record the ACTOR (who added the patient), matching every other handler — not the
+      // assigned TC. Otherwise a TC's own adds get logged under whoever the tc dropdown
+      // defaulted to, and vanish from that TC's "My Activity Today".
+      logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (newPatientForm.tc || '')
+    };
     const patient = {
       id: generateId(),
       name: newPatientForm.name.trim(),
@@ -2116,6 +2324,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       MP: newPatientForm.status === 'MP',
       NOTX: newPatientForm.status === 'NOTX',
       DBRETS: newPatientForm.status === 'DBRETS',
+      // Started before hearing back from Medicaid — keeps the start, still tracked in the pipeline
+      medicaidPipeline: (isSameDay || isST) ? !!newPatientForm.medicaidPipeline : false,
       obstacle: newPatientForm.obstacle,
       notes: newPatientForm.notes,
       bondDate: newPatientForm.bondDate || '',
@@ -2125,7 +2335,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contactAttempts: 0,
       nextTouchDate: autoNext === '__MAX__' ? '' : (autoNext || ''),
       lastContactDate: '',
-      contact_log: []
+      contact_log: [addRecapEntry]
     };
     setPatients(prev => [...prev, patient]);
     await dbUpsert(patient);
@@ -2139,7 +2349,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: newPatientForm.location || locations[0] || '', dp: '', contractAmount: '',
       tc: newPatientForm.tc || tcNames[0] || '', status: '',
       BR: false, INV: false, PH1: false, PH2: false, LTD: false,
-      'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: ''
+      'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: ''
     });
     setSearchTerm('');
     setCurrentView('patients');
@@ -2587,6 +2797,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             patients.forEach(p => {
               (p.contact_log||[]).forEach(entry => {
                 if (!entry.reachedPatient) return;
+                if (entry.noCount) return;
                 if (entry.reachedPatient === "Waiting on Medicaid — didn't call") return;
                 if (!entry.date) return;
                 const inPeriod = dashTimeframe === 'custom'
@@ -3211,6 +3422,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               tcPts.forEach(p => {
                 (p.contact_log || []).forEach(entry => {
                   if (!entry.reachedPatient) return;
+                  if (entry.noCount) return;
                   if (entry.reachedPatient === "Waiting on Medicaid — didn't call") return;
                   totalContacts++;
                   if (entry.reachedPatient === 'Spoke with patient') reachedCount++;
@@ -4603,6 +4815,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         Sent follow-up text
                       </label>
 
+                      {renderRecapField(
+                        contactForm.recap,
+                        (val) => setContactForm({...contactForm, recap: val}),
+                        composeRecapDraft(
+                          contactForm.scheduleType === 'dp' ? 'start'
+                            : /schedul/i.test(contactForm.outcome || '') ? 'future'
+                            : /converted to No Treatment|Not interested/i.test(contactForm.outcome || '') ? 'notx'
+                            : 'pending',
+                          { dp: patient.dp, sameDay: false, obstacle: contactForm.obstacle || patient.obstacle, outcome: contactForm.outcome, bondDate: contactForm.scheduledBondDate }
+                        )
+                      )}
+
                       <div style={{marginBottom:'12px'}}>
                         <label style={{fontSize:'13px',fontWeight:'500',display:'block',marginBottom:'4px'}}>Notes (optional)</label>
                         <textarea
@@ -4891,6 +5115,21 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               </div>
 
+              {/* SDS/ST: option to also track a Medicaid claim in the pipeline (started before hearing back) */}
+              {['SDS','ST'].includes(newPatientForm.status) && (
+                <div style={{marginBottom:'16px',padding:'12px 14px',backgroundColor:'#fef3c7',borderRadius:'8px',border:'1px solid #fde68a'}}>
+                  <label style={{display:'flex',alignItems:'flex-start',gap:'10px',cursor:'pointer'}}>
+                    <input type="checkbox" checked={!!newPatientForm.medicaidPipeline}
+                      onChange={e => setNewPatientForm({...newPatientForm, medicaidPipeline: e.target.checked})}
+                      style={{marginTop:'2px'}} />
+                    <div>
+                      <div style={{fontSize:'13px',fontWeight:'700',color:'#92400e'}}>🏥 Started before hearing back from Medicaid</div>
+                      <div style={{fontSize:'11px',color:'#92400e',marginTop:'2px'}}>Counts as a start (and bonus). Also adds them to the Medicaid Pipeline so the claim gets submitted and tracked.</div>
+                    </div>
+                  </label>
+                </div>
+              )}
+
               {/* Down Payment + Contract Amount — appear once a status is chosen; required for every status except OBS / DB-RETS / No TX */}
               {newPatientForm.status && !['OBS','DBRETS','NOTX'].includes(newPatientForm.status) && (
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'16px'}}>
@@ -5175,6 +5414,26 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   onChange={e => setNewPatientForm({...newPatientForm, notes: e.target.value})}
                   style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}} rows={3} />
               </div>
+
+              {/* Day Recap — only once a status is chosen so the draft is meaningful */}
+              {newPatientForm.status && renderRecapField(
+                newPatientForm.recap,
+                (val) => setNewPatientForm({...newPatientForm, recap: val}),
+                composeRecapDraft(
+                  ['SDS','ST'].includes(newPatientForm.status) ? 'start'
+                    : newPatientForm.status === 'SCH' ? (recapHasDP(newPatientForm.dp) ? 'start' : 'future')
+                    : ['PEN','MP'].includes(newPatientForm.status) ? 'pending'
+                    : newPatientForm.status === 'NOTX' ? 'notx' : 'contact',
+                  {
+                    dp: newPatientForm.dp,
+                    sameDay: newPatientForm.status === 'SDS',
+                    obstacle: newPatientForm.obstacle,
+                    bondDate: newPatientForm.bondDate,
+                    'R+': newPatientForm['R+'], 'W+': newPatientForm['W+'], PIF: newPatientForm.PIF,
+                    outcome: 'New patient added'
+                  }
+                )
+              )}
 
               {/* Next Touch Override — only PEN/MP, moved to bottom */}
               {(newPatientForm.status === 'PEN' || newPatientForm.status === 'MP') && (
@@ -5666,13 +5925,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         {/* MEDICAID PIPELINE */}
         {currentView === 'medicaid' && medicaidEnabled && (() => {
           const todayStr = new Date().toISOString().split('T')[0];
-          const mpPatients = patients.filter(p => p.MP);
+          const mpPatients = patients.filter(p => p.MP || p.medicaidPipeline);
+
+          // A patient who started before Medicaid came back: keeps their start (MP is false),
+          // but the claim still rides the pipeline. Their flow is submit → decision → done —
+          // there's no "call patient to schedule" step because they already started.
+          const isStartedPipeline = p => p.medicaidPipeline && !p.MP;
 
           // Stage helpers
           const getStage = p => {
             const w = p.insuranceWorkflow;
             if (!w || !w.submittedDate) return 1;
             if (!w.decisionDate) return 2;
+            if (isStartedPipeline(p)) return 5; // decision recorded = done for already-started patients
             if (!w.patientContactedDate) return 3;
             if (!w.patientDecision) return 4;
             return 5; // completed
@@ -5714,6 +5979,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
             await dbUpsert(updated);
             setMedRemoveModal(null);
+          };
+
+          // Started-pipeline patients: removing just clears the pipeline flag — the start
+          // (and its bonus) is untouched. No disposition prompt; they aren't reverting to Pending.
+          const clearStartedPipeline = async patient => {
+            if (!window.confirm(`Remove ${patient.name} from the Medicaid Pipeline? Their start credit is kept — this only stops claim tracking.`)) return;
+            const updated = { ...patient, medicaidPipeline: false };
+            setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
+            await dbUpsert(updated);
+          };
+
+          // Add an already-entered started patient to the pipeline (started before Medicaid replied)
+          const addStartedToPipeline = async patient => {
+            const updated = { ...patient, medicaidPipeline: true };
+            setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
+            await dbUpsert(updated);
+            setMedAddStartedModal(false);
           };
 
           const saveWorkflow = async (patient, updates) => {
@@ -5772,6 +6054,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   )}
                 </div>
 
+                {/* Started-before-decision badge */}
+                {isStartedPipeline(p) && (
+                  <div style={{display:'inline-block',fontSize:'10px',fontWeight:'800',color:'#166534',backgroundColor:'#dcfce7',border:'1px solid #86efac',borderRadius:'4px',padding:'1px 6px',marginBottom:'6px'}}>
+                    ✅ STARTED — claim tracking
+                  </div>
+                )}
+
                 {/* Meta row */}
                 <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'8px',lineHeight:'1.4'}}>
                   {p.tc && <span style={{marginRight:'6px'}}>{p.tc}</span>}
@@ -5813,8 +6102,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                      'Record Outcome →'}
                   </button>
                 )}
-                {/* Remove from pipeline */}
-                <button onClick={() => setMedRemoveModal({ patient: p })}
+                {/* Remove from pipeline — started patients just clear the flag (start is kept) */}
+                <button onClick={() => isStartedPipeline(p) ? clearStartedPipeline(p) : setMedRemoveModal({ patient: p })}
                   style={{width:'100%',marginTop:'6px',padding:'5px 0',backgroundColor:'transparent',color:'#9ca3af',border:'1px solid #e5e7eb',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>
                   ✕ Remove from pipeline
                 </button>
@@ -5857,13 +6146,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     {mpPatients.length} patients · {s5.length} completed · {mpPatients.length - s5.length} in progress
                   </p>
                 </div>
+                <button onClick={() => setMedAddStartedModal(true)}
+                  style={{padding:'10px 16px',backgroundColor:'#16a34a',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
+                  ＋ Add a started patient
+                </button>
               </div>
 
               {mpPatients.length === 0 && (
                 <div style={{backgroundColor:'white',borderRadius:'10px',padding:'48px',textAlign:'center',color:'#9ca3af',border:'1px solid #e5e7eb'}}>
                   <div style={{fontSize:'40px',marginBottom:'12px'}}>🏥</div>
                   <div style={{fontSize:'16px',fontWeight:'600'}}>No Medicaid patients yet</div>
-                  <div style={{fontSize:'13px',marginTop:'4px'}}>Add a patient with MP status to start tracking submissions here.</div>
+                  <div style={{fontSize:'13px',marginTop:'4px'}}>Add a patient with MP status, or use “＋ Add a started patient” for someone who started before Medicaid replied.</div>
                 </div>
               )}
 
@@ -6100,6 +6393,40 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           {isStage1 ? 'Confirm Submitted ✓' : isStage2 ? 'Save Decision' : isStage3 ? 'Patient Contacted ✓' : 'Save Outcome'}
                         </button>
                       </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Add-existing-started picker */}
+              {medAddStartedModal && (() => {
+                const eligible = patients
+                  .filter(p => (isSDS(p) || p.ST) && !p.medicaidPipeline && !p.MP)
+                  .sort((a, b) => (b.startDate || b.npeDate || '').localeCompare(a.startDate || a.npeDate || ''));
+                return (
+                  <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:'16px'}}>
+                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'28px',width:'100%',maxWidth:'480px',maxHeight:'80vh',overflowY:'auto',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+                      <div style={{marginBottom:'16px'}}>
+                        <h3 style={{fontSize:'20px',fontWeight:'800',color:'#111827',margin:0}}>Add a started patient</h3>
+                        <div style={{fontSize:'13px',color:'#6b7280',marginTop:'4px'}}>Pick a patient who already started but is still waiting on Medicaid. Their start credit is kept — this just tracks the claim.</div>
+                      </div>
+                      {eligible.length === 0 ? (
+                        <div style={{padding:'24px',textAlign:'center',color:'#9ca3af',fontSize:'13px'}}>No started patients available to add.</div>
+                      ) : (
+                        <div style={{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'16px'}}>
+                          {eligible.map(p => (
+                            <button key={p.id} onClick={() => addStartedToPipeline(p)}
+                              style={{padding:'12px 14px',border:'1px solid #e5e7eb',borderRadius:'8px',backgroundColor:'white',textAlign:'left',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px'}}>
+                              <span style={{fontWeight:'700',fontSize:'14px',color:'#111827'}}>{p.name}</span>
+                              <span style={{fontSize:'11px',color:'#9ca3af',whiteSpace:'nowrap'}}>{p.tc}{p.startDate ? ` · Started ${formatDate(p.startDate)}` : ''}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <button onClick={() => setMedAddStartedModal(false)}
+                        style={{width:'100%',padding:'10px',border:'1px solid #e5e7eb',borderRadius:'7px',backgroundColor:'white',fontSize:'14px',cursor:'pointer',color:'#6b7280',fontWeight:'600'}}>
+                        Cancel
+                      </button>
                     </div>
                   </div>
                 );
@@ -6597,12 +6924,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const myTCName = currentUser?.name || '';
           // Contact-log entry.date and startDate are both written with toISOString() (UTC),
           // so compare against the UTC date here — using local date dropped evening entries.
-          const todayUTC = new Date().toISOString().split('T')[0];
+          const realToday = new Date().toISOString().split('T')[0];
+          const todayUTC = activityDate || realToday;   // the day being viewed
+          const shiftActivityDate = (deltaDays) => {
+            const d = new Date(todayUTC + 'T12:00:00');
+            d.setDate(d.getDate() + deltaDays);
+            setActivityDate(d.toISOString().split('T')[0]);
+          };
           const isStartedToday = (p) => (isSDS(p) || p.ST || p.DBRETS) && effectiveStartDate(p) === todayUTC;
           const visibleTCNames = isTC ? [myTCName] : tcNames;
           const todayStarts = patients.filter(p => isStartedToday(p) && (isTC ? p.tc === myTCName : true));
           const todayActivity = patients
-            .filter(p => isTC ? p.tc === myTCName : true)
+            // A TC's activity = patients assigned to her OR any patient she logged/added today
+            // (so her own adds show even if the patient is assigned to another TC).
+            .filter(p => {
+              if (!isTC) return true;
+              if (p.tc === myTCName) return true;
+              return (p.contact_log || []).some(e => e.date === todayUTC && e.logged_by === myTCName);
+            })
             .flatMap(p => {
               const logEntries = (p.contact_log || [])
                 .filter(e => e.date === todayUTC && e.reachedPatient && (isTC ? (e.logged_by || p.tc) === myTCName : true))
@@ -6639,7 +6978,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const orphanEntries = isTC ? [] : todayActivity.filter(e => !visibleTCNames.includes(e.logged_by || e.patientTC));
           const displayTCNames = orphanEntries.length > 0 ? [...visibleTCNames, 'Unassigned'] : visibleTCNames;
           const totalReached = todayActivity.filter(e => e.reachedPatient === 'Spoke with patient').length;
-          const totalContacts = todayActivity.filter(e => !e.isSyntheticStart && e.reachedPatient !== "Waiting on Medicaid — didn't call").length;
+          const totalContacts = todayActivity.filter(e => !e.isSyntheticStart && !e.noCount && e.reachedPatient !== "Waiting on Medicaid — didn't call").length;
           const getEntriesForTC = (tcName) =>
             (tcName === 'Unassigned'
               ? orphanEntries
@@ -6669,8 +7008,35 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             <div>
               {/* Header */}
               <div style={{marginBottom: '24px'}}>
-                <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',margin:0}}>📋 {isTC ? 'My Activity Today' : "Today's Activity"}</h2>
-                <div style={{fontSize:'14px',color:'#6b7280',marginTop:'4px'}}>{dateLabel}</div>
+                <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',margin:0}}>📋 {isTC ? 'My Activity' : "Today's Activity"}</h2>
+                {/* Day navigator — view/send any day's report, not just today */}
+                <div style={{display:'flex',alignItems:'center',gap:'8px',marginTop:'8px',flexWrap:'wrap'}}>
+                  <button
+                    onClick={() => shiftActivityDate(-1)}
+                    style={{padding:'6px 12px',backgroundColor:'white',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',fontWeight:600,color:'#374151',cursor:'pointer'}}
+                  >◀ Prev day</button>
+                  <input
+                    type="date"
+                    value={todayUTC}
+                    max={realToday}
+                    onChange={(e) => setActivityDate(e.target.value || realToday)}
+                    style={{padding:'6px 10px',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',color:'#374151'}}
+                  />
+                  <button
+                    onClick={() => shiftActivityDate(1)}
+                    disabled={todayUTC >= realToday}
+                    style={{padding:'6px 12px',backgroundColor:'white',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',fontWeight:600,color: todayUTC >= realToday ? '#d1d5db' : '#374151',cursor: todayUTC >= realToday ? 'default' : 'pointer'}}
+                  >Next day ▶</button>
+                  {todayUTC !== realToday && (
+                    <button
+                      onClick={() => setActivityDate(realToday)}
+                      style={{padding:'6px 12px',backgroundColor:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:'8px',fontSize:'13px',fontWeight:700,color:'#2563EB',cursor:'pointer'}}
+                    >Jump to today</button>
+                  )}
+                </div>
+                <div style={{fontSize:'14px',color:'#6b7280',marginTop:'8px'}}>
+                  {dateLabel}{todayUTC !== realToday && <span style={{color:'#c2410c',fontWeight:600}}> — viewing a past day</span>}
+                </div>
               </div>
               {/* Summary bar */}
               <div style={{display:'flex',gap:'12px',marginBottom:'28px',flexWrap:'wrap'}}>
@@ -6685,17 +7051,67 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   </div>
                 ))}
               </div>
+              {/* End-of-Day report for the consultant */}
+              {hasAnyActivity && (() => {
+                const grouped = {};
+                todayActivity.forEach((e) => { const g = recapGroupOf(e); (grouped[g] = grouped[g] || []).push(e); });
+                const recipientSummary = [
+                  ...(consultantRecipients.to || []),
+                  ...(consultantRecipients.cc || []).map(c => `${c} (cc)`),
+                ].filter(Boolean).join(', ') || 'none set';
+                const payload = buildRecapPayload(todayActivity, dateLabel);
+                return (
+                  <div style={{backgroundColor:'white',borderRadius:'12px',boxShadow:'0 1px 4px rgba(0,0,0,0.08)',padding:'20px 24px',marginBottom:'20px',border:'2px solid #fde68a'}}>
+                    <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'16px',flexWrap:'wrap',marginBottom:'14px'}}>
+                      <div>
+                        <div style={{fontSize:'18px',fontWeight:'700',color:'#111827'}}>📤 End-of-Day Report</div>
+                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>Click Copy, then paste into your email to the consultant.</div>
+                      </div>
+                      <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+                        <button
+                          onClick={() => { navigator.clipboard?.writeText(payload.text); setSaveToast('📋 Report copied'); setTimeout(() => setSaveToast(''), 2500); }}
+                          style={{padding:'8px 18px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'8px',fontWeight:700,fontSize:'13px',cursor:'pointer'}}
+                        >📋 Copy report</button>
+                        {/* Email-to-consultant button hidden until Resend is configured (RESEND_API_KEY secret + verified send.northtampabraces.com domain + deployed send-email fn). To restore, uncomment — sendRecapEmail/recapEmailStatus/recipientSummary are all still wired up.
+                        <button
+                          onClick={() => sendRecapEmail(payload)}
+                          disabled={recapEmailStatus === 'sending'}
+                          style={{padding:'8px 16px',backgroundColor: recapEmailStatus === 'sent' ? '#16a34a' : recapEmailStatus === 'error' ? '#dc2626' : '#2563EB',color:'white',border:'none',borderRadius:'8px',fontWeight:700,fontSize:'13px',cursor: recapEmailStatus === 'sending' ? 'default' : 'pointer',opacity: recapEmailStatus === 'sending' ? 0.6 : 1}}
+                        >
+                          {recapEmailStatus === 'sending' ? 'Sending…' : recapEmailStatus === 'sent' ? '✓ Sent to consultant' : recapEmailStatus === 'error' ? '✗ Failed — retry' : '✉️ Email to consultant'}
+                        </button>
+                        */}
+                      </div>
+                    </div>
+                    {RECAP_GROUPS.map(([key, label]) => {
+                      const list = grouped[key];
+                      if (!list || !list.length) return null;
+                      return (
+                        <div key={key} style={{marginBottom:'12px'}}>
+                          <div style={{fontSize:'13px',fontWeight:700,color:'#374151',marginBottom:'5px'}}>{label} <span style={{color:'#9ca3af',fontWeight:500}}>({list.length})</span></div>
+                          {list.map((e, i) => (
+                            <div key={i} style={{fontSize:'14px',color:'#374151',padding:'3px 0 3px 8px',borderLeft:'2px solid #f3f4f6'}}>
+                              <strong>{e.patientName}</strong>: {recapLineText(e) || <span style={{color:'#d1d5db',fontStyle:'italic'}}>no recap</span>}
+                              {(e.logged_by || e.patientTC) && <span style={{color:'#9ca3af',fontSize:'12px'}}> ({e.logged_by || e.patientTC})</span>}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
               {/* No activity state */}
               {!hasAnyActivity && (
                 <div style={{backgroundColor:'white',borderRadius:'12px',boxShadow:'0 1px 4px rgba(0,0,0,0.08)',padding:'48px 24px',textAlign:'center',color:'#9ca3af'}}>
                   <div style={{fontSize:'36px',marginBottom:'12px'}}>📭</div>
-                  <div style={{fontSize:'16px',fontWeight:'600',color:'#6b7280'}}>No activity has been logged today yet.</div>
+                  <div style={{fontSize:'16px',fontWeight:'600',color:'#6b7280'}}>{todayUTC === realToday ? 'No activity has been logged today yet.' : 'No activity was logged on this day.'}</div>
                 </div>
               )}
               {/* Per-TC sections */}
               {hasAnyActivity && displayTCNames.map(tcName => {
                 const entries = getEntriesForTC(tcName);
-                const contactCount = entries.filter(e => !e.isSyntheticStart && e.reachedPatient !== "Waiting on Medicaid — didn't call").length;
+                const contactCount = entries.filter(e => !e.isSyntheticStart && !e.noCount && e.reachedPatient !== "Waiting on Medicaid — didn't call").length;
                 const startCount = entries.filter(e => e.startedToday).length;
                 return (
                   <div key={tcName} style={{backgroundColor:'white',borderRadius:'12px',boxShadow:'0 1px 4px rgba(0,0,0,0.08)',padding:'20px 24px',marginBottom:'16px'}}>
@@ -6715,7 +7131,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     {entries.map((e, i) => {
                       const chip = chipStyle(e.reachedPatient);
                       const isMedicaidSkip = e.reachedPatient === "Waiting on Medicaid — didn't call";
-                      const notesText = (e.outcome || e.notes || '');
+                      const notesText = (e.recap || e.outcome || e.notes || '');
                       const truncated = notesText.length > 80 ? notesText.slice(0, 80) + '…' : notesText;
                       return (
                         <div key={i} style={{
@@ -8148,6 +8564,47 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </div>
                   </div>
 
+                  {/* End-of-Day report recipients */}
+                  <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
+                    <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>✉️ End-of-Day Report Recipients</h4>
+                    <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>The <strong>Email to consultant</strong> button on the Today's Activity tab sends the day's recap here. Separate multiple emails with commas — the Primary line goes on <em>To</em>, the CC line is copied.</p>
+                    <div style={{display:'grid',gap:'12px',maxWidth:'560px'}}>
+                      <div>
+                        <label style={{display:'block',fontSize:'13px',fontWeight:600,color:'#374151',marginBottom:'4px'}}>Primary (To)</label>
+                        <input
+                          type="text"
+                          value={recipientToStr}
+                          onChange={e => setRecipientToStr(e.target.value)}
+                          placeholder="aliza@fishbeingroup.com"
+                          style={{width:'100%',padding:'8px 10px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px',boxSizing:'border-box'}}
+                        />
+                      </div>
+                      <div>
+                        <label style={{display:'block',fontSize:'13px',fontWeight:600,color:'#374151',marginBottom:'4px'}}>CC</label>
+                        <input
+                          type="text"
+                          value={recipientCcStr}
+                          onChange={e => setRecipientCcStr(e.target.value)}
+                          placeholder="drzack@northtampabraces.com, nicole@northtampabraces.com"
+                          style={{width:'100%',padding:'8px 10px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px',boxSizing:'border-box'}}
+                        />
+                      </div>
+                      <div>
+                        <button
+                          onClick={async () => {
+                            const parse = (s) => s.split(',').map(x => x.trim()).filter(Boolean);
+                            const next = { to: parse(recipientToStr), cc: parse(recipientCcStr) };
+                            setConsultantRecipients(next);
+                            await dbSaveSettings('consultant-recipients', next);
+                            setSaveToast('✅ Report recipients saved');
+                            setTimeout(() => setSaveToast(''), 2500);
+                          }}
+                          style={{padding:'8px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'6px',fontWeight:700,fontSize:'13px',cursor:'pointer'}}
+                        >Save Recipients</button>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Locations */}
                   <div id="guide-locations-section" style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>📍 Office Locations</h4>
@@ -9492,6 +9949,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 ))}
               </div>
             </div>
+
+            {renderRecapField(
+              startedForm.recap,
+              (val) => setStartedForm({...startedForm, recap: val}),
+              composeRecapDraft('start', {
+                dp: startedForm.dp,
+                sameDay: startedForm.startDate === showStartedModal.npeDate,
+                'R+': startedForm['R+'], 'W+': startedForm['W+'], PIF: startedForm.PIF
+              })
+            )}
 
             <div style={{display:'flex',gap:'12px'}}>
               <button
