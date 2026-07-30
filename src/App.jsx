@@ -384,7 +384,7 @@ import { createClient } from '@supabase/supabase-js';
                     const { data: practiceData } = await supabase.from('practices').select('name').eq('id', practiceId).maybeSingle();
                     if (practiceData?.name) practiceName = practiceData.name;
                 } catch {}
-                return { id: userId, name: data.name, role: data.role, email: userEmail, practiceId, practiceName, bonusEnabled: data.bonus_enabled === true };
+                return { id: userId, name: data.name, role: data.role, email: userEmail, practiceId, practiceName, bonusEnabled: data.bonus_enabled !== false };
             };
 
             useEffect(() => {
@@ -780,11 +780,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [monthlyTCFilter, setMonthlyTCFilter] = useState('All');
   const [selectedMonthIdx, setSelectedMonthIdx] = useState(new Date().getMonth());
   const [selectedMonthYear, setSelectedMonthYear] = useState(new Date().getFullYear());
-  // "Fill Amounts" view — catch-up entry of missing DP / contract amounts for a month's starts
-  const [fillMonth, setFillMonth] = useState(new Date().getMonth());
-  const [fillYear, setFillYear] = useState(new Date().getFullYear());
-  const [fillDrafts, setFillDrafts] = useState({});      // { [id]: { dp, contractAmount } }
-  const [fillSavedIds, setFillSavedIds] = useState([]);  // ids saved this session (kept visible with ✓)
 
   // Admin state
   const [adminUnlocked, setAdminUnlocked] = useState(false);
@@ -793,7 +788,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [newDashPwConfirm, setNewDashPwConfirm] = useState('');
   const [newAdminPw, setNewAdminPw] = useState('');
   const [newAdminPwConfirm, setNewAdminPwConfirm] = useState('');
-  const [bonusRates, setBonusRates] = useState({ sds: 20, ret: 5, white: 5, pif: 5 });
+  // Bonus rates are individual per user (tc_users.bonus_rates). There is no
+  // practice-wide rate — a user with no saved rates earns $0 until admin sets them.
+  // goalBelow/goalMet/goalBeat pay on the practice's monthly starts vs the starts
+  // goal. The tier windows are adjustable per user: goalBelowRange = how many
+  // starts under goal still pay the "under" tier; goalBeatMin = how many starts
+  // over goal it takes to reach the "beat" tier (at-goal covers 0..goalBeatMin-1).
+  const ZERO_RATES = { sds: 0, ret: 0, white: 0, pif: 0, goalBelow: 0, goalMet: 0, goalBeat: 0, goalBelowRange: 5, goalBeatMin: 1 };
+  // Unsaved per-user rate edits in Settings, keyed by tc_users.id.
+  const [userBonusDrafts, setUserBonusDrafts] = useState({});
   const [popupBonuses, setPopupBonuses] = useState([]);
   const [popupBonusForm, setPopupBonusForm] = useState({ name: '', startDate: '', endDate: '', description: '', tcFilter: 'All', amtSDS: 0, amtPending: 0, amtScheduled: 0, amtRetainer: 0, amtWhitening: 0, goalThreshold: 0, replacesBase: false });
 
@@ -836,9 +839,26 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [newPatientForm, setNewPatientForm] = useState({
     name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: '', dp: '', contractAmount: '', tc: '', status: '',
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
-    'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false
+    'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', addonSkipReason: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false, isMedicaid: ''
   });
   const [addPatientError, setAddPatientError] = useState('');
+  // When a started/DBRETS patient is saved without whitening or retainers, the TC is
+  // prompted (after clicking Add Patient) to note why. This gates that prompt.
+  const [showAddonSkipPrompt, setShowAddonSkipPrompt] = useState(false);
+
+  // Greyfinch new-patient pull: NEW_PATIENT-status people fetched from Greyfinch that
+  // sit above the Add-NPE form so the TC can one-click prepopulate instead of retyping.
+  const [greyfinchPatients, setGreyfinchPatients] = useState([]);
+  const [greyfinchLoading, setGreyfinchLoading] = useState(false);
+  const [greyfinchError, setGreyfinchError] = useState('');
+  const [greyfinchLoaded, setGreyfinchLoaded] = useState(false);
+  // Which day's scheduled NPEs to show (defaults to today, in the practice's local time).
+  const [greyfinchDate, setGreyfinchDate] = useState(localDateStr(new Date()));
+  // Monotonic id so out-of-order day fetches don't overwrite the latest selection.
+  const greyfinchReqRef = useRef(0);
+  // Testing aid: upcoming days that have NPEs booked ([{date,count}]).
+  const [greyfinchScan, setGreyfinchScan] = useState(null);
+  const [greyfinchScanning, setGreyfinchScanning] = useState(false);
 
   const [startedForm, setStartedForm] = useState({
     startDate: new Date().toISOString().split('T')[0],
@@ -855,6 +875,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [followupTCFilter, setFollowupTCFilter] = useState('All');
   const [bonusTCSelect, setBonusTCSelect] = useState('All');
   const [ontimeTCFilter, setOntimeTCFilter] = useState('All');
+  // Which obstacle group is expanded in the dashboard's "Who's Stuck" card (null = all collapsed).
+  const [dashObstacleOpen, setDashObstacleOpen] = useState(null);
 
   // ── Practice Metrics ─────────────────────────────────────────────────
   const [metricsUnlocked, setMetricsUnlocked] = useState(true);
@@ -873,6 +895,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   });
   const [showAIGoals, setShowAIGoals] = useState(false);
   const [showConvBreakdown, setShowConvBreakdown] = useState(null); // { dashPatients, dashStartPatients }
+  const [showStartsByLocation, setShowStartsByLocation] = useState(null); // { perLocation, started, label } starts-per-location breakdown
+  const [showObsList, setShowObsList] = useState(null); // { list, label, tcFilter } name-by-name Observation patients
   const [goalAdjust, setGoalAdjust] = useState({ production: 0, npe: 0, starts: 0, conversion: 0, case_fee: 0 });
   const [metricsSaveMsg, setMetricsSaveMsg] = useState('');
   const [showDetailedMetricsCols, setShowDetailedMetricsCols] = useState(false);
@@ -977,7 +1001,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             contact_log: r.contact_log || [],
             fromPending: r.from_pending || false,
             insuranceWorkflow: r.insurance_workflow || null,
-            medicaidPipeline: r.medicaid_pipeline || false
+            medicaidPipeline: r.medicaid_pipeline || false,
+            isMedicaid: r.is_medicaid || false
           })));
         }
       } else {
@@ -1087,6 +1112,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       from_pending: patient.fromPending || false,
       insurance_workflow: patient.insuranceWorkflow || null,
       medicaid_pipeline: patient.medicaidPipeline || false,
+      is_medicaid: patient.isMedicaid || false,
       practice_id: managedPracticeId || currentUser.practiceId
     }, { onConflict: 'id' });
     if (error) {
@@ -1177,9 +1203,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   useEffect(() => {
     const loadSettings = async () => {
       if (currentUser?.id === 'demo') return;
-      const [cloudGoals, cloudBonusRates, cloudAdminPw, cloudPopupBonuses, cloudLocations, cloudMedicaidEnabled, cloudObsRecall, cloudRecipients] = await Promise.all([
+      const [cloudGoals, cloudAdminPw, cloudPopupBonuses, cloudLocations, cloudMedicaidEnabled, cloudObsRecall, cloudRecipients] = await Promise.all([
         dbLoadSettings('goals'),
-        dbLoadSettings('bonus-rates'),
         dbLoadSettings('admin-password'),
         dbLoadSettings('popup-bonuses'),
         dbLoadSettings('locations'),
@@ -1188,7 +1213,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         dbLoadSettings('consultant-recipients'),
       ]);
       if (cloudGoals) setGoals(cloudGoals);
-      if (cloudBonusRates) setBonusRates(cloudBonusRates);
       if (cloudAdminPw) localStorage.setItem(`npe-admin-password-${currentUser.practiceId}`, cloudAdminPw);
       if (cloudPopupBonuses && Array.isArray(cloudPopupBonuses)) setPopupBonuses(cloudPopupBonuses);
       if (cloudLocations && Array.isArray(cloudLocations)) { setLocations(cloudLocations); }
@@ -1278,17 +1302,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const switchToPractice = async (practice) => {
     setSwitchingToPractice(practice.id);
     try {
-      const [locData, usersData, bonusData, goalsData, popupData] = await Promise.all([
+      const [locData, usersData, goalsData, popupData] = await Promise.all([
         supabase.from('settings').select('value').eq('key','locations').eq('practice_id', practice.id).maybeSingle(),
         supabase.from('tc_users').select('*').eq('practice_id', practice.id).order('created_at', { ascending: true }),
-        supabase.from('settings').select('value').eq('key','bonus-rates').eq('practice_id', practice.id).maybeSingle(),
         supabase.from('settings').select('value').eq('key','goals').eq('practice_id', practice.id).maybeSingle(),
         supabase.from('settings').select('value').eq('key','popup-bonuses').eq('practice_id', practice.id).maybeSingle(),
       ]);
       // Clear all practice-specific state before loading new practice — prevents
       // miller-ortho settings from leaking into OA when OA doesn't have them configured
       setPatients([]);
-      setBonusRates(bonusData?.data?.value || { sds: 20, ret: 5, white: 5, pif: 5 });
       setGoals(goalsData?.data?.value || defaultGoalsData);
       setPopupBonuses((popupData?.data?.value && Array.isArray(popupData.data.value)) ? popupData.data.value : []);
       setLocations(locData?.data?.value || []);
@@ -1313,16 +1335,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   const switchBackToAdmin = async () => {
     const orig = superadminOriginalUser;
-    const [locData, usersData, bonusData, goalsData, popupData] = await Promise.all([
+    const [locData, usersData, goalsData, popupData] = await Promise.all([
       supabase.from('settings').select('value').eq('key','locations').eq('practice_id', orig.practiceId).maybeSingle(),
       supabase.from('tc_users').select('*').eq('practice_id', orig.practiceId).order('created_at', { ascending: true }),
-      supabase.from('settings').select('value').eq('key','bonus-rates').eq('practice_id', orig.practiceId).maybeSingle(),
       supabase.from('settings').select('value').eq('key','goals').eq('practice_id', orig.practiceId).maybeSingle(),
       supabase.from('settings').select('value').eq('key','popup-bonuses').eq('practice_id', orig.practiceId).maybeSingle(),
     ]);
     // Reset all practice-specific state before switching back
     setPatients([]);
-    setBonusRates(bonusData?.data?.value || { sds: 20, ret: 5, white: 5, pif: 5 });
     setGoals(goalsData?.data?.value || defaultGoalsData);
     setPopupBonuses((popupData?.data?.value && Array.isArray(popupData.data.value)) ? popupData.data.value : []);
     setLocations(locData?.data?.value || []);
@@ -1482,6 +1502,45 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const effectiveStartDate = (p) => (p.startDate && p.startDate !== '') ? p.startDate : ((isSDS(p) || p.ST || p.DBRETS) ? p.npeDate : '');
 
   // Calculate how much a patient earns under a popup bonus campaign (0 = doesn't qualify)
+  // Per-user bonus rates from tc_users.bonus_rates (jsonb). Rates are strictly
+  // individual — no practice-wide fallback. Unknown names (ex-staff) earn $0.
+  const ratesForTC = (tcName) => {
+    const u = tcName ? tcUsers.find(u => u.name === tcName) : null;
+    return u && u.bonus_rates ? { ...ZERO_RATES, ...u.bonus_rates } : ZERO_RATES;
+  };
+
+  // The monthly starts goal for a "YYYY-MM" string, or 0 when none is set
+  const startsGoalForMonth = (monthStr) => {
+    const mGoal = goals.monthly[Number(monthStr?.slice(5, 7)) - 1];
+    if (!mGoal) return 0;
+    return goals.overallMode ? (mGoal.totalStarted || 0) : (mGoal.carStarted || 0) + (mGoal.apoStarted || 0);
+  };
+  const practiceStartsInMonth = (monthStr) => patients.filter(p => {
+    const sd = effectiveStartDate(p);
+    return sd && sd.startsWith(monthStr) && (isSDS(p) || p.ST);
+  }).length;
+
+  // Practice-goal tier bonus for one user in one month ("YYYY-MM"), using that
+  // user's tier windows. Null when the user has no tier amounts, the month has
+  // no starts goal, or the practice is too far under goal to hit any tier.
+  const goalTierBonusFor = (name, monthStr) => {
+    const r = ratesForTC(name);
+    if (!(r.goalBelow > 0 || r.goalMet > 0 || r.goalBeat > 0)) return null;
+    const goal = startsGoalForMonth(monthStr);
+    if (goal <= 0) return null;
+    const starts = practiceStartsInMonth(monthStr);
+    const diff = starts - goal;
+    const belowRange = Number(r.goalBelowRange) > 0 ? Number(r.goalBelowRange) : 5;
+    const beatMin = Number(r.goalBeatMin) > 0 ? Number(r.goalBeatMin) : 1;
+    let amount = 0, label = '';
+    if (diff >= beatMin) { amount = r.goalBeat; label = `Beat goal by ${beatMin}+ (${starts}/${goal} starts)`; }
+    else if (diff >= 0) { amount = r.goalMet; label = `At goal (${starts}/${goal} starts)`; }
+    else if (diff >= -belowRange) { amount = r.goalBelow; label = `Within ${belowRange} under goal (${starts}/${goal} starts)`; }
+    else return null;
+    if (amount <= 0) return null;
+    return { amount, label, starts, goal };
+  };
+
   const popupBonusEarnings = (p, bonus, tcOverride) => {
     const sd = effectiveStartDate(p);
     if (!sd || sd < bonus.startDate || sd > bonus.endDate) return 0;
@@ -1509,7 +1568,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     }
     // Legacy fallback (old campaigns only had `amount` per fromPending/ST start)
     if (!(p.fromPending || p.ST)) return 0;
-    return (bonus.amount || 0) + (p['R+'] ? bonusRates.ret : 0) + (p['W+'] ? bonusRates.white : 0);
+    const pr = ratesForTC(p.tc);
+    return (bonus.amount || 0) + (p['R+'] ? pr.ret : 0) + (p['W+'] ? pr.white : 0);
   };
 
   // Check if a campaign's start-goal threshold has been met for a given TC
@@ -1563,12 +1623,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const medicaidPending = pts.filter(p => p.MP === true).length;
     const noTx = pts.filter(p => p.NOTX === true).length;
 
-    const retainers = _sp.filter(p => (isSDS(p) || p.ST || p.DBRETS) && p['R+'] === true).length;
-    const whitening = _sp.filter(p => (isSDS(p) || p.ST || p.DBRETS) && p['W+'] === true).length;
-    const pif = started.filter(p => p.PIF === true).length;
+    const retPts = _sp.filter(p => (isSDS(p) || p.ST || p.DBRETS) && p['R+'] === true);
+    const whitePts = _sp.filter(p => (isSDS(p) || p.ST || p.DBRETS) && p['W+'] === true);
+    const pifPts = started.filter(p => p.PIF === true);
+    const retainers = retPts.length;
+    const whitening = whitePts.length;
+    const pif = pifPts.length;
 
     const overallConv = total > 0 ? Math.round((started.length / total) * 100) : 0;
     const sdsConv = total > 0 ? Math.round((sds.length / total) * 100) : 0;
+
+    // OBS counts per location, for the Observation pipeline tile
+    const obsPerLocation = locations
+      .map(loc => ({ loc, count: pts.filter(p => p.OBS === true && p.location === loc).length }))
+      .filter(x => x.count > 0);
+    const obsOther = observation - obsPerLocation.reduce((s, x) => s + x.count, 0);
+    if (obsOther > 0) obsPerLocation.push({ loc: 'Other', count: obsOther });
 
     // Per-location metrics — dynamic for any number of locations
     const perLocation = locations.map(loc => {
@@ -1601,14 +1671,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // SDS rate (% of starts that are same-day)
     const sdsRate = started.length > 0 ? Math.round((sds.length / started.length) * 100) : 0;
 
-    const sdsBonus = sds.length * bonusRates.sds;
-    const retBonus = retainers * bonusRates.ret;
-    const whiteBonus = whitening * bonusRates.white;
-    const pifBonus = pif * bonusRates.pif;
+    const sdsBonus = sds.reduce((s, p) => s + ratesForTC(p.tc).sds, 0);
+    const retBonus = retPts.reduce((s, p) => s + ratesForTC(p.tc).ret, 0);
+    const whiteBonus = whitePts.reduce((s, p) => s + ratesForTC(p.tc).white, 0);
+    const pifBonus = pifPts.reduce((s, p) => s + ratesForTC(p.tc).pif, 0);
     const totalBonus = sdsBonus + retBonus + whiteBonus + pifBonus;
 
     return {
-      total, started: started.length, sds: sds.length, pending, scheduled, observation, medicaidPending, noTx,
+      total, started: started.length, sds: sds.length, pending, scheduled, observation, medicaidPending, noTx, obsPerLocation,
       overallConv, sdsConv, retainers, whitening, pif, sdsBonus, retBonus, whiteBonus, pifBonus, totalBonus,
       perLocation, carTotal, apoTotal, carStarted, apoStarted, carConv, apoConv,
       avgDP, avgDPAll, brCount, invCount, ph1Count, ph2Count, ltdCount, sdsRate
@@ -1619,8 +1689,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // TC names: prefer login accounts; fall back to unique names in patient data (for demo)
   const tcNames = tcUsers.length > 0
-    ? tcUsers.filter(u => u.role !== 'admin' && u.status !== 'inactive').map(u => u.name)
+    ? tcUsers.filter(u => u.role === 'tc' && u.status !== 'inactive').map(u => u.name)
     : [...new Set(patients.map(p => p.tc).filter(Boolean))];
+
+  // Everyone who can earn bonuses: TCs and Office Managers. Used for bonus
+  // campaign targeting and bonus audit filtering.
+  const bonusEligibleNames = tcUsers.length > 0
+    ? tcUsers.filter(u => (u.role === 'tc' || u.role === 'manager') && u.status !== 'inactive').map(u => u.name)
+    : tcNames;
 
   // Single source of truth for "who currently works here". Deleting a tc_users
   // row does NOT rewrite the logged_by text stored on past calls, so any view
@@ -1632,6 +1708,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     : null;
   const isCurrentStaff = (name) => !activeStaffNames || activeStaffNames.has(name);
 
+  // Stricter than isCurrentStaff: true only for people who are *currently TCs*
+  // (active, role === 'tc'). Managers/admins and removed staff are excluded, so
+  // TC-performance views (call performance, on-time audit) never show someone who
+  // isn't actually doing follow-up calls anymore. Returns true while the roster is
+  // still loading so we don't blank the views on first paint.
+  const isCurrentTC = (name) => tcUsers.length === 0 || tcNames.includes(name);
+
   // Sync new patient form defaults when locations/tcUsers first load
   useEffect(() => {
     if (locations.length > 0) setNewPatientForm(f => f.location ? f : {...f, location: locations[0]});
@@ -1642,6 +1725,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const defaultTC = (currentUser?.role === 'tc' && tcNames.includes(currentUser?.name)) ? currentUser.name : tcNames[0];
     if (tcNames.length > 0) setNewPatientForm(f => f.tc ? f : {...f, tc: defaultTC});
   }, [tcUsers, patients]);
+
+  // Auto-pull the day's scheduled NPEs the first time the Add view opens.
+  useEffect(() => {
+    if (currentView === 'add' && !greyfinchLoaded && !greyfinchLoading) fetchGreyfinchNewPatients(greyfinchDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentView]);
 
   const today = localDateStr(new Date());
 
@@ -1727,19 +1816,46 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     }
     return `${o.outcome || 'Follow-up'}. `;
   };
-  // Group a Today's Activity entry into an End-of-Day section.
-  const recapGroupOf = (e) => {
+  // Fine-grained outcome of a Today's Activity entry: start | future | pending | notx | other.
+  const recapDispoOf = (e) => {
     if (e.dispo) return e.dispo;
     if (e.startedToday || e.isSyntheticStart || e.reachedPatient === 'Started treatment') return 'start';
     if (e.reachedPatient === "Waiting on Medicaid — didn't call") return 'other';
     return 'pending';
   };
-  // Reusable "Day Recap" input. Called as a function (NOT <RecapField/>) so the
-  // textarea keeps focus across keystrokes.
+  // Place an entry into a top-level End-of-Day section (+ optional subcategory).
+  // The key split: was this a consult TODAY (npeDate === the day being viewed), or
+  // activity on someone who was already in the pipeline from a prior day? Fresh
+  // consults (with their started / pending / future subcategories) are kept separate
+  // from pending-list follow-ups and from prior-list patients who started today.
+  const recapSectionOf = (e, todayUTC) => {
+    const dispo = recapDispoOf(e);
+    if (e.patientNpeDate === todayUTC) {
+      return { section: 'consult', sub: ['start', 'pending', 'future', 'notx'].includes(dispo) ? dispo : 'other' };
+    }
+    if (dispo === 'start') return { section: e.startedFrom === 'scheduled' ? 'scheduled' : 'converted', sub: null };
+    if (dispo === 'other') return { section: 'misc', sub: null };
+    return { section: 'followup', sub: null };
+  };
+  // Bucket entries by section (and subcategory) for both the on-screen report and the email.
+  const groupRecapEntries = (entries, todayUTC) => {
+    const buckets = {};
+    entries.forEach((e) => {
+      const { section, sub } = recapSectionOf(e, todayUTC);
+      const b = buckets[section] || (buckets[section] = { list: [], subs: {} });
+      b.list.push(e);
+      if (sub) (b.subs[sub] = b.subs[sub] || []).push(e);
+    });
+    return buckets;
+  };
+  // Reusable Notes input. Called as a function (NOT <RecapField/>) so the
+  // textarea keeps focus across keystrokes. This is the single notes box used
+  // throughout the app — whatever is typed here is the patient note AND the
+  // line that appears on the consultant's end-of-day report.
   const renderRecapField = (value, onChange, draft) => (
     <div style={{marginBottom:'12px',backgroundColor:'#fffbeb',border:'1px solid #fde68a',borderRadius:'8px',padding:'10px 12px'}}>
       <label style={{fontSize:'13px',fontWeight:700,display:'block',marginBottom:'4px',color:'#92400e'}}>
-        📋 Day Recap <span style={{fontWeight:400,color:'#b45309'}}>— goes to the consultant's end-of-day report</span>
+        📋 Notes <span style={{fontWeight:400,color:'#b45309'}}>— goes to the consultant's end-of-day report</span>
       </label>
       <textarea
         value={value || ''}
@@ -1757,31 +1873,63 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     </div>
   );
   // ── End-of-Day report builder + consultant email ─────────────────────
-  const RECAP_GROUPS = [
-    ['start', '🎉 Starts'],
-    ['future', '📅 Future Starts'],
-    ['pending', '⏳ Pending / Follow-ups'],
-    ['notx', '🚫 No Treatment'],
-    ['other', '📋 Other'],
+  // End-of-Day report sections, in display order. "Today's Consults" holds every
+  // patient whose NPE was today, split into subcategories; prior-list activity is
+  // kept in its own sections so fresh consults aren't mixed with pending work.
+  const RECAP_SECTIONS = [
+    { key: 'consult', label: "🗓️ Today's Consults", subs: [
+      ['start',   '🎉 Started'],
+      ['pending', '⏳ Dropped to Pending'],
+      ['future',  '📅 Initial Bond Scheduled — no DP'],
+      ['notx',    '🚫 No Treatment'],
+      ['other',   '📋 Other'],
+    ] },
+    { key: 'converted', label: '✅ Started from the Pending List' },
+    { key: 'scheduled', label: '📅 Scheduled Bonds — Started Today' },
+    { key: 'followup',  label: '⏳ Pending List — Responded Today' },
+    { key: 'misc',      label: '📋 Other Activity' },
   ];
   const escapeHtml = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const recapLineText = (e) => (e.recap || e.outcome || e.notes || '').trim();
-  const buildRecapPayload = (entries, dateLabel) => {
-    const groups = {};
-    entries.forEach((e) => { const g = recapGroupOf(e); (groups[g] = groups[g] || []).push(e); });
+  // Next scheduled follow-up date for a pending entry, e.g. "Fri, 7/17". Blank for
+  // non-pending entries or when no follow-up is scheduled (__MAX__ / empty).
+  const recapNextTouch = (e) => {
+    if (recapDispoOf(e) !== 'pending') return '';
+    const d = e.patientNextTouch;
+    if (!d || d === '__MAX__') return '';
+    return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' });
+  };
+  const buildRecapPayload = (entries, dateLabel, todayUTC) => {
+    const buckets = groupRecapEntries(entries, todayUTC);
     const textParts = [];
     const htmlParts = [];
-    RECAP_GROUPS.forEach(([key, label]) => {
-      const list = groups[key];
-      if (!list || !list.length) return;
-      textParts.push(`\n${label} (${list.length})`);
-      htmlParts.push(`<h3 style="margin:18px 0 6px;font-size:15px;color:#111">${label} (${list.length})</h3><ul style="margin:0 0 8px;padding-left:18px">`);
-      list.forEach((e) => {
-        const tc = e.logged_by || e.patientTC || '';
-        textParts.push(`• ${e.patientName}: ${recapLineText(e)}${tc ? `  (${tc})` : ''}`);
-        htmlParts.push(`<li style="margin:3px 0;font-size:14px;color:#333"><strong>${escapeHtml(e.patientName)}</strong>: ${escapeHtml(recapLineText(e))}${tc ? ` <span style="color:#9ca3af">(${escapeHtml(tc)})</span>` : ''}</li>`);
-      });
-      htmlParts.push('</ul>');
+    const pushLine = (e, indent = '') => {
+      const tc = e.logged_by || e.patientTC || '';
+      const nt = recapNextTouch(e);
+      const ntText = nt ? ` — next follow-up: ${nt}` : '';
+      const ntHtml = nt ? ` <span style="color:#c2410c">— next follow-up: ${escapeHtml(nt)}</span>` : '';
+      textParts.push(`${indent}• ${e.patientName}: ${recapLineText(e)}${ntText}${tc ? `  (${tc})` : ''}`);
+      htmlParts.push(`<li style="margin:3px 0;font-size:14px;color:#333"><strong>${escapeHtml(e.patientName)}</strong>: ${escapeHtml(recapLineText(e))}${ntHtml}${tc ? ` <span style="color:#9ca3af">(${escapeHtml(tc)})</span>` : ''}</li>`);
+    };
+    RECAP_SECTIONS.forEach((sec) => {
+      const b = buckets[sec.key];
+      if (!b || !b.list.length) return;
+      textParts.push(`\n${sec.label} (${b.list.length})`);
+      htmlParts.push(`<h3 style="margin:18px 0 4px;font-size:15px;color:#111">${sec.label} (${b.list.length})</h3>`);
+      if (sec.subs) {
+        sec.subs.forEach(([subKey, subLabel]) => {
+          const sl = b.subs[subKey];
+          if (!sl || !sl.length) return;
+          textParts.push(`  ${subLabel} (${sl.length})`);
+          htmlParts.push(`<div style="margin:8px 0 2px;font-size:13px;font-weight:600;color:#374151">${subLabel} (${sl.length})</div><ul style="margin:0 0 8px;padding-left:18px">`);
+          sl.forEach((e) => pushLine(e, '   '));
+          htmlParts.push('</ul>');
+        });
+      } else {
+        htmlParts.push('<ul style="margin:0 0 8px;padding-left:18px">');
+        b.list.forEach((e) => pushLine(e));
+        htmlParts.push('</ul>');
+      }
     });
     const body = textParts.length ? textParts.join('\n') : '\nNo activity logged today.';
     const text = `End-of-Day Report — ${dateLabel}${body}`;
@@ -1840,7 +1988,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         reachedPatient: contactForm.reachedPatient,
         outcome: contactForm.outcome,
         sentText: contactForm.sentText,
-        notes: contactForm.notes,
+        notes: contactForm.recap || '',
         recap: contactForm.recap || '',
         dispo: isObsScheduling ? 'other' : 'pending',
         logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
@@ -1904,7 +2052,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         reachedPatient: contactForm.reachedPatient,
         outcome: 'Not interested — converted to No Treatment',
         sentText: contactForm.sentText,
-        notes: contactForm.notes,
+        notes: contactForm.recap || '',
         recap: contactForm.recap || '',
         dispo: 'notx',
         logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
@@ -1945,9 +2093,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
 
   const handleMarkStarted = (patient) => {
-    // Pre-populate: SCH patients confirm today; SDS defaults to NPE date
+    // Pre-populate: SCH patients default to their bond date (the day they actually
+    // started) so day-after confirmations attribute the start to the right day;
+    // SDS defaults to NPE date.
     setStartedForm({
-      startDate: patient.SCH ? new Date().toISOString().split('T')[0] : patient.npeDate,
+      startDate: patient.SCH ? (patient.bondDate || new Date().toISOString().split('T')[0]) : patient.npeDate,
       dp: patient.dp || '',
       contractAmount: patient.contractAmount || '',
       BR: patient.BR || false, INV: patient.INV || false,
@@ -1986,6 +2136,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       notes: '',
       recap: startedForm.recap || '',
       dispo: 'start',
+      // Capture where this start came from BEFORE the flags below are cleared, so the
+      // End-of-Day report can separate scheduled-bond starts from pending conversions.
+      startedFrom: patient.SCH ? 'scheduled' : (patient.PEN || patient.MP || patient.fromPending) ? 'pending' : 'sameday',
       noCount: true,
       logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
     };
@@ -2236,9 +2389,106 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setObsRescheduleDate(prev => ({ ...prev, [patient.id]: '' }));
   };
 
+  // Greyfinch localStartTime is 24h "HH:MM:SS" local time → friendly "4:30 PM".
+  const formatApptTime = (t) => {
+    if (!t) return '';
+    const [hStr, m] = t.split(':');
+    let h = parseInt(hStr, 10);
+    if (isNaN(h)) return '';
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12; if (h === 0) h = 12;
+    return `${h}:${m} ${ampm}`;
+  };
+
+  // Map a Greyfinch location name (e.g. "Carollwood") to one of this practice's
+  // location codes. Best-effort: match on a shared prefix, case-insensitive.
+  const mapGreyfinchLocation = (gfName) => {
+    if (!gfName) return '';
+    const g = gfName.toLowerCase().replace(/[^a-z]/g, '');
+    const hit = (locations || []).find(loc => {
+      const l = String(loc).toLowerCase().replace(/[^a-z]/g, '');
+      return l && g && (g.startsWith(l) || l.startsWith(g));
+    });
+    return hit || '';
+  };
+
+  // Single entry point to the greyfinch-sync edge function. Uses the signed-in user's
+  // session token so only authenticated TCs can pull PHI; falls back to the anon JWT
+  // (matches the send-email pattern) if there's no session. Throws on any error.
+  const callGreyfinch = async (payload) => {
+    let token = SUPABASE_ANON;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) token = session.access_token;
+    } catch {}
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/greyfinch-sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
+    return result;
+  };
+
+  // Pull the NPE appointments scheduled for `dateStr`. A monotonic request id ensures a
+  // slow response for an earlier date can't overwrite a newer selection's results.
+  const fetchGreyfinchNewPatients = async (dateStr = greyfinchDate) => {
+    const reqId = ++greyfinchReqRef.current;
+    setGreyfinchError('');
+    setGreyfinchLoading(true);
+    try {
+      const result = await callGreyfinch({ date: dateStr });
+      if (reqId !== greyfinchReqRef.current) return; // superseded by a newer fetch
+      setGreyfinchPatients(Array.isArray(result.patients) ? result.patients : []);
+      setGreyfinchLoaded(true);
+    } catch (e) {
+      if (reqId !== greyfinchReqRef.current) return;
+      console.error('Greyfinch pull failed:', e);
+      setGreyfinchError(e.message || 'Could not reach Greyfinch.');
+    } finally {
+      if (reqId === greyfinchReqRef.current) setGreyfinchLoading(false);
+    }
+  };
+
+  // Testing aid: ask the function which upcoming days have NPEs booked (dates + counts only).
+  const fetchGreyfinchScan = async () => {
+    setGreyfinchError('');
+    setGreyfinchScanning(true);
+    try {
+      const result = await callGreyfinch({ mode: 'scan' });
+      setGreyfinchScan(Array.isArray(result.scan) ? result.scan : []);
+    } catch (e) {
+      console.error('Greyfinch scan failed:', e);
+      setGreyfinchError(e.message || 'Could not reach Greyfinch.');
+    } finally {
+      setGreyfinchScanning(false);
+    }
+  };
+
+  // Copy a Greyfinch record into the Add-NPE form. Only fills the raw identity fields
+  // (name/phone/age/location); the TC still chooses status, obstacle, treatment, etc.
+  const prefillFromGreyfinch = (gp) => {
+    setAddPatientError('');
+    setNewPatientForm(f => ({
+      ...f,
+      name: gp.name || f.name,
+      phone: gp.phone || f.phone,
+      age: (gp.age != null ? String(gp.age) : f.age),
+      location: mapGreyfinchLocation(gp.location) || f.location,
+      npeDate: gp.apptDate || f.npeDate, // the day the exam is scheduled
+    }));
+    // Bring the form into view so the TC sees the fields fill in.
+    if (typeof document !== 'undefined') {
+      const el = document.getElementById('guide-npe-form');
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
   const handleAddPatient = async () => {
     setAddPatientError('');
     if (!newPatientForm.name.trim()) { setAddPatientError('Please enter a patient name.'); return; }
+    if (!newPatientForm.isMedicaid) { setAddPatientError('Please answer "Is this a Medicaid patient?" first.'); return; }
     if (!newPatientForm.status) { setAddPatientError('Please select a status before saving.'); return; }
     const isSCH = newPatientForm.status === 'SCH';
     const isOBS = newPatientForm.status === 'OBS';
@@ -2255,6 +2505,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const needsPayment = !['OBS','DBRETS','NOTX'].includes(newPatientForm.status);
     if (needsPayment && !newPatientForm.dp.trim()) { setAddPatientError('Please enter the Down Payment amount.'); return; }
     if (needsPayment && !newPatientForm.contractAmount.trim()) { setAddPatientError('Please enter the Contract Amount.'); return; }
+    // Add-ons accountability: if this is a start/DBRETS with neither whitening nor retainers,
+    // the TC must say why before saving. First click surfaces the prompt; save proceeds once
+    // a reason is entered. The reason rides along to the End-of-Day report (see combinedRecap).
+    const addonsEligible = ['SDS','ST','DBRETS'].includes(newPatientForm.status);
+    const noAddonsSelected = !newPatientForm['R+'] && !newPatientForm['W+'];
+    if (addonsEligible && noAddonsSelected && !newPatientForm.addonSkipReason.trim()) {
+      setShowAddonSkipPrompt(true);
+      setAddPatientError('No whitening or retainers were added — please note why before saving.');
+      return;
+    }
     // Determine next touch date
     const obsHasAppt = isOBS && !!newPatientForm.obsApptDate;
     const obsHasAnticipated = isOBS && !obsHasAppt && !!newPatientForm.obsAnticipatedDate;
@@ -2288,6 +2548,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const addDispo = (isSameDay || isST) ? 'start' : isSCH ? (addHasDP ? 'start' : 'future') : isPending ? 'pending' : (newPatientForm.status === 'NOTX') ? 'notx' : 'other';
     const schLabel = addHasDP ? 'Scheduled start' : 'Scheduled — future start';
     const addStatusLabel = { SDS: 'Same-day start', ST: 'Start', SCH: schLabel, PEN: 'Pending', MP: 'Medicaid pending', OBS: 'Observation', NOTX: 'No treatment', DBRETS: 'DB / retainers' }[newPatientForm.status] || 'New patient';
+    // The Add Patient form now has a single free-text box (Day Recap). Its text is the
+    // patient's note AND the End-of-Day recap line. When add-ons were skipped, append the
+    // TC's reason so it surfaces on the End-of-Day report too.
+    const addonSkipNote = (addonsEligible && noAddonsSelected && newPatientForm.addonSkipReason.trim())
+      ? `No add-ons — ${newPatientForm.addonSkipReason.trim()}`
+      : '';
+    const combinedRecap = [(newPatientForm.recap || '').trim(), addonSkipNote].filter(Boolean).join(' — ');
     const addRecapEntry = {
       date: new Date().toISOString().split('T')[0],
       time: '',
@@ -2296,7 +2563,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       outcome: `New patient added — ${addStatusLabel}`,
       sentText: false,
       notes: '',
-      recap: newPatientForm.recap || '',
+      recap: combinedRecap,
       dispo: addDispo,
       noCount: true,
       // Record the ACTOR (who added the patient), matching every other handler — not the
@@ -2324,10 +2591,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       MP: newPatientForm.status === 'MP',
       NOTX: newPatientForm.status === 'NOTX',
       DBRETS: newPatientForm.status === 'DBRETS',
-      // Started before hearing back from Medicaid — keeps the start, still tracked in the pipeline
-      medicaidPipeline: (isSameDay || isST) ? !!newPatientForm.medicaidPipeline : false,
+      // Medicaid segmentation — driven by the "Is this a Medicaid patient?" question
+      isMedicaid: newPatientForm.isMedicaid === 'yes',
+      // A Medicaid patient who started before the decision (SDS/ST) keeps the start AND rides
+      // the pipeline for claim tracking. MP-status patients enter the pipeline via MP itself.
+      medicaidPipeline: (newPatientForm.isMedicaid === 'yes' && (isSameDay || isST)),
       obstacle: newPatientForm.obstacle,
-      notes: newPatientForm.notes,
+      notes: combinedRecap,
       bondDate: newPatientForm.bondDate || '',
       obsApptDate: isOBS ? (newPatientForm.obsApptDate || '') : '',
       obsAnticipatedDate: isOBS && !newPatientForm.obsApptDate ? (newPatientForm.obsAnticipatedDate || '') : '',
@@ -2343,13 +2613,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       ? ` — first follow-up: ${new Date(patient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'numeric',day:'numeric'})}`
       : (isSDS(patient) || patient.ST) ? ' — added to Bonus Audit' : patient.DBRETS ? ' — added to Bonus Audit' : '';
     setAddPatientError('');
+    setShowAddonSkipPrompt(false);
     setSaveToast('✅ ' + patient.name + ' saved!' + nextInfo);
     setTimeout(() => setSaveToast(''), 4000);
     setNewPatientForm({
       name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: newPatientForm.location || locations[0] || '', dp: '', contractAmount: '',
       tc: newPatientForm.tc || tcNames[0] || '', status: '',
       BR: false, INV: false, PH1: false, PH2: false, LTD: false,
-      'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: ''
+      'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', addonSkipReason: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false, isMedicaid: ''
     });
     setSearchTerm('');
     setCurrentView('patients');
@@ -2552,8 +2823,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       <nav style={{backgroundColor:'white',borderBottom:'1px solid #e5e7eb'}}>
         <div style={{maxWidth:'1400px',margin:'0 auto',padding:'0 16px',display:'flex',gap:'8px',overflowX:'auto'}}>
           {(currentUser?.role === 'tc'
-            ? ['dashboard', 'followup', 'add', 'patients', 'fillamounts', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
-            : ['dashboard', 'followup', 'add', 'patients', 'fillamounts', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'ontime', 'today', 'metrics', 'settings',
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
+            : currentUser?.role === 'manager'
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
+            : ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'ontime', 'today', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
             <button
@@ -2580,7 +2853,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {view === 'followup' && '🔔 Follow-Up Queue'}
               {view === 'add' && '➕ Add NPE'}
               {view === 'patients' && '👥 All Patients'}
-              {view === 'fillamounts' && '💵 Fill Start $'}
               {view === 'medicaid' && '🏥 Medicaid Pipeline'}
               {view === 'monthly' && '📊 Monthly Reports'}
               {view === 'bonus' && '💰 Bonus Audit'}
@@ -2643,6 +2915,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           })();
           const dash = calculateMetrics(dashPatients, dashStartPatients);
 
+          // Every patient who started in the dashboard period, practice-wide (before
+          // the TC filter). Powers the name-by-name starts list, where a TC can flip
+          // between their own starts and the whole practice's.
+          const periodStartsAll = (dashTimeframe === 'month'
+            ? patients.filter(p => {
+                const sd = effectiveStartDate(p);
+                if (!sd) return false;
+                const d = new Date(sd + 'T12:00:00');
+                return d.getMonth() === dashMonth && d.getFullYear() === dashYear;
+              })
+            : patients.filter(p => effectiveStartDate(p))
+          ).filter(p => isSDS(p) || p.ST);
+          const periodStartsMine = effectiveTCFilter === 'All'
+            ? periodStartsAll
+            : periodStartsAll.filter(p => p.tc === effectiveTCFilter);
+
           // On-time follow-up rate for dashboard
           const dashMonthStr = `${dashYear}-${String(dashMonth + 1).padStart(2, '0')}`;
           const onTimePatients = effectiveTCFilter !== 'All'
@@ -2673,25 +2961,298 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const totalNPEGoal = goals.overallMode ? (mGoal.totalNPE || 0) : (carNPEGoal + apoNPEGoal);
           const totalStartedGoal = goals.overallMode ? (mGoal.totalStarted || 0) : (carStartedGoal + apoStartedGoal);
 
-          // Today's queue counts
+          // Today's queue counts — scoped to the selected TC so the hero/urgency cards
+          // match the (already TC-scoped) metric cards below. For a TC this is always
+          // her own queue; for an admin it follows the TC dropdown.
           const todayStr = new Date().toISOString().split('T')[0];
-          const todayFollowCount = patients.filter(p => {
+          const queueScoped = effectiveTCFilter !== 'All'
+            ? patients.filter(p => p.tc === effectiveTCFilter)
+            : patients;
+          const todayFollowCount = queueScoped.filter(p => {
             if (!p.PEN && !p.MP && !p.OBS) return false;
             if (p.OBS && p.obsApptDate) return false;
             if (!p.nextTouchDate || p.nextTouchDate === '__MAX__') return false;
             return skipWeekend(p.nextTouchDate) <= todayStr;
           }).length;
-          const todayBondCount = patients.filter(p => {
+          const todayBondCount = queueScoped.filter(p => {
             if (!p.SCH || !p.bondDate) return false;
             const cd = getBondCheckDate(p);
             return cd && cd <= todayStr;
           }).length;
-          const todayOBSCount = patients.filter(p => {
+          const todayOBSCount = queueScoped.filter(p => {
             if (!p.OBS || !p.obsApptDate) return false;
             const cd = getOBSCheckDate(p);
             return cd && cd <= todayStr;
           }).length;
           const todayTotal = todayFollowCount + todayBondCount + todayOBSCount;
+
+          // Strictly past-due (before today) across all three queue types — the urgent subset.
+          const overdueCount =
+            queueScoped.filter(p => {
+              if (!p.PEN && !p.MP && !p.OBS) return false;
+              if (p.OBS && p.obsApptDate) return false;
+              if (!p.nextTouchDate || p.nextTouchDate === '__MAX__') return false;
+              return skipWeekend(p.nextTouchDate) < todayStr;
+            }).length +
+            queueScoped.filter(p => {
+              if (!p.SCH || !p.bondDate) return false;
+              const cd = getBondCheckDate(p);
+              return cd && cd < todayStr;
+            }).length +
+            queueScoped.filter(p => {
+              if (!p.OBS || !p.obsApptDate) return false;
+              const cd = getOBSCheckDate(p);
+              return cd && cd < todayStr;
+            }).length;
+
+          // Whether bonus figures should be shown to this viewer (TCs can have bonus disabled).
+          const showBonus = (currentUser?.role !== 'tc' && currentUser?.role !== 'manager') || currentUser?.bonusEnabled;
+
+          // ── Priority call list — the actual patients due/overdue today, most overdue first ──
+          const dayMs = 86400000;
+          const daysBetween = (from, to) => Math.floor((new Date(to + 'T12:00:00') - new Date(from + 'T12:00:00')) / dayMs);
+          const priorityCalls = (() => {
+            const rows = [];
+            queueScoped.forEach(p => {
+              if ((p.PEN || p.MP || p.OBS) && !(p.OBS && p.obsApptDate) && p.nextTouchDate && p.nextTouchDate !== '__MAX__') {
+                const due = skipWeekend(p.nextTouchDate);
+                if (due <= todayStr) rows.push({ p, due, kind: 'followup', label: p.obstacle || (p.MP ? 'Waiting on Medicaid' : 'Follow-up') });
+              }
+              if (p.SCH && p.bondDate) {
+                const cd = getBondCheckDate(p);
+                if (cd && cd <= todayStr) rows.push({ p, due: cd, kind: 'bond', label: 'Bond check-in' });
+              }
+              if (p.OBS && p.obsApptDate) {
+                const cd = getOBSCheckDate(p);
+                if (cd && cd <= todayStr) rows.push({ p, due: cd, kind: 'obs', label: 'OBS appt check-in' });
+              }
+            });
+            rows.forEach(r => { r.daysOver = daysBetween(r.due, todayStr); });
+            rows.sort((a, b) => b.daysOver - a.daysOver);
+            return rows;
+          })();
+
+          // ── Calls logged today by this TC — the "done" side of the progress header.
+          // contact_log dates are UTC (toISOString); noCount and Medicaid-skip entries
+          // never count as contacts, matching the Today's Activity totals.
+          const todayUTCStr = new Date().toISOString().split('T')[0];
+          const callsDoneToday = currentUser?.role === 'tc'
+            ? patients.reduce((n, p) => n + (p.contact_log || []).filter(e =>
+                e.date === todayUTCStr &&
+                (e.logged_by || p.tc) === currentUser.name &&
+                !e.noCount &&
+                e.reachedPatient !== "Waiting on Medicaid — didn't call"
+              ).length, 0)
+            : 0;
+          // Once a call is logged the patient leaves today's queue, so done + remaining
+          // is the day's true workload.
+          const plannedToday = callsDoneToday + todayTotal;
+
+          // ── Follow-Up Queue grouped by obstacle — "who's stuck, and on what" ──
+          // Population is the live follow-up queue (PEN / MP / OBS still needing a call),
+          // NOT the dashboard timeframe: the queue is always "right now". Scoped to the
+          // selected TC so a TC sees only her own patients. Patients whose cadence ran
+          // out (nextTouchDate === '__MAX__') have no due date but are the most stuck of
+          // all, so they stay in the group and sort to the top.
+          const obstacleGroups = (() => {
+            const groups = {};
+            queueScoped.forEach(p => {
+              if (!p.PEN && !p.MP && !p.OBS) return;
+              if (p.OBS && p.obsApptDate) return;          // appointment booked — not stuck
+              const maxedOut = p.nextTouchDate === '__MAX__';
+              if (!maxedOut && !p.nextTouchDate) return;    // no cadence scheduled at all
+              const key = p.obstacle || (p.MP ? 'Waiting to Hear from Medicaid' : 'No obstacle tagged');
+              const due = maxedOut ? null : skipWeekend(p.nextTouchDate);
+              const lastContact = (p.contact_log || []).reduce((mx, e) => (e.date && e.date > mx ? e.date : mx), '');
+              const sinceRef = lastContact || p.npeDate;
+              if (!groups[key]) groups[key] = { obstacle: key, patients: [] };
+              groups[key].patients.push({
+                p,
+                due,
+                maxedOut,
+                daysOver: due ? daysBetween(due, todayStr) : 0,
+                daysStuck: p.npeDate ? daysBetween(p.npeDate, todayStr) : null,
+                daysSinceContact: sinceRef ? daysBetween(sinceRef, todayStr) : null,
+                attempts: p.contactAttempts || 0,
+              });
+            });
+            return Object.values(groups).map(g => {
+              // Most stuck first: cadence exhausted, then most overdue, then longest in pipeline.
+              g.patients.sort((a, b) =>
+                (b.maxedOut ? 1 : 0) - (a.maxedOut ? 1 : 0) ||
+                b.daysOver - a.daysOver ||
+                (b.daysStuck || 0) - (a.daysStuck || 0));
+              g.dueCount     = g.patients.filter(x => x.due && x.due <= todayStr).length;
+              g.overdueCount = g.patients.filter(x => x.daysOver > 0).length;
+              g.maxedCount   = g.patients.filter(x => x.maxedOut).length;
+              g.staleCount   = g.patients.filter(x => x.daysSinceContact !== null && x.daysSinceContact >= 14).length;
+              g.avgDaysStuck = (() => {
+                const vals = g.patients.map(x => x.daysStuck).filter(v => v !== null);
+                return vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : null;
+              })();
+              return g;
+            }).sort((a, b) => b.patients.length - a.patients.length);
+          })();
+          const obstacleQueueTotal = obstacleGroups.reduce((n, g) => n + g.patients.length, 0);
+
+          // ── Call performance for the signed-in TC — her own logged calls only.
+          // Credits whoever logged the call (logged_by), falling back to the patient's TC
+          // for legacy entries written before logged_by existed. Mirrors the admin
+          // dashboard's Call Performance card, scoped to one person.
+          const myCallStats = (() => {
+            if (currentUser?.role !== 'tc') return null;
+            let total = 0, reached = 0, voicemail = 0, noAnswer = 0, voicemailWithText = 0, missed = 0, textWithMissed = 0;
+            const buckets = {};
+            patients.forEach(p => {
+              (p.contact_log || []).forEach(e => {
+                if (!e.reachedPatient) return;
+                if (e.noCount) return;
+                if (e.reachedPatient === "Waiting on Medicaid — didn't call") return;
+                if ((e.logged_by || p.tc) !== currentUser.name) return;
+                if (dashTimeframe === 'month' && !(e.date && e.date.startsWith(dashMonthStr))) return;
+                total++;
+                if (e.reachedPatient === 'Spoke with patient') reached++;
+                else if (e.reachedPatient === 'Left voicemail') { voicemail++; missed++; if (e.sentText) { voicemailWithText++; textWithMissed++; } }
+                else if (e.reachedPatient === 'No answer') { noAnswer++; missed++; if (e.sentText) textWithMissed++; }
+                if (e.time) {
+                  const hr = parseInt(e.time.split(':')[0]);
+                  const bl = hr < 10 ? '8–10 AM' : hr < 12 ? '10–12 PM' : hr < 14 ? '12–2 PM' : hr < 16 ? '2–4 PM' : hr < 18 ? '4–6 PM' : '6+ PM';
+                  if (!buckets[bl]) buckets[bl] = { label: bl, start: hr, total: 0, reached: 0 };
+                  buckets[bl].total++;
+                  if (e.reachedPatient === 'Spoke with patient') buckets[bl].reached++;
+                }
+              });
+            });
+            if (total === 0) return null;
+            return {
+              total, reached, voicemail, noAnswer, voicemailWithText, missed, textWithMissed,
+              reachRate: Math.round((reached / total) * 100),
+              textAfterVoicemailRate: voicemail > 0 ? Math.round((voicemailWithText / voicemail) * 100) : null,
+              textFollowUpRate: missed > 0 ? Math.round((textWithMissed / missed) * 100) : null,
+              // A window needs 3+ calls before its rate means anything.
+              timeBuckets: Object.values(buckets).sort((a, b) => a.start - b.start)
+                .map(b => ({ ...b, rate: b.total >= 3 ? Math.round((b.reached / b.total) * 100) : null })),
+            };
+          })();
+
+          // ── "Who's Stuck" card — the follow-up queue bucketed by obstacle, one row per
+          // group, click a row to see the actual patients in it. Built once here and
+          // rendered by both dashboard layouts below.
+          const obstacleQueueCard = obstacleGroups.length === 0 ? null : (() => {
+            const maxGroup = Math.max(...obstacleGroups.map(g => g.patients.length), 1);
+            const chip = (text, color, bg, border) => (
+              <span key={text} style={{fontSize:'10px',fontWeight:'700',color,backgroundColor:bg,border:`1px solid ${border}`,borderRadius:'20px',padding:'2px 8px',whiteSpace:'nowrap'}}>{text}</span>
+            );
+            return (
+              <div style={{backgroundColor:'white',borderRadius:'12px',padding:'18px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'8px',marginBottom:'14px'}}>
+                  <div>
+                    <h3 style={{fontSize:'15px',fontWeight:'800',color:'#111827',margin:0}}>🚧 Who's Stuck — Follow-Up Queue by Obstacle</h3>
+                    <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>
+                      {obstacleQueueTotal} patient{obstacleQueueTotal !== 1 ? 's' : ''} waiting across {obstacleGroups.length} obstacle{obstacleGroups.length !== 1 ? 's' : ''} · click a group to see who
+                    </div>
+                  </div>
+                  <button onClick={() => setCurrentView('followup')}
+                    style={{background:'none',border:'none',color:'#2563EB',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
+                    View full queue →
+                  </button>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                  {obstacleGroups.map(g => {
+                    const open = dashObstacleOpen === g.obstacle;
+                    return (
+                      <div key={g.obstacle} style={{border:`1px solid ${open ? '#bfdbfe' : '#f3f4f6'}`,borderRadius:'10px',overflow:'hidden',backgroundColor: open ? '#f8fbff' : 'white'}}>
+                        <div
+                          onClick={() => setDashObstacleOpen(open ? null : g.obstacle)}
+                          style={{display:'flex',alignItems:'center',gap:'12px',padding:'11px 14px',cursor:'pointer'}}>
+                          <span style={{fontSize:'11px',color:'#9ca3af',width:'10px',flexShrink:0}}>{open ? '▾' : '▸'}</span>
+                          <div style={{minWidth:0,flex:'1 1 200px'}}>
+                            <div style={{fontSize:'14px',fontWeight:'700',color:'#374151'}}>{g.obstacle}</div>
+                            <div style={{display:'flex',gap:'5px',flexWrap:'wrap',marginTop:'4px'}}>
+                              {g.overdueCount > 0 && chip(`${g.overdueCount} overdue`, '#dc2626', '#fef2f2', '#fca5a5')}
+                              {g.dueCount > 0     && chip(`${g.dueCount} due today`, '#b45309', '#fffbeb', '#fde68a')}
+                              {g.maxedCount > 0   && chip(`${g.maxedCount} out of attempts`, '#7c3aed', '#f5f3ff', '#ddd6fe')}
+                              {g.staleCount > 0   && chip(`${g.staleCount} no contact 14d+`, '#92400e', '#fef3c7', '#fde68a')}
+                              {g.avgDaysStuck !== null && chip(`avg ${g.avgDaysStuck}d since NPE`, '#6b7280', '#f9fafb', '#e5e7eb')}
+                            </div>
+                          </div>
+                          <div style={{flex:'1 1 90px',minWidth:'60px',height:'8px',backgroundColor:'#f3f4f6',borderRadius:'4px',overflow:'hidden'}}>
+                            <div style={{height:'100%',width:`${Math.round((g.patients.length / maxGroup) * 100)}%`,backgroundColor: g.overdueCount > 0 ? '#ef4444' : '#f59e0b',borderRadius:'4px'}} />
+                          </div>
+                          <div style={{fontSize:'20px',fontWeight:'900',color:'#111827',minWidth:'28px',textAlign:'right',flexShrink:0}}>{g.patients.length}</div>
+                        </div>
+                        {open && (
+                          <div style={{borderTop:'1px solid #e0ecfb',padding:'4px 14px 10px 36px'}}>
+                            {g.patients.map((row, i) => (
+                              <div key={row.p.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px',padding:'9px 0',borderBottom: i < g.patients.length - 1 ? '1px solid #eef4fb' : 'none',flexWrap:'wrap'}}>
+                                <div style={{minWidth:0}}>
+                                  <div style={{fontSize:'14px',fontWeight:'700',color:'#111827'}}>{row.p.name}</div>
+                                  <div style={{fontSize:'11px',color:'#6b7280',marginTop:'1px'}}>
+                                    {row.daysStuck !== null ? `${row.daysStuck}d since NPE` : 'No NPE date'}
+                                    {' · '}{row.attempts} attempt{row.attempts !== 1 ? 's' : ''}
+                                    {row.daysSinceContact !== null ? ` · last touch ${row.daysSinceContact}d ago` : ''}
+                                    {effectiveTCFilter === 'All' && row.p.tc ? ` · ${row.p.tc}` : ''}
+                                  </div>
+                                </div>
+                                <div style={{display:'flex',alignItems:'center',gap:'8px',flexShrink:0}}>
+                                  {row.maxedOut
+                                    ? <span style={{fontSize:'11px',fontWeight:'700',color:'#7c3aed',backgroundColor:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:'20px',padding:'3px 10px',whiteSpace:'nowrap'}}>Out of attempts</span>
+                                    : row.daysOver > 0
+                                      ? <span style={{fontSize:'11px',fontWeight:'700',color:'#dc2626',backgroundColor:'#fef2f2',border:'1px solid #fca5a5',borderRadius:'20px',padding:'3px 10px',whiteSpace:'nowrap'}}>{row.daysOver}d overdue</span>
+                                      : row.due === todayStr
+                                        ? <span style={{fontSize:'11px',fontWeight:'700',color:'#b45309',backgroundColor:'#fffbeb',border:'1px solid #fde68a',borderRadius:'20px',padding:'3px 10px',whiteSpace:'nowrap'}}>Due today</span>
+                                        : <span style={{fontSize:'11px',fontWeight:'600',color:'#6b7280',whiteSpace:'nowrap'}}>Due {new Date(row.due + 'T12:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}</span>}
+                                  {row.p.phone && (
+                                    <a href={`tel:${row.p.phone}`} style={{display:'inline-flex',alignItems:'center',gap:'5px',fontSize:'12px',fontWeight:'700',color:'#166534',textDecoration:'none',backgroundColor:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:'6px',padding:'4px 10px',whiteSpace:'nowrap'}}>📞 Call</a>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })();
+
+          // ── Month-over-month trends (same TC scope) for starts, conversion, on-time ──
+          const trends = (() => {
+            if (dashTimeframe !== 'month') return null;
+            const pm = dashMonth === 0 ? 11 : dashMonth - 1;
+            const py = dashMonth === 0 ? dashYear - 1 : dashYear;
+            const inPrev = (dateStr) => {
+              if (!dateStr) return false;
+              const d = new Date(dateStr + 'T12:00:00');
+              return d.getMonth() === pm && d.getFullYear() === py;
+            };
+            let npes = patients.filter(p => inPrev(p.npeDate));
+            let starts = patients.filter(p => inPrev(effectiveStartDate(p)) && (isSDS(p) || p.ST));
+            if (effectiveTCFilter !== 'All') {
+              npes = npes.filter(p => p.tc === effectiveTCFilter);
+              starts = starts.filter(p => p.tc === effectiveTCFilter);
+            }
+            const prevMonthStr = `${py}-${String(pm + 1).padStart(2, '0')}`;
+            let potCount = 0, potTotal = 0;
+            onTimePatients.forEach(p => {
+              (p.contact_log || []).forEach(e => {
+                if (e.date && e.scheduledDate && e.date.startsWith(prevMonthStr)) {
+                  potTotal++;
+                  if (e.date <= e.scheduledDate) potCount++;
+                }
+              });
+            });
+            const prevOnTime = potTotal > 0 ? Math.round((potCount / potTotal) * 100) : null;
+            return {
+              conv: npes.length > 0 ? dash.overallConv - Math.round((starts.length / npes.length) * 100) : null,
+              starts: (dash.started > 0 || starts.length > 0) ? dash.started - starts.length : null,
+              onTime: (prevOnTime !== null && dashOnTimeRate !== null) ? dashOnTimeRate - prevOnTime : null,
+            };
+          })();
+          const trendLabel = (d) => d === null || d === undefined ? null
+            : d > 0 ? `· ▲ +${d} vs last mo` : d < 0 ? `· ▼ ${d} vs last mo` : '· → even vs last mo';
 
           // Formatted date
           const dateLabel = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'});
@@ -2754,10 +3315,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 if (!sd || !sd.startsWith(selMonthStr)) return;
                 const replacing = getReplacingCampaign(p, tcName);
                 if (!replacing) {
-                  if (isSDS(p)) tcBaseBonus += bonusRates.sds;
-                  if ((isSDS(p)||p.ST||p.DBRETS) && p['R+']) tcBaseBonus += bonusRates.ret;
-                  if ((isSDS(p)||p.ST||p.DBRETS) && p['W+']) tcBaseBonus += bonusRates.white;
-                  if ((isSDS(p)||p.ST) && p.PIF) tcBaseBonus += bonusRates.pif;
+                  const tr = ratesForTC(tcName);
+                  if (isSDS(p)) tcBaseBonus += tr.sds;
+                  if ((isSDS(p)||p.ST||p.DBRETS) && p['R+']) tcBaseBonus += tr.ret;
+                  if ((isSDS(p)||p.ST||p.DBRETS) && p['W+']) tcBaseBonus += tr.white;
+                  if ((isSDS(p)||p.ST) && p.PIF) tcBaseBonus += tr.pif;
                 }
               });
               // Campaign bonus for selected month
@@ -2835,7 +3397,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               timeBuckets: Object.values(s.buckets).sort((a,b)=>a.start-b.start)
                 .map(b=>({ ...b, rate: b.total>=3 ? Math.round((b.reached/b.total)*100) : null }))
                 .filter(b=>b.total>0),
-            })).filter(l => l.totalContacts > 0 && isCurrentStaff(l.name));
+            })).filter(l => l.totalContacts > 0 && isCurrentTC(l.name));
 
             // Queue health (always today-based)
             const allDueTodayNew = patients.filter(p => {
@@ -2944,8 +3506,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:'12px'}}>
                   {[
                     {label:'NPEs',       value:nm.total,                           goal:nmNPEGoal>0?nmNPEGoal:null,         color:'#374151', clickable:false},
-                    {label:'Starts',     value:nm.started,                         goal:nmStartedGoal>0?nmStartedGoal:null, color:'#10b981', clickable:false},
-                    {label:'Conversion', value:`${nm.overallConv}%`,               goal:`${nmConvGoal}%`,                   color:'#2563EB', clickable:true},
+                    {label:'Starts',     value:nm.started,                         goal:nmStartedGoal>0?nmStartedGoal:null, color:'#10b981', clickable:true, onClick:() => setShowStartsByLocation({ perLocation: nm.perLocation || [], started: nm.started, label: dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel, tcFilter: 'All', list: selStartPts.filter(p => isSDS(p) || p.ST) })},
+                    {label:'Conversion', value:`${nm.overallConv}%`,               goal:`${nmConvGoal}%`,                   color:'#2563EB', clickable:true, onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts })},
                     {label:'SDS Rate',   value:nm.started>0?`${nm.sdsRate}%`:'—', goal:null,                               color:'#7c3aed', clickable:false},
                   ].map(card => {
                     const numVal  = parseFloat(String(card.value).replace('%',''));
@@ -2953,7 +3515,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const met = numGoal!==null && !isNaN(numVal) && numVal>=numGoal;
                     return (
                       <div key={card.label}
-                        onClick={card.clickable ? () => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts }) : undefined}
+                        onClick={card.clickable ? card.onClick : undefined}
                         onMouseEnter={card.clickable ? e => { e.currentTarget.style.boxShadow='0 4px 12px rgba(0,0,0,0.12)'; e.currentTarget.style.cursor='pointer'; } : undefined}
                         onMouseLeave={card.clickable ? e => { e.currentTarget.style.boxShadow='0 1px 3px rgba(0,0,0,0.08)'; } : undefined}
                         style={{backgroundColor:'white',borderRadius:'10px',padding:'16px 18px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6',transition:'box-shadow 0.15s'}}>
@@ -3063,19 +3625,33 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       {[
                         {count:nm.pending,        label:'Pending',    sub:'In follow-up',      bg:'#fff7ed',border:'#fed7aa',color:'#c2410c'},
                         {count:nm.scheduled,       label:'Scheduled',  sub:'Bond upcoming',     bg:'#eff6ff',border:'#bfdbfe',color:'#1d4ed8'},
-                        {count:nm.observation,     label:'Observation',sub:'6-mo re-check',     bg:'#f0fdf4',border:'#bbf7d0',color:'#15803d'},
+                        {count:nm.observation,     label:'Observation',sub:'6-mo re-check',     bg:'#f0fdf4',border:'#bbf7d0',color:'#15803d',byLocation:nm.obsPerLocation,
+                          onClick: nm.observation > 0 ? () => setShowObsList({ list: selNPEPts.filter(p => p.OBS === true), perLocation: nm.obsPerLocation || [], label: dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel, tcFilter: 'All' }) : null},
                         {count:nm.medicaidPending, label:'Medicaid',   sub:'Awaiting approval', bg:'#fef3c7',border:'#fde68a',color:'#92400e'},
                         {count:nm.noTx,            label:'Declined',   sub:'No treatment',      bg:'#f9fafb',border:'#e5e7eb',color:'#6b7280'},
                       ].map(item => (
-                        <div key={item.label} style={{borderRadius:'10px',padding:'14px 16px',textAlign:'center',backgroundColor:item.bg,border:`1px solid ${item.border}`}}>
+                        <div key={item.label} onClick={item.onClick || undefined}
+                          title={item.onClick ? 'Click to see each patient by name' : undefined}
+                          style={{borderRadius:'10px',padding:'14px 16px',textAlign:'center',backgroundColor:item.bg,border:`1px solid ${item.border}`,cursor:item.onClick?'pointer':'default'}}>
                           <div style={{fontSize:'28px',fontWeight:'800',color:item.color,lineHeight:1,marginBottom:'4px'}}>{item.count}</div>
                           <div style={{fontSize:'12px',fontWeight:'600',color:item.color}}>{item.label}</div>
                           <div style={{fontSize:'10px',color:item.color,opacity:0.7,marginTop:'2px'}}>{item.sub}</div>
+                          {item.byLocation && item.byLocation.length > 0 && (
+                            <div style={{fontSize:'10px',fontWeight:'600',color:item.color,marginTop:'6px',paddingTop:'6px',borderTop:`1px solid ${item.border}`}}>
+                              {item.byLocation.map(x => `${x.loc}: ${x.count}`).join(' · ')}
+                            </div>
+                          )}
+                          {item.onClick && (
+                            <div style={{fontSize:'10px',fontWeight:'700',color:item.color,opacity:0.8,marginTop:'6px'}}>See names →</div>
+                          )}
                         </div>
                       ))}
                     </div>
                   </div>
                 )}
+
+                {/* Who's Stuck — live follow-up queue grouped by obstacle */}
+                {obstacleQueueCard}
 
                 {/* Obstacle Intelligence + Call Performance — side by side */}
                 {(() => {
@@ -3189,7 +3765,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <h2 style={{fontSize:'26px',fontWeight:'800',color:'#202020',margin:0}}>Dashboard Overview</h2>
               </div>
               <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
-                {currentUser?.role === 'admin' ? (
+                {currentUser?.role !== 'tc' ? (
                   <select value={dashTCFilter} onChange={e => setDashTCFilter(e.target.value)}
                     style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',fontWeight:'600',color:'#374151',backgroundColor:'white',cursor:'pointer'}}>
                     <option value="All">All TCs</option>
@@ -3252,7 +3828,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 const endLabel = new Date(bonus.endDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'});
                 const typeLabels = bonus.amtSDS !== undefined
                   ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
-                  : `$${bonus.amount}/start + $${bonusRates.ret} ret + $${bonusRates.white} whitening`;
+                  : (() => { const lr = ratesForTC(bonus.tcFilter !== 'All' ? bonus.tcFilter : myTC); return `$${bonus.amount}/start + $${lr.ret} ret + $${lr.white} whitening`; })();
                 return (
                   <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'16px 20px',display:'flex',alignItems:'center',gap:'20px',flexWrap:'wrap'}}>
                     <div style={{fontSize:'28px'}}>🎯</div>
@@ -3272,7 +3848,44 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               });
             })()}
 
-            {/* ── Today's Calls Hero ── */}
+            {/* ── TC progress header — done vs. to-go, fills as she logs calls ── */}
+            {currentUser?.role === 'tc' && (
+              <div style={{backgroundColor:'white',borderRadius:'12px',padding:'16px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'10px'}}>
+                  <div>
+                    <div style={{fontSize:'18px',fontWeight:'800',color:'#111827'}}>
+                      {new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening'}, {(currentUser?.name || '').split(' ')[0]}
+                    </div>
+                    <div style={{fontSize:'13px',color:'#6b7280',marginTop:'2px'}}>{dateLabel}</div>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    {plannedToday === 0 ? (
+                      <div style={{fontSize:'18px',fontWeight:'800',color:'#15803d'}}>✅ No calls due today</div>
+                    ) : (
+                      <>
+                        <div style={{fontSize:'22px',fontWeight:'800',color:'#111827'}}>
+                          <span style={{color:'#10b981'}}>{callsDoneToday}</span>
+                          <span style={{color:'#9ca3af',fontSize:'15px',fontWeight:'600'}}> of {plannedToday} calls done</span>
+                        </div>
+                        {todayTotal === 0
+                          ? <div style={{fontSize:'12px',color:'#15803d',fontWeight:'700'}}>All caught up — great work 🎉</div>
+                          : overdueCount > 0
+                            ? <div style={{fontSize:'12px',color:'#dc2626',fontWeight:'700'}}>{overdueCount} overdue remaining</div>
+                            : <div style={{fontSize:'12px',color:'#6b7280'}}>{todayTotal} to go</div>}
+                      </>
+                    )}
+                  </div>
+                </div>
+                {plannedToday > 0 && (
+                  <div style={{height:'8px',backgroundColor:'#f3f4f6',borderRadius:'4px',marginTop:'12px',overflow:'hidden'}}>
+                    <div style={{height:'8px',borderRadius:'4px',backgroundColor:'#10b981',width:`${Math.round((callsDoneToday / plannedToday) * 100)}%`,transition:'width 0.4s ease'}}></div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Today's Calls Hero (admin / manager) ── */}
+            {currentUser?.role !== 'tc' && (
             <div style={{background:'linear-gradient(135deg, #1e40af 0%, #1d4ed8 100%)',borderRadius:'12px',padding:'20px 24px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:'16px',flexWrap:'wrap',boxShadow:'0 4px 12px rgba(30,64,175,0.25)'}}>
               <div style={{display:'flex',alignItems:'center',gap:'16px'}}>
                 <div style={{fontSize:'36px'}}>📞</div>
@@ -3294,6 +3907,51 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 Go to Queue →
               </button>
             </div>
+            )}
+
+            {/* ── Call these first — the actual priority patients, on the dashboard ── */}
+            {currentUser?.role === 'tc' && (
+              <div style={{backgroundColor:'white',borderRadius:'12px',padding:'18px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'8px',marginBottom: priorityCalls.length > 0 ? '10px' : '0'}}>
+                  <h3 style={{fontSize:'15px',fontWeight:'800',color:'#111827',margin:0,display:'flex',alignItems:'center',gap:'8px'}}>
+                    🔔 Call These First
+                    {overdueCount > 0 && <span style={{fontSize:'11px',fontWeight:'700',color:'#dc2626',backgroundColor:'#fef2f2',border:'1px solid #fca5a5',borderRadius:'20px',padding:'2px 10px'}}>{overdueCount} overdue</span>}
+                  </h3>
+                  <button onClick={() => setCurrentView('followup')}
+                    style={{background:'none',border:'none',color:'#2563EB',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
+                    View full queue →
+                  </button>
+                </div>
+                {priorityCalls.length === 0 ? (
+                  <div style={{fontSize:'14px',color:'#15803d',fontWeight:'600',padding:'6px 0'}}>✅ You're all caught up — no calls due right now.</div>
+                ) : (
+                  <>
+                    {priorityCalls.slice(0, 5).map((r, i) => (
+                      <div key={r.p.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',padding:'10px 0',borderBottom: i < Math.min(5, priorityCalls.length) - 1 ? '1px solid #f3f4f6' : 'none'}}>
+                        <div style={{minWidth:0}}>
+                          <div style={{fontSize:'15px',fontWeight:'700',color:'#111827',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.p.name}</div>
+                          <div style={{fontSize:'12px',color:'#6b7280'}}>{r.label}{r.p.contactAttempts > 0 ? ` · ${r.p.contactAttempts} attempt${r.p.contactAttempts !== 1 ? 's' : ''}` : ''}</div>
+                        </div>
+                        <div style={{display:'flex',alignItems:'center',gap:'10px',flexShrink:0}}>
+                          {r.daysOver > 0
+                            ? <span style={{fontSize:'11px',fontWeight:'700',color:'#dc2626',backgroundColor:'#fef2f2',border:'1px solid #fca5a5',borderRadius:'20px',padding:'3px 10px',whiteSpace:'nowrap'}}>{r.daysOver}d overdue</span>
+                            : <span style={{fontSize:'11px',fontWeight:'700',color:'#b45309',backgroundColor:'#fffbeb',border:'1px solid #fde68a',borderRadius:'20px',padding:'3px 10px',whiteSpace:'nowrap'}}>Due today</span>}
+                          {r.p.phone && (
+                            <a href={`tel:${r.p.phone}`} style={{display:'inline-flex',alignItems:'center',gap:'5px',fontSize:'13px',fontWeight:'700',color:'#166534',textDecoration:'none',backgroundColor:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:'6px',padding:'5px 12px',whiteSpace:'nowrap'}}>📞 Call</a>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {priorityCalls.length > 5 && (
+                      <div style={{fontSize:'12px',color:'#9ca3af',marginTop:'8px'}}>+ {priorityCalls.length - 5} more due in the queue</div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ── Who's Stuck — live follow-up queue grouped by obstacle ── */}
+            {obstacleQueueCard}
 
             {/* ── Key Metrics with goals ── */}
             <div>
@@ -3302,28 +3960,117 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <HelpTip id="dash-metrics" tip={"NPE = New Patient Exam (anyone who comes in for a consultation).\n\nStarted = Patients who started treatment this month (SDS + ST).\n\nConversion Rate = Started ÷ NPEs. Industry average is 55-65%. Aim for 60%+.\n\nSame-Day Start (SDS) = Patient bonded the same day as their exam. These earn the highest TC bonus.\n\nOn-Time Rate = % of your scheduled follow-up calls made on or before the due date."} />
               </div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))',gap:'14px'}}>
-                {currentUser?.role !== 'tc' && <MetricCard label="Total NPE" value={dash.total}
-                  goal={dashTimeframe === 'month' && totalNPEGoal > 0 ? totalNPEGoal : null}
-                  goalLabel={dashTimeframe === 'month' && totalNPEGoal > 0 && dash.total < totalNPEGoal ? `· ${totalNPEGoal - dash.total} to go` : null} />}
-                {currentUser?.role !== 'tc' && <MetricCard label="Started" value={dash.started} color="#10b981"
+                <MetricCard label={currentUser?.role === 'tc' ? 'My NPEs' : 'Total NPE'} value={dash.total}
+                  goal={currentUser?.role !== 'tc' && dashTimeframe === 'month' && totalNPEGoal > 0 ? totalNPEGoal : null}
+                  goalLabel={currentUser?.role !== 'tc' && dashTimeframe === 'month' && totalNPEGoal > 0 && dash.total < totalNPEGoal ? `· ${totalNPEGoal - dash.total} to go` : null} />
+                <MetricCard label={currentUser?.role === 'tc' ? 'My Starts' : 'Started'} value={dash.started} color="#10b981"
                   goal={dashTimeframe === 'month' && totalStartedGoal > 0 ? totalStartedGoal : null}
-                  goalLabel={dashTimeframe === 'month' && totalStartedGoal > 0 && dash.started < totalStartedGoal ? `· ${totalStartedGoal - dash.started} to go` : null} />}
+                  goalLabel={dashTimeframe === 'month' && totalStartedGoal > 0 && dash.started < totalStartedGoal ? `· ${totalStartedGoal - dash.started} to go` : null}
+                  sub={currentUser?.role === 'tc' && trends ? trendLabel(trends.starts) : null}
+                  onClick={() => setShowStartsByLocation({ perLocation: dash.perLocation || [], started: dash.started, label: dashTimeframe === 'month' ? monthLabel : 'All Time', tcFilter: effectiveTCFilter, list: periodStartsMine, allList: periodStartsAll })} />
                 <MetricCard label="Conversion Rate" value={`${dash.overallConv}%`} color="#2563EB"
                   goal={dashTimeframe === 'month' && convGoal > 0 ? `${convGoal}%` : null}
-                  goalLabel={dashTimeframe === 'month' && dash.overallConv < convGoal ? `· ${convGoal - dash.overallConv} pts behind` : null}
+                  goalLabel={trends && trends.conv !== null
+                    ? trendLabel(trends.conv)
+                    : (dashTimeframe === 'month' && dash.overallConv < convGoal ? `· ${convGoal - dash.overallConv} pts behind` : null)}
                   badge={dashTimeframe === 'month' ? (dash.overallConv >= convGoal ? '✓ Goal Met' : `${dash.overallConv}%`) : null}
                   badgeColor={dashTimeframe === 'month' ? (dash.overallConv >= convGoal ? '#dcfce7' : dash.overallConv >= convGoal * 0.8 ? '#fef3c7' : '#fee2e2') : null}
                   onClick={() => setShowConvBreakdown({ dashPatients, dashStartPatients })} />
-                {currentUser?.role !== 'tc' && <MetricCard label="Same-Day Starts" value={dash.sds} color="#3b82f6"
-                  sub={dash.started > 0 ? `SDS Rate: ${dash.sdsRate}% of starts` : 'No starts yet'} />}
+                <MetricCard label={currentUser?.role === 'tc' ? 'My Same-Day Starts' : 'Same-Day Starts'} value={dash.sds} color="#3b82f6"
+                  sub={dash.started > 0 ? `SDS Rate: ${dash.sdsRate}% of starts` : 'No starts yet'} />
                 {currentUser?.role !== 'tc' && <MetricCard label="Avg Down Payment" value={dash.avgDP > 0 ? `$${dash.avgDP}` : '—'} color="#8b5cf6"
                   sub="Started patients only" />}
                 <MetricCard label="On-Time Follow-Up Rate" value={dashOnTimeRate !== null ? `${dashOnTimeRate}%` : '—'} color={dashOnTimeColor}
                   sub={dashTotalTracked > 0 ? `${dashOnTimeCount}/${dashTotalTracked} contacts on time` : 'No tracked contacts yet'}
                   goal={dashOnTimeRate !== null ? '80%' : null}
-                  goalLabel={dashOnTimeRate !== null && dashOnTimeRate < 80 ? `· ${80 - dashOnTimeRate} pts behind` : null} />
+                  goalLabel={currentUser?.role === 'tc' && trends && trends.onTime !== null
+                    ? trendLabel(trends.onTime)
+                    : (dashOnTimeRate !== null && dashOnTimeRate < 80 ? `· ${80 - dashOnTimeRate} pts behind` : null)} />
+                {currentUser?.role === 'tc' && showBonus && (
+                  <MetricCard label="Bonus Earned" value={`$${dash.totalBonus}`} color="#10b981"
+                    sub={`${dash.sds} SDS · ${dash.retainers} R+ · ${dash.whitening} W+`}
+                    onClick={() => setCurrentView('bonus')} />
+                )}
+                {currentUser?.role === 'manager' && showBonus && (() => {
+                  const thisMonth = new Date().toISOString().slice(0, 7);
+                  const g = goalTierBonusFor(currentUser.name, thisMonth);
+                  const goal = startsGoalForMonth(thisMonth);
+                  const starts = practiceStartsInMonth(thisMonth);
+                  const r = ratesForTC(currentUser.name);
+                  if (!(r.goalBelow > 0 || r.goalMet > 0 || r.goalBeat > 0)) return null;
+                  return (
+                    <MetricCard label="Starts Goal Bonus" value={`$${g ? g.amount : 0}`} color="#10b981"
+                      sub={goal > 0 ? `${starts}/${goal} starts this month` : 'No starts goal set'}
+                      onClick={() => setCurrentView('bonus')} />
+                  );
+                })()}
               </div>
             </div>
+
+            {/* ── Call Performance (TC) — her own logged calls. Admin/manager get the
+                 same numbers inside Obstacle Intelligence further down. ── */}
+            {currentUser?.role === 'tc' && myCallStats && (() => {
+              const s = myCallStats;
+              const rClr = r => r === null ? '#9ca3af' : r >= 50 ? '#10b981' : r >= 30 ? '#d97706' : '#dc2626';
+              const tClr = r => r === null ? '#9ca3af' : r >= 80 ? '#10b981' : r >= 50 ? '#d97706' : '#dc2626';
+              const shown = s.timeBuckets.filter(b => b.total > 0);
+              const bestRate = Math.max(...shown.filter(b => b.rate !== null).map(b => b.rate), -1);
+              return (
+                <div style={{backgroundColor:'white',borderRadius:'12px',padding:'18px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'8px',marginBottom:'14px'}}>
+                    <h3 style={{fontSize:'15px',fontWeight:'800',color:'#111827',margin:0,display:'flex',alignItems:'center',gap:'4px'}}>
+                      📞 My Call Performance
+                      <HelpTip id="tc-call-performance" tip={"Every contact you logged" + (dashTimeframe === 'month' ? " this month" : " all time") + ".\n\nPick-up rate = calls where you actually spoke with the patient ÷ all calls logged. 50%+ is strong.\n\nText after voicemail = how often you followed a voicemail with a text. Aim for 80%+ — the text is what gets the call back.\n\nBest time to call is built from the time each contact was logged. A window needs at least 3 calls before it shows a rate."} />
+                    </h3>
+                    <span style={{fontSize:'12px',color:'#6b7280'}}>{s.total} call{s.total !== 1 ? 's' : ''} logged · {dashTimeframe === 'month' ? monthLabel : 'All time'}</span>
+                  </div>
+                  <div style={{display:'flex',gap:'18px',flexWrap:'wrap',alignItems:'center',marginBottom: shown.length > 0 ? '16px' : '0'}}>
+                    <div style={{display:'flex',alignItems:'baseline',gap:'8px'}}>
+                      <span style={{fontSize:'34px',fontWeight:'900',color:rClr(s.reachRate),lineHeight:1}}>{s.reachRate}%</span>
+                      <span style={{fontSize:'12px',color:'#6b7280'}}>pick-up rate</span>
+                    </div>
+                    <div style={{display:'flex',gap:'18px'}}>
+                      {[{val:s.reached,lbl:'Spoke'},{val:s.voicemail,lbl:'Voicemail'},{val:s.noAnswer,lbl:'No Answer'}].map(({val,lbl}) => (
+                        <div key={lbl} style={{textAlign:'center'}}>
+                          <div style={{fontSize:'17px',fontWeight:'700',color:'#374151'}}>{val}</div>
+                          <div style={{fontSize:'11px',color:'#9ca3af'}}>{lbl}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {s.voicemail > 0 && (
+                      <div style={{display:'flex',alignItems:'center',gap:'8px',padding:'8px 12px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #f3f4f6',marginLeft:'auto'}}>
+                        <span style={{fontSize:'20px',fontWeight:'900',color:tClr(s.textAfterVoicemailRate),lineHeight:1}}>{s.textAfterVoicemailRate}%</span>
+                        <div style={{fontSize:'11px',color:'#6b7280',lineHeight:1.3}}>
+                          <div style={{fontWeight:'700',color:'#374151'}}>💬 Text after voicemail</div>
+                          <div>{s.voicemailWithText} of {s.voicemail} voicemails got a text</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {shown.length > 0 && (
+                    <div style={{paddingTop:'14px',borderTop:'1px solid #f3f4f6'}}>
+                      <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px'}}>🕐 Best Time to Call</div>
+                      <div style={{display:'flex',flexDirection:'column',gap:'7px'}}>
+                        {shown.map(b => (
+                          <div key={b.label} style={{display:'flex',alignItems:'center',gap:'10px'}}>
+                            <div style={{fontSize:'12px',fontWeight:'600',color:'#374151',minWidth:'72px'}}>{b.label}</div>
+                            <div style={{flex:1,height:'8px',backgroundColor:'#f3f4f6',borderRadius:'4px',overflow:'hidden'}}>
+                              <div style={{width: b.rate !== null ? `${b.rate}%` : '0%',height:'100%',backgroundColor:rClr(b.rate),borderRadius:'4px'}} />
+                            </div>
+                            <div style={{fontSize:'13px',fontWeight:'700',color:rClr(b.rate),minWidth:'36px',textAlign:'right'}}>{b.rate !== null ? `${b.rate}%` : '—'}</div>
+                            <div style={{fontSize:'11px',color:'#9ca3af',minWidth:'62px'}}>{b.reached}/{b.total} calls</div>
+                            {b.rate !== null && b.rate === bestRate && (
+                              <span style={{fontSize:'10px',fontWeight:'700',padding:'2px 6px',backgroundColor:'#dcfce7',color:'#166534',borderRadius:'4px'}}>BEST</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'8px'}}>Needs 3+ calls in a window to show a rate. Time is captured automatically when you log a contact.</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* ── Pipeline — single clean section ── */}
             {currentUser?.role !== 'tc' && dash.total > 0 && (
@@ -3333,14 +4080,25 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   {[
                     {count: dash.pending,         label:'Pending',     sub:'In follow-up',      bg:'#fff7ed', border:'#fed7aa', color:'#c2410c'},
                     {count: dash.scheduled,        label:'Scheduled',   sub:'Bond upcoming',     bg:'#eff6ff', border:'#bfdbfe', color:'#1d4ed8'},
-                    {count: dash.observation,      label:'Observation', sub:'6-mo re-check',     bg:'#f0fdf4', border:'#bbf7d0', color:'#15803d'},
+                    {count: dash.observation,      label:'Observation', sub:'6-mo re-check',     bg:'#f0fdf4', border:'#bbf7d0', color:'#15803d', byLocation: dash.obsPerLocation,
+                      onClick: dash.observation > 0 ? () => setShowObsList({ list: dashPatients.filter(p => p.OBS === true), perLocation: dash.obsPerLocation || [], label: dashTimeframe === 'month' ? monthLabel : 'All Time', tcFilter: effectiveTCFilter }) : null},
                     {count: dash.medicaidPending,  label:'Medicaid',    sub:'Awaiting approval', bg:'#fef3c7', border:'#fde68a', color:'#92400e'},
                     {count: dash.noTx,             label:'Declined',    sub:'No treatment',      bg:'#f9fafb', border:'#e5e7eb', color:'#6b7280'},
                   ].map(item => (
-                    <div key={item.label} style={{flex:'1',minWidth:'90px',borderRadius:'8px',padding:'14px 16px',textAlign:'center',backgroundColor:item.bg,border:`1px solid ${item.border}`}}>
+                    <div key={item.label} onClick={item.onClick || undefined}
+                      title={item.onClick ? 'Click to see each patient by name' : undefined}
+                      style={{flex:'1',minWidth:'90px',borderRadius:'8px',padding:'14px 16px',textAlign:'center',backgroundColor:item.bg,border:`1px solid ${item.border}`,cursor:item.onClick?'pointer':'default'}}>
                       <div style={{fontSize:'28px',fontWeight:'800',color:item.color,lineHeight:1,marginBottom:'4px'}}>{item.count}</div>
                       <div style={{fontSize:'11px',fontWeight:'600',color:item.color}}>{item.label}</div>
                       <div style={{fontSize:'10px',color:item.color,opacity:0.7,marginTop:'2px'}}>{item.sub}</div>
+                      {item.byLocation && item.byLocation.length > 0 && (
+                        <div style={{fontSize:'10px',fontWeight:'600',color:item.color,marginTop:'6px',paddingTop:'6px',borderTop:`1px solid ${item.border}`}}>
+                          {item.byLocation.map(x => `${x.loc}: ${x.count}`).join(' · ')}
+                        </div>
+                      )}
+                      {item.onClick && (
+                        <div style={{fontSize:'10px',fontWeight:'700',color:item.color,opacity:0.8,marginTop:'6px'}}>See names →</div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -3387,8 +4145,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               );
             })()}
 
-            {/* ── Obstacle Intelligence ── */}
-            {(() => {
+            {/* ── Obstacle Intelligence — admin/manager only ── */}
+            {currentUser?.role !== 'tc' && (() => {
               // Respect TC filter but NOT timeframe — win rates need all-time data to be meaningful
               const tcPts = effectiveTCFilter === 'All' ? patients : patients.filter(p => p.tc === effectiveTCFilter);
               const activePending = tcPts.filter(p => p.PEN || p.MP);
@@ -3402,20 +4160,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 const rate    = total > 0 ? Math.round((started / total) * 100) : null;
                 return { obs, total, started, active, rate };
               }).filter(r => r.total > 0).sort((a, b) => b.total - a.total);
-
-              // Needs a decision: max attempts reached OR 45+ days stuck on same obstacle
-              const todayDate = new Date(today + 'T12:00:00');
-              const needsDecision = activePending
-                .filter(p => {
-                  const daysIn = Math.floor((todayDate - new Date(p.npeDate + 'T12:00:00')) / 86400000);
-                  return p.nextTouchDate === '__MAX__' || daysIn >= 45;
-                })
-                .sort((a, b) => {
-                  const aMax = a.nextTouchDate === '__MAX__';
-                  const bMax = b.nextTouchDate === '__MAX__';
-                  if (aMax !== bMax) return aMax ? -1 : 1;
-                  return new Date(a.npeDate) - new Date(b.npeDate);
-                });
 
               // Reach rate from all contact log entries
               let totalContacts = 0, reachedCount = 0, voicemailCount = 0, noAnswerCount = 0;
@@ -3448,8 +4192,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     )}
                   </div>
 
-                  {/* Win Rate + Needs Decision — side by side */}
-                  <div style={{display:'grid',gridTemplateColumns: needsDecision.length > 0 ? '1fr 1fr' : '1fr',gap:'24px',marginBottom: totalContacts > 0 ? '20px' : '0'}}>
+                  {/* Win Rate by Obstacle */}
+                  <div style={{display:'grid',gridTemplateColumns:'1fr',gap:'24px',marginBottom: totalContacts > 0 ? '20px' : '0'}}>
 
                     {/* Win Rate by Obstacle */}
                     <div>
@@ -3481,37 +4225,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       )}
                     </div>
 
-                    {/* Needs a Decision */}
-                    {needsDecision.length > 0 && (
-                      <div>
-                        <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'12px'}}>
-                          Needs a Decision — Cadence Isn't Working
-                        </div>
-                        <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
-                          {needsDecision.slice(0, 6).map(p => {
-                            const daysIn = Math.floor((todayDate - new Date(p.npeDate + 'T12:00:00')) / 86400000);
-                            const isMax  = p.nextTouchDate === '__MAX__';
-                            return (
-                              <div key={p.id} style={{padding:'9px 12px',borderRadius:'7px',backgroundColor: isMax ? '#fef2f2' : '#fffbeb',border:`1px solid ${isMax ? '#fca5a5' : '#fde68a'}`,display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px'}}>
-                                <div>
-                                  <div style={{fontSize:'13px',fontWeight:'700',color:'#374151'}}>{p.name}</div>
-                                  <div style={{fontSize:'11px',color:'#6b7280',marginTop:'1px'}}>
-                                    {p.obstacle || <span style={{fontStyle:'italic',color:'#9ca3af'}}>No obstacle tagged</span>}
-                                  </div>
-                                </div>
-                                <div style={{display:'flex',gap:'5px',alignItems:'center',flexShrink:0}}>
-                                  {isMax && <span style={{fontSize:'10px',fontWeight:'700',padding:'2px 5px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px'}}>MAX</span>}
-                                  <span style={{fontSize:'13px',fontWeight:'800',color: daysIn >= 60 ? '#dc2626' : '#d97706'}}>{daysIn}d</span>
-                                </div>
-                              </div>
-                            );
-                          })}
-                          {needsDecision.length > 6 && (
-                            <div style={{fontSize:'12px',color:'#9ca3af',textAlign:'center',paddingTop:'4px'}}>+{needsDecision.length - 6} more — see All Patients</div>
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </div>
 
                   {/* Reach Rate Strip */}
@@ -3679,7 +4392,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
             )}
 
-            {/* ── Bonus mini-card (replaces full ledger) ── */}
+            {/* ── Bonus mini-card (admin/manager) — TCs get it as a metric card instead ── */}
+            {showBonus && currentUser?.role !== 'tc' && (
             <div style={{backgroundColor:'white',borderRadius:'10px',padding:'18px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'16px'}}>
               <div>
                 <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'2px'}}>
@@ -3706,6 +4420,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 Full Bonus Audit →
               </button>
             </div>
+            )}
 
           </div>
           );
@@ -3760,18 +4475,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const tcOnTimeRate = tcOTTotal > 0 ? Math.round((tcOT / tcOTTotal) * 100) : null;
 
             let tcBonus = 0;
+            const tcRates = ratesForTC(tcName);
             patients.forEach(p => {
               if (p.tc !== tcName) return;
               const sd = effectiveStartDate(p);
               if (!sd || !sd.startsWith(monthStr)) return;
               if (isSDS(p)) {
-                tcBonus += bonusRates.sds;
+                tcBonus += tcRates.sds;
               }
               if (isSDS(p) || p.DBRETS) {
-                if (p['R+']) tcBonus += bonusRates.ret;
-                if (p['W+']) tcBonus += bonusRates.white;
+                if (p['R+']) tcBonus += tcRates.ret;
+                if (p['W+']) tcBonus += tcRates.white;
               }
-              if ((isSDS(p) || p.ST) && p.PIF) tcBonus += bonusRates.pif;
+              if ((isSDS(p) || p.ST) && p.PIF) tcBonus += tcRates.pif;
             });
 
             const tcDueToday = patients.filter(p => {
@@ -4110,7 +4826,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 const endLabel = new Date(bonus.endDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'});
                 const typeLabels = bonus.amtSDS !== undefined
                   ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
-                  : `$${bonus.amount}/start + $${bonusRates.ret} ret + $${bonusRates.white} whitening`;
+                  : (() => { const lr = ratesForTC(bonus.tcFilter !== 'All' ? bonus.tcFilter : myTC); return `$${bonus.amount}/start + $${lr.ret} ret + $${lr.white} whitening`; })();
                 return (
                   <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'16px 20px',display:'flex',alignItems:'center',gap:'20px',flexWrap:'wrap'}}>
                     <div style={{fontSize:'28px'}}>🎯</div>
@@ -4827,15 +5543,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         )
                       )}
 
-                      <div style={{marginBottom:'12px'}}>
-                        <label style={{fontSize:'13px',fontWeight:'500',display:'block',marginBottom:'4px'}}>Notes (optional)</label>
-                        <textarea
-                          value={contactForm.notes}
-                          onChange={(e) => setContactForm({...contactForm, notes: e.target.value})}
-                          style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
-                          rows={2}
-                        />
-                      </div>
+                      {/* Single Notes box above (renderRecapField). No separate Notes textarea —
+                          its text is mirrored into the log's notes field on save. */}
 
                       {/* Next touch date — hidden for OBS (always auto +6mo) and when scheduling without DP (bond date drives it) */}
                       {!patient.OBS && contactForm.scheduleType !== 'no_dp' && (
@@ -5020,6 +5729,92 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         {currentView === 'add' && (
           <div style={{maxWidth:'700px'}}>
             <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>Add New Patient</h2>
+
+            {/* Greyfinch NPE pull — New-Patient-Exam appointments scheduled for the chosen
+                day, one per line. Clicking "Use" copies name/phone/age/location/date into the
+                form below so the TC doesn't retype. Status/obstacle/treatment stay with the TC. */}
+            <div style={{backgroundColor:'white',padding:'16px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'16px'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',marginBottom:'10px',flexWrap:'wrap'}}>
+                <div style={{display:'flex',alignItems:'baseline',gap:'8px'}}>
+                  <span style={{fontSize:'15px',fontWeight:'700',color:'#202020'}}>Scheduled NPEs</span>
+                  <span style={{fontSize:'12px',color:'#6b7280'}}>from Greyfinch</span>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                  <input type="date" value={greyfinchDate}
+                    onChange={e => { setGreyfinchDate(e.target.value); fetchGreyfinchNewPatients(e.target.value); }}
+                    style={{padding:'6px 8px',fontSize:'13px',border:'1px solid #d1d5db',borderRadius:'6px'}} />
+                  <button type="button" onClick={() => fetchGreyfinchNewPatients(greyfinchDate)} disabled={greyfinchLoading}
+                    style={{padding:'6px 12px',fontSize:'13px',fontWeight:'600',color:'#374151',backgroundColor:'#f3f4f6',border:'1px solid #d1d5db',borderRadius:'6px',cursor:greyfinchLoading?'default':'pointer'}}>
+                    {greyfinchLoading ? 'Loading…' : '↻ Refresh'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Testing aid: find which upcoming days actually have NPEs booked. */}
+              <div style={{marginBottom:'10px'}}>
+                <button type="button" onClick={fetchGreyfinchScan} disabled={greyfinchScanning}
+                  style={{padding:'5px 10px',fontSize:'12px',fontWeight:'600',color:'#4A90E2',backgroundColor:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:'6px',cursor:greyfinchScanning?'default':'pointer'}}>
+                  {greyfinchScanning ? 'Scanning…' : '🔎 Find days with NPEs (next 3 weeks)'}
+                </button>
+                {greyfinchScan && greyfinchScan.length === 0 && (
+                  <span style={{marginLeft:'10px',fontSize:'12px',color:'#6b7280'}}>No NPEs booked in the next 3 weeks.</span>
+                )}
+                {greyfinchScan && greyfinchScan.length > 0 && (
+                  <div style={{display:'flex',flexWrap:'wrap',gap:'6px',marginTop:'8px'}}>
+                    {greyfinchScan.map(s => (
+                      <button key={s.date} type="button"
+                        onClick={() => { setGreyfinchDate(s.date); fetchGreyfinchNewPatients(s.date); }}
+                        style={{padding:'5px 9px',fontSize:'12px',fontWeight:'600',color:'#374151',backgroundColor: s.date===greyfinchDate ? '#dbeafe' : '#f3f4f6',border:`1px solid ${s.date===greyfinchDate ? '#93c5fd' : '#d1d5db'}`,borderRadius:'6px',cursor:'pointer'}}>
+                        {s.date} · {s.count}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {greyfinchError && (
+                <div style={{padding:'10px 12px',backgroundColor:'#fef2f2',border:'1px solid #fecaca',borderRadius:'6px',fontSize:'13px',color:'#991b1b'}}>
+                  {greyfinchError}
+                </div>
+              )}
+
+              {!greyfinchError && greyfinchLoading && greyfinchPatients.length === 0 && (
+                <div style={{padding:'10px 4px',fontSize:'13px',color:'#6b7280'}}>Loading scheduled NPEs from Greyfinch…</div>
+              )}
+
+              {!greyfinchError && !greyfinchLoading && greyfinchLoaded && greyfinchPatients.length === 0 && (
+                <div style={{padding:'10px 4px',fontSize:'13px',color:'#6b7280'}}>No New Patient Exams scheduled for this day.</div>
+              )}
+
+              {greyfinchPatients.length > 0 && (
+                <>
+                  {greyfinchPatients.length > 4 && (
+                    <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'6px'}}>
+                      {greyfinchPatients.length} scheduled — scroll list to see all
+                    </div>
+                  )}
+                  <div style={{display:'flex',flexDirection:'column',gap:'5px',maxHeight:'244px',overflowY:'auto',paddingRight:greyfinchPatients.length > 4 ? '4px' : 0}}>
+                    {greyfinchPatients.map(gp => (
+                      <div key={gp.apptId || gp.greyfinchId} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:'6px'}}>
+                        <div style={{minWidth:0}}>
+                          <div style={{fontSize:'13px',fontWeight:'600',color:'#111827',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                            {gp.apptTime ? <span style={{color:'#4A90E2',fontWeight:'700'}}>{formatApptTime(gp.apptTime)} </span> : null}{gp.name}{gp.isVirtual ? <span style={{fontSize:'11px',fontWeight:'600',color:'#7c3aed',marginLeft:'6px'}}>Virtual</span> : null}
+                          </div>
+                          <div style={{fontSize:'11px',color:'#6b7280',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                            {[gp.location, gp.age != null ? `age ${gp.age}` : null, gp.phone].filter(Boolean).join(' · ') || 'No contact info on file'}
+                          </div>
+                        </div>
+                        <button type="button" onClick={() => prefillFromGreyfinch(gp)}
+                          style={{flexShrink:0,padding:'6px 14px',fontSize:'13px',fontWeight:'700',color:'white',backgroundColor:'#4A90E2',border:'none',borderRadius:'6px',cursor:'pointer'}}>
+                          Use →
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
             <div id="guide-npe-form" style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}}>
 
               {/* Name + Phone */}
@@ -5080,19 +5875,56 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               </div>
 
+              {/* Gating question — a Medicaid patient runs a different intake path. Everything
+                  below stays hidden until this is answered, then the Status options branch on it. */}
+              <div style={{marginBottom:'16px',padding:'14px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
+                <label style={{display:'block',fontSize:'14px',fontWeight:'600',marginBottom:'8px'}}>Is this a Medicaid patient? *</label>
+                <div style={{display:'flex',gap:'10px'}}>
+                  {[
+                    {v:'yes', label:'Yes — Medicaid patient', bg:'#fef3c7', border:'#fbbf24', color:'#92400e'},
+                    {v:'no',  label:'No',                     bg:'#eff6ff', border:'#3b82f6', color:'#1e40af'},
+                  ].map(o => (
+                    <button key={o.v} type="button"
+                      onClick={() => {
+                        if (newPatientForm.isMedicaid === o.v) return; // don't wipe progress on re-click
+                        // Switching the answer changes which statuses are valid — reset everything below.
+                        setNewPatientForm({...newPatientForm, isMedicaid: o.v,
+                          status:'', obstacle:'', dp:'', contractAmount:'', bondDate:'',
+                          BR:false, INV:false, PH1:false, PH2:false, LTD:false,
+                          'R+':false, 'W+':false, PIF:false,
+                          medicaidPipeline:false, nextTouchOverride:'', obsApptDate:'', obsAnticipatedDate:'', recap:''});
+                      }}
+                      style={{flex:1,padding:'12px',borderRadius:'8px',fontWeight:'700',fontSize:'14px',cursor:'pointer',
+                        backgroundColor: newPatientForm.isMedicaid===o.v ? o.bg : 'white',
+                        border:`2px solid ${newPatientForm.isMedicaid===o.v ? o.border : '#d1d5db'}`,
+                        color: newPatientForm.isMedicaid===o.v ? o.color : '#374151'}}>
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {newPatientForm.isMedicaid && (<>
+
               {/* Status */}
               <div style={{marginBottom:'16px'}}>
                 <label style={{display:'flex',alignItems:'center',fontSize:'14px',fontWeight:'500',marginBottom:'8px'}}>Status * <HelpTip id="add-status" tip={"SDS — Same Day Start: Patient started treatment today. Earns a bonus.\n\nSCH — Scheduled: Bond appointment is booked. System will check in the day after.\n\nPEN — Pending: Patient needs more time. System auto-schedules follow-up calls based on their obstacle.\n\nOBS — Observation: Not ready for treatment yet. Auto-schedules a 6-month re-check.\n\nMP — Medicaid Pending: Waiting on Medicaid approval. 14-day follow-up auto-schedules.\n\nNOTX — No Treatment: Patient declined. Removed from all queues.\n\nDB/RETS — Finishing: Debond, retainer, or whitening visit. Eligible for R+ and W+ bonuses.\n\nNote: ST (Started on a different day) isn't a starting status — patients reach it by converting from Pending through their follow-ups."} /></label>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(2, 1fr)',gap:'8px'}}>
-                  {[
+                  {(newPatientForm.isMedicaid === 'yes' ? [
+                    {value:'SDS', label:'SDS - Started before hearing back from Medicaid', sub:'Counts as a start + bonus · tracked in the Medicaid Pipeline', bg:'#fef3c7', border:'#fbbf24', subColor:'#92400e'},
+                    {value:'MP',  label:'MP - Medicaid Pending', sub:'14-day follow-up auto-schedules', bg:'#fef3c7', border:'#fbbf24', subColor:'#92400e'},
+                    {value:'SCH', label:'SCH - Scheduled',       sub:'Enter bond date below', subColor:'#1e40af'},
+                    {value:'OBS', label:'OBS - Observation',     sub:'6-month re-check auto-schedules', subColor:'#6b7280'},
+                    {value:'NOTX',label:'NOTX - No TX',          sub:'Will not appear in any queue', subColor:'#991b1b'},
+                    {value:'DBRETS', label:'DB/RETS - Finishing',  sub:'Debond / retainer / whitening visit', bg:'#f0fdf4', border:'#86efac', subColor:'#166534'},
+                  ] : [
                     {value:'SDS', label:'SDS - Same Day Start', sub:'Started today', bg:'#fef3c7', border:'#fbbf24', subColor:'#92400e'},
                     {value:'SCH', label:'SCH - Scheduled',       sub:'Enter bond date below', subColor:'#1e40af'},
                     {value:'PEN', label:'PEN - Pending',         sub:'Follow-up auto-schedules by obstacle', subColor:'#6b7280'},
                     {value:'OBS', label:'OBS - Observation',     sub:'6-month re-check auto-schedules', subColor:'#6b7280'},
-                    {value:'MP',  label:'MP - Medicaid Pending', sub:'14-day follow-up auto-schedules', subColor:'#6b7280'},
                     {value:'NOTX',label:'NOTX - No TX',          sub:'Will not appear in any queue', subColor:'#991b1b'},
                     {value:'DBRETS', label:'DB/RETS - Finishing',  sub:'Debond / retainer / whitening visit', bg:'#f0fdf4', border:'#86efac', subColor:'#166534'},
-                  ].map(opt => (
+                  ]).map(opt => (
                     <label key={opt.value} style={{display:'flex',alignItems:'center',cursor:'pointer',padding:'10px',
                       backgroundColor: newPatientForm.status===opt.value ? (opt.bg||'#eff6ff') : 'white',
                       border: `2px solid ${newPatientForm.status===opt.value ? (opt.border||'#3b82f6') : '#d1d5db'}`,
@@ -5114,21 +5946,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   ))}
                 </div>
               </div>
-
-              {/* SDS/ST: option to also track a Medicaid claim in the pipeline (started before hearing back) */}
-              {['SDS','ST'].includes(newPatientForm.status) && (
-                <div style={{marginBottom:'16px',padding:'12px 14px',backgroundColor:'#fef3c7',borderRadius:'8px',border:'1px solid #fde68a'}}>
-                  <label style={{display:'flex',alignItems:'flex-start',gap:'10px',cursor:'pointer'}}>
-                    <input type="checkbox" checked={!!newPatientForm.medicaidPipeline}
-                      onChange={e => setNewPatientForm({...newPatientForm, medicaidPipeline: e.target.checked})}
-                      style={{marginTop:'2px'}} />
-                    <div>
-                      <div style={{fontSize:'13px',fontWeight:'700',color:'#92400e'}}>🏥 Started before hearing back from Medicaid</div>
-                      <div style={{fontSize:'11px',color:'#92400e',marginTop:'2px'}}>Counts as a start (and bonus). Also adds them to the Medicaid Pipeline so the claim gets submitted and tracked.</div>
-                    </div>
-                  </label>
-                </div>
-              )}
 
               {/* Down Payment + Contract Amount — appear once a status is chosen; required for every status except OBS / DB-RETS / No TX */}
               {newPatientForm.status && !['OBS','DBRETS','NOTX'].includes(newPatientForm.status) && (
@@ -5224,9 +6041,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <div style={{padding:'12px 16px',backgroundColor:'#dcfce7',borderRadius:'8px',border:'1px solid #86efac',marginBottom:'16px',display:'flex',alignItems:'center',gap:'12px'}}>
                     <span style={{fontSize:'22px'}}>✅</span>
                     <div>
-                      <div style={{fontWeight:'700',color:'#166534'}}>Same Day Start — will appear in Bonus Audit</div>
+                      <div style={{fontWeight:'700',color:'#166534'}}>{newPatientForm.isMedicaid === 'yes' ? 'Started before Medicaid decision — counts as a start' : 'Same Day Start — will appear in Bonus Audit'}</div>
                       <div style={{fontSize:'12px',color:'#166534',marginTop:'2px'}}>
-                        Adds to Bonus Audit{newPatientForm['R+'] ? ' + Retainers' : ''}{newPatientForm['W+'] ? ' + Whitening' : ''}
+                        Adds to Bonus Audit{newPatientForm['R+'] ? ' + Retainers' : ''}{newPatientForm['W+'] ? ' + Whitening' : ''}{newPatientForm.isMedicaid === 'yes' ? ' · tracked in the Medicaid Pipeline' : ''}
                       </div>
                     </div>
                   </div>
@@ -5406,16 +6223,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               )}
 
-              {/* Notes */}
-              <div style={{marginBottom:'16px'}}>
-                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Notes</label>
-                <textarea placeholder="Enter any notes about this patient..."
-                  value={newPatientForm.notes}
-                  onChange={e => setNewPatientForm({...newPatientForm, notes: e.target.value})}
-                  style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}} rows={3} />
-              </div>
-
-              {/* Day Recap — only once a status is chosen so the draft is meaningful */}
+              {/* Single Notes box (renderRecapField). No separate Notes box — whatever the TC
+                  types here becomes both the patient note and the End-of-Day line.
+                  Only shown once a status is chosen so the suggested draft is meaningful. */}
               {newPatientForm.status && renderRecapField(
                 newPatientForm.recap,
                 (val) => setNewPatientForm({...newPatientForm, recap: val}),
@@ -5446,6 +6256,25 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               )}
 
+              {/* Add-ons accountability prompt — appears after the TC clicks Add Patient on a
+                  start/DBRETS with no whitening or retainers selected. Hides automatically once
+                  an add-on is checked. The reason flows onto the End-of-Day report. */}
+              {showAddonSkipPrompt
+                && ['SDS','ST','DBRETS'].includes(newPatientForm.status)
+                && !newPatientForm['R+'] && !newPatientForm['W+'] && (
+                <div style={{marginBottom:'16px',padding:'14px',backgroundColor:'#fffbeb',borderRadius:'8px',border:'1px solid #fde68a'}}>
+                  <label style={{display:'block',fontSize:'14px',fontWeight:'600',marginBottom:'6px',color:'#92400e'}}>
+                    ⚠️ No whitening or retainers were added — why not? *
+                  </label>
+                  <textarea placeholder="e.g. Patient declined whitening; retainers included in a bundle elsewhere; not a candidate…"
+                    value={newPatientForm.addonSkipReason}
+                    onChange={e => setNewPatientForm({...newPatientForm, addonSkipReason: e.target.value})}
+                    autoFocus
+                    style={{width:'100%',padding:'8px',border:'1px solid #fcd34d',borderRadius:'4px',fontSize:'14px'}} rows={2} />
+                  <div style={{fontSize:'12px',color:'#92400e',marginTop:'4px'}}>This note is included on the End-of-Day report.</div>
+                </div>
+              )}
+
               {addPatientError && (
                 <div style={{marginBottom:'12px',padding:'10px 14px',backgroundColor:'#fef2f2',border:'1px solid #fca5a5',borderRadius:'6px',color:'#dc2626',fontSize:'14px',fontWeight:'500'}}>
                   ⚠️ {addPatientError}
@@ -5454,114 +6283,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <button onClick={handleAddPatient} style={{padding:'12px 32px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer',fontSize:'16px'}}>
                 ➕ Add Patient
               </button>
+
+              </>)}
             </div>
           </div>
         )}
-
-        {/* FILL START $ — catch-up entry of missing DP / contract for a month's starts */}
-        {currentView === 'fillamounts' && (() => {
-          const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-          // A "start" matches the dashboard definition: SDS or ST, by effective start date
-          const monthStarts = patients.filter(p => {
-            if (!(isSDS(p) || p.ST)) return false;
-            const sd = effectiveStartDate(p);
-            if (!sd) return false;
-            const d = new Date(sd + 'T12:00:00');
-            return d.getMonth() === fillMonth && d.getFullYear() === fillYear;
-          });
-          const isMissing = (p) => !((p.dp || '').toString().trim()) || !((p.contractAmount || '').toString().trim());
-          // Show rows that are missing amounts, OR were just saved this session (kept visible with ✓)
-          const rows = monthStarts
-            .filter(p => isMissing(p) || fillSavedIds.includes(p.id))
-            .sort((a, b) => (effectiveStartDate(a) || '').localeCompare(effectiveStartDate(b) || ''));
-          const missingCount = monthStarts.filter(isMissing).length;
-          const goMonth = (dir) => {
-            let m = fillMonth + dir, y = fillYear;
-            if (m < 0) { m = 11; y -= 1; }
-            if (m > 11) { m = 0; y += 1; }
-            setFillMonth(m); setFillYear(y);
-          };
-          return (
-            <div>
-              <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'4px'}}>💵 Fill Start Amounts</h2>
-              <p style={{fontSize:'14px',color:'#6b7280',marginBottom:'20px',maxWidth:'720px'}}>
-                Every start for the selected month that's missing a down payment or contract amount. Type both values and hit Save — the start drops off the list once it's complete.
-              </p>
-
-              {/* Month selector */}
-              <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'20px'}}>
-                <button onClick={() => goMonth(-1)} style={{padding:'8px 14px',border:'1px solid #d1d5db',borderRadius:'8px',background:'white',cursor:'pointer',fontSize:'16px',fontWeight:'600'}}>←</button>
-                <div style={{fontSize:'18px',fontWeight:'700',color:'#202020',minWidth:'180px',textAlign:'center'}}>{MONTH_NAMES[fillMonth]} {fillYear}</div>
-                <button onClick={() => goMonth(1)} style={{padding:'8px 14px',border:'1px solid #d1d5db',borderRadius:'8px',background:'white',cursor:'pointer',fontSize:'16px',fontWeight:'600'}}>→</button>
-                <div style={{marginLeft:'12px',fontSize:'14px',fontWeight:'600',padding:'6px 14px',borderRadius:'20px',
-                  backgroundColor: missingCount > 0 ? '#fef3c7' : '#dcfce7', color: missingCount > 0 ? '#92400e' : '#166534'}}>
-                  {missingCount > 0 ? `${missingCount} start${missingCount === 1 ? '' : 's'} still missing amounts` : '✓ All starts complete'}
-                </div>
-              </div>
-
-              {rows.length === 0 ? (
-                <div style={{backgroundColor:'white',padding:'40px',borderRadius:'12px',textAlign:'center',color:'#6b7280',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}}>
-                  {monthStarts.length === 0
-                    ? `No starts recorded for ${MONTH_NAMES[fillMonth]} ${fillYear}.`
-                    : `🎉 Every start in ${MONTH_NAMES[fillMonth]} ${fillYear} has a down payment and contract amount.`}
-                </div>
-              ) : (
-                <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
-                  {rows.map(p => {
-                    const draft = fillDrafts[p.id] || {};
-                    const dpVal = draft.dp !== undefined ? draft.dp : (p.dp || '');
-                    const caVal = draft.contractAmount !== undefined ? draft.contractAmount : (p.contractAmount || '');
-                    const saved = fillSavedIds.includes(p.id) && !isMissing(p);
-                    const canSave = dpVal.toString().trim() && caVal.toString().trim();
-                    const setDraft = (field, val) => setFillDrafts(prev => ({ ...prev, [p.id]: { ...prev[p.id], [field]: val } }));
-                    return (
-                      <div key={p.id} style={{backgroundColor:'white',padding:'14px 16px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',
-                        display:'grid',gridTemplateColumns:'1.4fr 1fr 1fr 110px',gap:'14px',alignItems:'end',
-                        border: saved ? '1px solid #86efac' : '1px solid transparent'}}>
-                        <div>
-                          <div style={{fontSize:'16px',fontWeight:'700',color:'#202020'}}>{p.name}</div>
-                          <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>
-                            {isSDS(p) ? 'SDS' : 'Started'} • 🦷 {(() => { const sd = effectiveStartDate(p); return sd ? new Date(sd + 'T12:00:00').toLocaleDateString() : '—'; })()}
-                            {p.location ? ` • 📍 ${p.location}` : ''}{p.tc ? ` • 👤 ${p.tc}` : ''}
-                          </div>
-                        </div>
-                        <div>
-                          <label style={{display:'block',fontSize:'12px',fontWeight:'600',color:'#374151',marginBottom:'3px'}}>Down Payment</label>
-                          <input type="text" placeholder="$500" value={dpVal}
-                            onChange={e => setDraft('dp', e.target.value)}
-                            style={{width:'100%',padding:'8px',border:`1px solid ${dpVal.toString().trim() ? '#d1d5db' : '#f87171'}`,borderRadius:'6px',boxSizing:'border-box'}} />
-                        </div>
-                        <div>
-                          <label style={{display:'block',fontSize:'12px',fontWeight:'600',color:'#374151',marginBottom:'3px'}}>Contract Amount</label>
-                          <input type="text" placeholder="$5000" value={caVal}
-                            onChange={e => setDraft('contractAmount', e.target.value)}
-                            style={{width:'100%',padding:'8px',border:`1px solid ${caVal.toString().trim() ? '#d1d5db' : '#f87171'}`,borderRadius:'6px',boxSizing:'border-box'}} />
-                        </div>
-                        <button
-                          disabled={!canSave}
-                          onClick={async () => {
-                            const updated = { ...p, dp: dpVal, contractAmount: caVal };
-                            setPatients(patients.map(x => x.id === p.id ? updated : x));
-                            await dbUpsert(updated);
-                            setFillSavedIds(prev => prev.includes(p.id) ? prev : [...prev, p.id]);
-                            setFillDrafts(prev => { const n = { ...prev }; delete n[p.id]; return n; });
-                            setSaveToast(`✅ ${p.name} updated`);
-                            setTimeout(() => setSaveToast(''), 2500);
-                          }}
-                          style={{padding:'9px 12px',border:'none',borderRadius:'6px',fontWeight:'600',whiteSpace:'nowrap',
-                            cursor: canSave ? 'pointer' : 'not-allowed',
-                            backgroundColor: saved ? '#dcfce7' : canSave ? '#10b981' : '#e5e7eb',
-                            color: saved ? '#166534' : canSave ? 'white' : '#9ca3af'}}>
-                          {saved ? '✓ Saved' : '💾 Save'}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })()}
 
         {/* ALL PATIENTS */}
         {currentView === 'patients' && (
@@ -5911,7 +6637,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <div style={{padding:'12px',backgroundColor:'#dcfce7',borderRadius:'8px',textAlign:'center'}}><div style={{fontSize:'24px',fontWeight:'bold',color:'#166534'}}>{m.started - m.sds}</div><div style={{fontSize:'11px',color:'#166534'}}>Started (non-SDS)</div></div>
                     <div style={{padding:'12px',backgroundColor:'#fed7aa',borderRadius:'8px',textAlign:'center'}}><div style={{fontSize:'24px',fontWeight:'bold',color:'#9a3412'}}>{m.pending}</div><div style={{fontSize:'11px',color:'#9a3412'}}>Pending</div></div>
                     <div style={{padding:'12px',backgroundColor:'#dbeafe',borderRadius:'8px',textAlign:'center'}}><div style={{fontSize:'24px',fontWeight:'bold',color:'#1e40af'}}>{m.scheduled}</div><div style={{fontSize:'11px',color:'#1e40af'}}>Scheduled</div></div>
-                    <div style={{padding:'12px',backgroundColor:'#F5F5F5',borderRadius:'8px',textAlign:'center'}}><div style={{fontSize:'24px',fontWeight:'bold',color:'#374151'}}>{m.observation}</div><div style={{fontSize:'11px',color:'#374151'}}>Observation</div></div>
+                    <div
+                      onClick={m.observation > 0 ? () => setShowObsList({ list: filteredPts.filter(p => p.OBS === true), perLocation: m.obsPerLocation || [], label: new Date(selectedMonthYear, selectedMonthIdx, 1).toLocaleDateString('en-US',{month:'long',year:'numeric'}), tcFilter: monthlyTCFilter }) : undefined}
+                      title={m.observation > 0 ? 'Click to see each patient by name' : undefined}
+                      style={{padding:'12px',backgroundColor:'#F5F5F5',borderRadius:'8px',textAlign:'center',cursor:m.observation>0?'pointer':'default'}}><div style={{fontSize:'24px',fontWeight:'bold',color:'#374151'}}>{m.observation}</div><div style={{fontSize:'11px',color:'#374151'}}>Observation{m.observation > 0 && <span style={{color:'#6b7280'}}> →</span>}</div></div>
                     <div style={{padding:'12px',backgroundColor:'#fef3c7',borderRadius:'8px',textAlign:'center'}}><div style={{fontSize:'24px',fontWeight:'bold',color:'#92400e'}}>{m.medicaidPending}</div><div style={{fontSize:'11px',color:'#92400e'}}>Medicaid Pending</div></div>
                     <div style={{padding:'12px',backgroundColor:'#fee2e2',borderRadius:'8px',textAlign:'center'}}><div style={{fontSize:'24px',fontWeight:'bold',color:'#991b1b'}}>{m.noTx}</div><div style={{fontSize:'11px',color:'#991b1b'}}>No TX</div></div>
                   </div>
@@ -6436,8 +7165,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         })()}
 
         {/* BONUS AUDIT */}
-        {currentView === 'bonus' && (currentUser?.role !== 'tc' || currentUser?.bonusEnabled) && (() => {
-          const bonusTCFilter = currentUser?.role === 'tc' ? currentUser.name : (bonusTCSelect !== 'All' ? bonusTCSelect : null);
+        {currentView === 'bonus' && ((currentUser?.role !== 'tc' && currentUser?.role !== 'manager') || currentUser?.bonusEnabled) && (() => {
+          const bonusTCFilter = (currentUser?.role === 'tc' || currentUser?.role === 'manager') ? currentUser.name : (bonusTCSelect !== 'All' ? bonusTCSelect : null);
+          // Practice-goal tier payouts for the selected month, one per user with
+          // tier amounts configured (respects the per-user bonus on/off switch)
+          const monthGoalBonuses = (bonusTCFilter ? [bonusTCFilter] : bonusEligibleNames)
+            .filter(n => { const u = tcUsers.find(x => x.name === n); return !u || u.bonus_enabled !== false; })
+            .map(n => ({ name: n, ...(goalTierBonusFor(n, bonusMonthFilter) || {}) }))
+            .filter(x => x.amount > 0);
           return (
           <div>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'24px',flexWrap:'wrap',gap:'12px'}}>
@@ -6454,11 +7189,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   value={bonusMonthFilter}
                   onChange={e => setBonusMonthFilter(e.target.value)}
                   style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px'}} />
-                {currentUser?.role === 'admin' && tcNames.length > 1 && (
+                {currentUser?.role === 'admin' && bonusEligibleNames.length > 1 && (
                   <select value={bonusTCSelect} onChange={e => setBonusTCSelect(e.target.value)}
                     style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',color:'#374151',backgroundColor:'white'}}>
-                    <option value="All">All TCs</option>
-                    {tcNames.map(tc => <option key={tc} value={tc}>{tc}</option>)}
+                    <option value="All">Everyone</option>
+                    {bonusEligibleNames.map(n => {
+                      const u = tcUsers.find(x => x.name === n);
+                      return <option key={n} value={n}>{n}{u?.role === 'manager' ? ' (Office Manager)' : ''}</option>;
+                    })}
                   </select>
                 )}
               </div>
@@ -6479,12 +7217,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     if (!sd || !sd.startsWith(bonusMonthFilter)) return;
                     const replacing = getReplacingCampaign(p, bonusTCFilter || null);
                     if (replacing) return;
-                    if (isSDS(p)) { mbSDS++; mbTotal += bonusRates.sds; }
-                    if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) { mbRet++; mbTotal += bonusRates.ret; }
-                    if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) { mbWhite++; mbTotal += bonusRates.white; }
-                    if ((isSDS(p) || p.ST) && p.PIF) { mbPIF++; mbTotal += bonusRates.pif; }
+                    const pr = ratesForTC(p.tc);
+                    if (isSDS(p)) { mbSDS++; mbTotal += pr.sds; }
+                    if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) { mbRet++; mbTotal += pr.ret; }
+                    if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) { mbWhite++; mbTotal += pr.white; }
+                    if ((isSDS(p) || p.ST) && p.PIF) { mbPIF++; mbTotal += pr.pif; }
                   });
                   const monthLabel = new Date(bonusMonthFilter + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                  const mbGoalTotal = monthGoalBonuses.reduce((s, g) => s + g.amount, 0);
                   return (
                     <div style={{backgroundColor:'#dcfce7',border:'1px solid #86efac',padding:'16px',borderRadius:'8px',marginBottom:'24px'}}>
                       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -6493,8 +7233,85 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           <div style={{fontSize:'14px',color:'#166534',marginTop:'4px'}}>
                             {mbSDS} SDS • {mbRet} Retainers • {mbWhite} Whitening • {mbPIF} PIF
                           </div>
+                          {monthGoalBonuses.length > 0 && (
+                            <div style={{fontSize:'13px',color:'#166534',marginTop:'4px'}}>
+                              🎯 {monthGoalBonuses.map(g => `${bonusTCFilter ? '' : g.name + ': '}${g.label} — $${g.amount}`).join(' · ')}
+                            </div>
+                          )}
                         </div>
-                        <div style={{fontSize:'36px',fontWeight:'bold',color:'#10b981'}}>${mbTotal}</div>
+                        <div style={{fontSize:'36px',fontWeight:'bold',color:'#10b981'}}>${mbTotal + mbGoalTotal}</div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Starts goal bonus tracker — shown to whoever the tiers belong to */}
+                {bonusTCFilter && (() => {
+                  const r = ratesForTC(bonusTCFilter);
+                  if (!(r.goalBelow > 0 || r.goalMet > 0 || r.goalBeat > 0)) return null;
+                  const goal = startsGoalForMonth(bonusMonthFilter);
+                  const monthLabel = new Date(bonusMonthFilter + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                  if (goal <= 0) return (
+                    <div style={{backgroundColor:'#fffbeb',border:'1px solid #fcd34d',padding:'16px',borderRadius:'8px',marginBottom:'24px',fontSize:'13px',color:'#92400e'}}>
+                      🎯 Your starts goal bonus is set up, but no starts goal exists for {monthLabel} yet.
+                    </div>
+                  );
+                  const starts = practiceStartsInMonth(bonusMonthFilter);
+                  const belowRange = Number(r.goalBelowRange) > 0 ? Number(r.goalBelowRange) : 5;
+                  const beatMin = Number(r.goalBeatMin) > 0 ? Number(r.goalBeatMin) : 1;
+                  const diff = starts - goal;
+                  const tiers = [
+                    { key:'below', range:`${Math.max(0, goal - belowRange)}–${goal - 1} starts`, note:`up to ${belowRange} under goal`, amt: r.goalBelow || 0, hit: diff < 0 && diff >= -belowRange },
+                    { key:'met',   range: beatMin > 1 ? `${goal}–${goal + beatMin - 1} starts` : `${goal} starts`, note:'at goal', amt: r.goalMet || 0, hit: diff >= 0 && diff < beatMin },
+                    { key:'beat',  range:`${goal + beatMin}+ starts`, note:`${beatMin}+ over goal`, amt: r.goalBeat || 0, hit: diff >= beatMin },
+                  ];
+                  const earning = tiers.find(t => t.hit);
+                  // Next tier up, and how many more starts it takes to get there
+                  const nextTier = !earning ? tiers[0] : tiers[tiers.indexOf(earning) + 1];
+                  const startsToNext = !earning
+                    ? (goal - belowRange) - starts
+                    : nextTier ? (earning.key === 'below' ? goal - starts : goal + beatMin - starts) : 0;
+                  const pct = goal > 0 ? Math.min(100, Math.round((starts / goal) * 100)) : 0;
+                  return (
+                    <div style={{backgroundColor:'white',border:'2px solid #a5f3fc',padding:'20px',borderRadius:'10px',marginBottom:'24px'}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:'12px',marginBottom:'14px'}}>
+                        <div>
+                          <div style={{fontSize:'16px',fontWeight:'800',color:'#0e7490'}}>🎯 Starts Goal Bonus — {monthLabel}</div>
+                          <div style={{fontSize:'13px',color:'#6b7280',marginTop:'3px'}}>
+                            Practice starts: <strong style={{color:'#374151'}}>{starts}</strong> of <strong style={{color:'#374151'}}>{goal}</strong> goal
+                            {diff < 0 ? ` · ${-diff} more to reach goal` : diff === 0 ? ' · goal reached!' : ` · ${diff} over goal`}
+                          </div>
+                        </div>
+                        <div style={{textAlign:'right'}}>
+                          <div style={{fontSize:'32px',fontWeight:'900',color: earning ? '#10b981' : '#d1d5db',lineHeight:1}}>${earning ? earning.amt : 0}</div>
+                          <div style={{fontSize:'11px',color:'#6b7280',marginTop:'2px'}}>{earning ? 'on pace to earn' : 'no tier reached yet'}</div>
+                        </div>
+                      </div>
+                      <div style={{height:'10px',backgroundColor:'#f1f5f9',borderRadius:'5px',overflow:'hidden',marginBottom:'14px'}}>
+                        <div style={{height:'100%',width:`${pct}%`,backgroundColor: diff >= 0 ? '#10b981' : '#22d3ee',transition:'width 0.3s'}} />
+                      </div>
+                      <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                        {tiers.map(t => (
+                          <div key={t.key} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'12px',padding:'8px 12px',borderRadius:'6px',
+                            backgroundColor: t.hit ? '#ecfeff' : '#f9fafb', border:`1px solid ${t.hit ? '#a5f3fc' : '#f1f5f9'}`}}>
+                            <div>
+                              <span style={{fontSize:'13px',fontWeight: t.hit ? '700' : '600', color: t.hit ? '#0e7490' : '#6b7280'}}>{t.range}</span>
+                              <span style={{fontSize:'11px',color:'#9ca3af',marginLeft:'8px'}}>{t.note}</span>
+                            </div>
+                            <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+                              {t.hit && <span style={{fontSize:'10px',fontWeight:'700',color:'#0e7490',backgroundColor:'#cffafe',padding:'2px 8px',borderRadius:'10px'}}>YOU'RE HERE</span>}
+                              <span style={{fontSize:'15px',fontWeight:'800',color: t.hit ? '#10b981' : '#9ca3af'}}>${t.amt}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {nextTier && startsToNext > 0 && (
+                        <div style={{fontSize:'12px',color:'#0e7490',marginTop:'10px',fontWeight:'600'}}>
+                          {startsToNext} more start{startsToNext !== 1 ? 's' : ''} to reach ${nextTier.amt}
+                        </div>
+                      )}
+                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'8px'}}>
+                        Based on the whole practice's starts for the month. Paid once, at month end.
                       </div>
                     </div>
                   );
@@ -6585,7 +7402,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 if (p['R+'] && bonus.amtRetainer > 0) parts.push(`R+ $${bonus.amtRetainer}`);
                                 if (p['W+'] && bonus.amtWhitening > 0) parts.push(`W+ $${bonus.amtWhitening}`);
                                 return parts.join(', ');
-                              })() : [p['R+'] && `R+ $${bonusRates.ret}`, p['W+'] && `W+ $${bonusRates.white}`].filter(Boolean).join(', ');
+                              })() : [p['R+'] && `R+ $${ratesForTC(p.tc).ret}`, p['W+'] && `W+ $${ratesForTC(p.tc).white}`].filter(Boolean).join(', ');
                               return (
                                 <tr key={p.id} style={{borderBottom:'1px solid #fde68a'}}>
                                   <td style={{padding:'6px 10px',color:'#374151'}}>{p.name}</td>
@@ -6613,17 +7430,25 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const tc = p.tc || 'Unassigned';
                     const tcUser = tcUsers.find(u => u.name === tc);
                     if (tcUser && tcUser.bonus_enabled === false) return;
-                    if (!perTC[tc]) perTC[tc] = { sds: 0, ret: 0, white: 0, pif: 0, total: 0 };
+                    if (!perTC[tc]) perTC[tc] = { sds: 0, ret: 0, white: 0, pif: 0, sdsAmt: 0, retAmt: 0, whiteAmt: 0, pifAmt: 0, total: 0 };
                     const replacing = getReplacingCampaign(p, null);
+                    const tr = ratesForTC(p.tc);
                     if (isSDS(p) && !replacing) {
                       perTC[tc].sds++;
-                      perTC[tc].total += bonusRates.sds;
+                      perTC[tc].sdsAmt += tr.sds;
+                      perTC[tc].total += tr.sds;
                     }
                     if ((isSDS(p) || p.ST || p.DBRETS) && !replacing) {
-                      if (p['R+']) { perTC[tc].ret++; perTC[tc].total += bonusRates.ret; }
-                      if (p['W+']) { perTC[tc].white++; perTC[tc].total += bonusRates.white; }
+                      if (p['R+']) { perTC[tc].ret++; perTC[tc].retAmt += tr.ret; perTC[tc].total += tr.ret; }
+                      if (p['W+']) { perTC[tc].white++; perTC[tc].whiteAmt += tr.white; perTC[tc].total += tr.white; }
                     }
-                    if ((isSDS(p) || p.ST) && p.PIF && !replacing) { perTC[tc].pif++; perTC[tc].total += bonusRates.pif; }
+                    if ((isSDS(p) || p.ST) && p.PIF && !replacing) { perTC[tc].pif++; perTC[tc].pifAmt += tr.pif; perTC[tc].total += tr.pif; }
+                  });
+                  // Goal-tier payouts — users can earn these even with no patient rows
+                  monthGoalBonuses.forEach(g => {
+                    if (!perTC[g.name]) perTC[g.name] = { sds: 0, ret: 0, white: 0, pif: 0, sdsAmt: 0, retAmt: 0, whiteAmt: 0, pifAmt: 0, total: 0 };
+                    perTC[g.name].goal = g;
+                    perTC[g.name].total += g.amount;
                   });
                   const entries = Object.entries(perTC).filter(([, v]) => v.total > 0);
                   if (entries.length === 0) return null;
@@ -6639,10 +7464,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             <div style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'2px'}}>{tcName}</div>
                             <div style={{fontSize:'36px',fontWeight:'900',color:'#10b981',lineHeight:1,marginBottom:'12px'}}>${d.total}</div>
                             <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
-                              {d.sds > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.sds} SDS — <strong style={{color:'#374151'}}>${d.sds * bonusRates.sds}</strong></div>}
-                              {d.ret > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.ret} Retainer{d.ret > 1 ? 's' : ''} — <strong style={{color:'#374151'}}>${d.ret * bonusRates.ret}</strong></div>}
-                              {d.white > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.white} Whitening — <strong style={{color:'#374151'}}>${d.white * bonusRates.white}</strong></div>}
-                              {d.pif > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.pif} PIF — <strong style={{color:'#374151'}}>${d.pif * bonusRates.pif}</strong></div>}
+                              {d.sds > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.sds} SDS — <strong style={{color:'#374151'}}>${d.sdsAmt}</strong></div>}
+                              {d.ret > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.ret} Retainer{d.ret > 1 ? 's' : ''} — <strong style={{color:'#374151'}}>${d.retAmt}</strong></div>}
+                              {d.white > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.white} Whitening — <strong style={{color:'#374151'}}>${d.whiteAmt}</strong></div>}
+                              {d.pif > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.pif} PIF — <strong style={{color:'#374151'}}>${d.pifAmt}</strong></div>}
+                              {d.goal && <div style={{fontSize:'12px',color:'#6b7280'}}>• 🎯 {d.goal.label} — <strong style={{color:'#374151'}}>${d.goal.amount}</strong></div>}
                             </div>
                           </div>
                         ))}
@@ -6673,17 +7499,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         patients.forEach(p => {
                           const sd = effectiveStartDate(p);
                           const replacing = getReplacingCampaign(p, bonusTCFilter || null);
+                          const pr = ratesForTC(p.tc);
                           if (isSDS(p) && !replacing) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'SDS', amount: bonusRates.sds});
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'SDS', amount: pr.sds});
                           }
                           if ((isSDS(p) || p.ST || p.DBRETS) && p['R+'] && !replacing) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Retainer', amount: bonusRates.ret});
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Retainer', amount: pr.ret});
                           }
                           if ((isSDS(p) || p.ST || p.DBRETS) && p['W+'] && !replacing) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Whitening', amount: bonusRates.white});
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Whitening', amount: pr.white});
                           }
                           if (started.find(s => s.id === p.id) && p.PIF && !replacing) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'PIF', amount: bonusRates.pif});
+                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'PIF', amount: pr.pif});
                           }
                         });
                         // Filter by month and TC
@@ -6694,19 +7521,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           const u = tcUsers.find(u => u.name === item.tc);
                           return !u || u.bonus_enabled !== false;
                         });
+                        // Goal-tier payouts land at month end (already filtered per user)
+                        monthGoalBonuses.forEach(g => {
+                          bonusItems.push({date: `${bonusMonthFilter}-31`, patient: g.label, tc: g.name, type: 'Goal', amount: g.amount, isGoal: true});
+                        });
                         bonusItems.sort((a,b) => a.date.localeCompare(b.date));
                         const filteredTotal = bonusItems.reduce((sum, item) => sum + item.amount, 0);
 
                         return bonusItems.map((item, i) => (
                           <tr key={i} style={{borderBottom:'1px solid #F5F5F5'}}>
-                            <td style={{padding:'12px',fontSize:'14px'}}>{new Date(item.date + 'T12:00:00').toLocaleDateString()}</td>
+                            <td style={{padding:'12px',fontSize:'14px'}}>{item.isGoal ? 'Month end' : new Date(item.date + 'T12:00:00').toLocaleDateString()}</td>
                             <td style={{padding:'12px',fontSize:'14px'}}>{item.patient}</td>
                             {!bonusTCFilter && <td style={{padding:'12px',fontSize:'14px',color:'#6b7280'}}>{item.tc || '—'}</td>}
                             <td style={{padding:'12px',fontSize:'14px'}}>
                               <span style={{
                                 padding:'2px 8px',
-                                backgroundColor: item.type==='SDS' ? '#fef3c7' : item.type==='Retainer' ? '#dbeafe' : item.type==='Whitening' ? '#e0e7ff' : '#fce7f3',
-                                color: item.type==='SDS' ? '#92400e' : item.type==='Retainer' ? '#1e40af' : item.type==='Whitening' ? '#3730a3' : '#831843',
+                                backgroundColor: item.type==='SDS' ? '#fef3c7' : item.type==='Retainer' ? '#dbeafe' : item.type==='Whitening' ? '#e0e7ff' : item.type==='Goal' ? '#dcfce7' : '#fce7f3',
+                                color: item.type==='SDS' ? '#92400e' : item.type==='Retainer' ? '#1e40af' : item.type==='Whitening' ? '#3730a3' : item.type==='Goal' ? '#166534' : '#831843',
                                 borderRadius:'4px',fontSize:'12px',fontWeight:'600'
                               }}>
                                 {item.type}
@@ -6734,12 +7565,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             if (!sd || !sd.startsWith(bonusMonthFilter)) return sum;
                             const replacing = getReplacingCampaign(p, bonusTCFilter || null);
                             if (replacing) return sum;
-                            if (isSDS(p)) amt += bonusRates.sds;
-                            if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) amt += bonusRates.ret;
-                            if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) amt += bonusRates.white;
-                            if ((isSDS(p) || p.ST) && p.PIF) amt += bonusRates.pif;
+                            const pr = ratesForTC(p.tc);
+                            if (isSDS(p)) amt += pr.sds;
+                            if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) amt += pr.ret;
+                            if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) amt += pr.white;
+                            if ((isSDS(p) || p.ST) && p.PIF) amt += pr.pif;
                             return sum + amt;
-                          }, 0)}
+                          }, 0) + monthGoalBonuses.reduce((s, g) => s + g.amount, 0)}
                         </td>
                       </tr>
                     </tbody>
@@ -6756,13 +7588,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         if (!sd || !sd.startsWith(bonusMonthFilter)) return;
                         const replacing = getReplacingCampaign(p, null);
                         if (!replacing) {
-                          if (isSDS(p)) rows.push([sd, p.name, p.tc||'', 'SDS', bonusRates.sds]);
-                          if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) rows.push([sd, p.name, p.tc||'', 'Retainer', bonusRates.ret]);
-                          if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) rows.push([sd, p.name, p.tc||'', 'Whitening', bonusRates.white]);
-                          if (started.find(s=>s.id===p.id) && p.PIF) rows.push([sd, p.name, p.tc||'', 'PIF', bonusRates.pif]);
+                          const pr = ratesForTC(p.tc);
+                          if (isSDS(p)) rows.push([sd, p.name, p.tc||'', 'SDS', pr.sds]);
+                          if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) rows.push([sd, p.name, p.tc||'', 'Retainer', pr.ret]);
+                          if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) rows.push([sd, p.name, p.tc||'', 'Whitening', pr.white]);
+                          if (started.find(s=>s.id===p.id) && p.PIF) rows.push([sd, p.name, p.tc||'', 'PIF', pr.pif]);
                         } else {
                           if (isSDS(p) || p.ST) rows.push([sd, p.name, p.tc||'', `Goal Bonus (${replacing.name})`, popupBonusEarnings(p, replacing, null)]);
                         }
+                      });
+                      monthGoalBonuses.forEach(g => {
+                        rows.push([bonusMonthFilter, g.label, g.name, 'Practice Goal Bonus', g.amount]);
                       });
                       const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
                       const a = document.createElement('a');
@@ -6793,14 +7629,30 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           // Collect all contact log entries with a scheduledDate in the selected month
           let entries = [];
           patients.forEach(p => {
-            if (ontimeTCFilter !== 'All' && p.tc !== ontimeTCFilter) return;
+            // Chronological rank of each countable contact for this patient, so the
+            // audit can show "this was contact #3". noCount and Medicaid-skip entries
+            // never count as contacts (same rule as every other counter).
+            const countable = (p.contact_log || [])
+              .filter(e => !e.noCount && e.reachedPatient !== "Waiting on Medicaid — didn't call")
+              .slice()
+              .sort((a, b) => ((a.date || '') + (a.time || '')).localeCompare((b.date || '') + (b.time || '')));
             (p.contact_log || []).forEach(entry => {
               if (!entry.scheduledDate || !entry.date) return;
               if (!entry.date.startsWith(ontimeMonthFilter)) return;
-              if (isTC && p.tc !== tcName) return;
+              // Credit whoever actually LOGGED the call (fall back to the patient's
+              // assigned TC only for older entries with no logged_by) — the same rule
+              // the dashboard accountability box uses. This keeps a patient reassignment
+              // from dumping a former TC's on-time history onto the new owner, and drops
+              // out anyone who isn't a current TC (removed staff, or a former TC now in
+              // an admin/manager role).
+              const logger = entry.logged_by || p.tc;
+              if (!isCurrentTC(logger)) return;
+              if (ontimeTCFilter !== 'All' && logger !== ontimeTCFilter) return;
+              if (isTC && logger !== tcName) return;
               entries.push({
                 patient: p.name,
-                tc: p.tc,
+                tc: logger,
+                contactNum: countable.indexOf(entry) + 1, // 0 = entry itself isn't a countable contact
                 scheduledDate: entry.scheduledDate,
                 actualDate: entry.date,
                 onTime: entry.date <= entry.scheduledDate,
@@ -6888,6 +7740,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <thead>
                       <tr style={{borderBottom:'2px solid #e5e7eb',backgroundColor:'#f9fafb'}}>
                         <th style={{textAlign:'left',padding:'12px',fontSize:'13px',fontWeight:'600',color:'#6b7280'}}>Patient</th>
+                        <th style={{textAlign:'center',padding:'12px',fontSize:'13px',fontWeight:'600',color:'#6b7280'}}>Contact #</th>
                         {!isTC && <th style={{textAlign:'left',padding:'12px',fontSize:'13px',fontWeight:'600',color:'#6b7280'}}>TC</th>}
                         <th style={{textAlign:'left',padding:'12px',fontSize:'13px',fontWeight:'600',color:'#6b7280'}}>Scheduled</th>
                         <th style={{textAlign:'left',padding:'12px',fontSize:'13px',fontWeight:'600',color:'#6b7280'}}>Completed</th>
@@ -6898,6 +7751,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       {entries.map((e, i) => (
                         <tr key={i} style={{borderBottom:'1px solid #f3f4f6',backgroundColor: e.onTime ? 'white' : '#fff8f8'}}>
                           <td style={{padding:'12px',fontSize:'14px',color:'#202020'}}>{e.patient}</td>
+                          <td style={{padding:'12px',fontSize:'13px',color:'#374151',textAlign:'center'}}>
+                            {e.contactNum > 0
+                              ? <span style={{padding:'2px 9px',backgroundColor:'#eff6ff',color:'#1e40af',borderRadius:'10px',fontWeight:'700'}}>#{e.contactNum}</span>
+                              : <span style={{color:'#d1d5db'}}>—</span>}
+                          </td>
                           {!isTC && <td style={{padding:'12px',fontSize:'14px',color:'#374151'}}>{e.tc}</td>}
                           <td style={{padding:'12px',fontSize:'14px',color:'#374151'}}>{new Date(e.scheduledDate+'T12:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}</td>
                           <td style={{padding:'12px',fontSize:'14px',color:'#374151'}}>{new Date(e.actualDate+'T12:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}</td>
@@ -6919,7 +7777,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         })()}
 
         {/* TODAY'S ACTIVITY */}
-        {currentView === 'today' && (currentUser?.role === 'admin' || currentUser?.role === 'tc') && (() => {
+        {currentView === 'today' && (currentUser?.role === 'admin' || currentUser?.role === 'tc' || currentUser?.role === 'manager') && (() => {
           const isTC = currentUser?.role === 'tc';
           const myTCName = currentUser?.name || '';
           // Contact-log entry.date and startDate are both written with toISOString() (UTC),
@@ -6950,6 +7808,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   patientName: p.name,
                   patientId: p.id,
                   patientTC: p.tc,
+                  patientNpeDate: p.npeDate,
+                  patientNextTouch: p.nextTouchDate,
                   startedToday: isStartedToday(p),
                 }));
               // If patient started today but has no log entry today, inject a synthetic start entry
@@ -6966,8 +7826,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   patientName: p.name,
                   patientId: p.id,
                   patientTC: p.tc,
+                  patientNpeDate: p.npeDate,
                   startedToday: true,
                   isSyntheticStart: true,
+                  // Legacy/untagged starts: infer origin from whatever flags survive.
+                  startedFrom: p.SCH ? 'scheduled' : (p.fromPending ? 'pending' : 'sameday'),
                 });
               }
               return logEntries;
@@ -7051,15 +7914,119 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   </div>
                 ))}
               </div>
+              {/* Unconfirmed bond appointments — confirm before sending the report so
+                  the consultant sees today's starts on today's End-of-Day email instead
+                  of a day late (the queue check-in only appears the following day). */}
+              {(() => {
+                const unconfirmedBonds = patients.filter(p =>
+                  p.SCH && p.bondDate && p.bondDate <= todayUTC &&
+                  (isTC ? p.tc === myTCName : true)
+                ).sort((a, b) => (a.bondDate || '').localeCompare(b.bondDate || ''));
+                if (unconfirmedBonds.length === 0) return null;
+                return (
+                  <div style={{backgroundColor:'#fffbeb',borderRadius:'12px',border:'2px solid #f59e0b',boxShadow:'0 1px 4px rgba(0,0,0,0.08)',padding:'20px 24px',marginBottom:'20px'}}>
+                    <div style={{fontSize:'17px',fontWeight:'700',color:'#92400e',marginBottom:'4px'}}>
+                      ⚠️ Bond Appointments Not Yet Confirmed ({unconfirmedBonds.length})
+                    </div>
+                    <div style={{fontSize:'13px',color:'#b45309',marginBottom:'16px'}}>
+                      Confirm these before sending the report — otherwise their starts won't show on the consultant's End-of-Day email until tomorrow.
+                    </div>
+                    {unconfirmedBonds.map(patient => {
+                      const bondPast = patient.bondDate < todayUTC;
+                      return (
+                        <div key={patient.id} style={{backgroundColor:'white',padding:'14px 16px',borderRadius:'8px',border:'1px solid #fbbf24',marginBottom:'12px'}}>
+                          <div style={{display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap',marginBottom:'4px'}}>
+                            <div style={{fontSize:'16px',fontWeight:'700',color:'#92400e'}}>{patient.name}</div>
+                            <span style={{fontSize:'12px',padding:'2px 9px',backgroundColor:'#fef3c7',border:'1px solid #fbbf24',borderRadius:'4px',fontWeight:'600',color:'#92400e'}}>
+                              🦷 Bond: {new Date(patient.bondDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}
+                            </span>
+                            {bondPast && <span style={{fontSize:'12px',color:'#ef4444',fontWeight:'600'}}>⚠️ past bond date</span>}
+                            {!isTC && patient.tc && <span style={{fontSize:'12px',color:'#6b7280'}}>👤 {patient.tc}</span>}
+                          </div>
+                          <div style={{marginBottom:'10px'}}>
+                            <textarea
+                              value={bondCheckNotes[patient.id] || ''}
+                              onChange={(e) => setBondCheckNotes(prev => ({...prev, [patient.id]: e.target.value}))}
+                              placeholder="Notes (optional — saved to contact log)"
+                              style={{width:'100%',padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'13px',resize:'vertical',boxSizing:'border-box'}}
+                              rows={1}
+                            />
+                          </div>
+                          <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
+                            <button
+                              onClick={() => handleMarkStarted(patient)}
+                              style={{padding:'8px 16px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'13px'}}
+                            >
+                              ✅ Started — Enter Details
+                            </button>
+                            <button
+                              onClick={() => { if (confirm(`Mark ${patient.name} as missed appointment? They will return to Pending with obstacle "Getting a Second Opinion".`)) handleMissedBond(patient, bondCheckNotes[patient.id] || ''); }}
+                              style={{padding:'8px 16px',backgroundColor:'#ef4444',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'13px'}}
+                            >
+                              ❌ Missed Appointment
+                            </button>
+                            <button
+                              onClick={() => setBondRescheduleOpen(prev => ({ ...prev, [patient.id]: !prev[patient.id] }))}
+                              style={{padding:'8px 16px',backgroundColor:'#f59e0b',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'13px'}}
+                            >
+                              📅 Rescheduled
+                            </button>
+                          </div>
+                          {bondRescheduleOpen[patient.id] && (
+                            <div style={{marginTop:'12px',padding:'12px',backgroundColor:'#fffbeb',border:'1px solid #f59e0b',borderRadius:'6px'}}>
+                              <label style={{fontSize:'13px',fontWeight:'600',display:'block',marginBottom:'6px',color:'#92400e'}}>New Bond Appointment Date</label>
+                              <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
+                                <input
+                                  type="date"
+                                  value={bondRescheduleDate[patient.id] || ''}
+                                  onChange={e => setBondRescheduleDate(prev => ({ ...prev, [patient.id]: e.target.value }))}
+                                  style={{padding:'8px 10px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
+                                />
+                                <button
+                                  disabled={!bondRescheduleDate[patient.id]}
+                                  onClick={() => handleRescheduleBond(patient, bondRescheduleDate[patient.id], bondCheckNotes[patient.id] || '')}
+                                  style={{padding:'8px 18px',backgroundColor: bondRescheduleDate[patient.id] ? '#f59e0b' : '#d1d5db',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor: bondRescheduleDate[patient.id] ? 'pointer' : 'not-allowed',fontSize:'14px'}}
+                                >
+                                  Save New Date
+                                </button>
+                                <button
+                                  onClick={() => setBondRescheduleOpen(prev => ({ ...prev, [patient.id]: false }))}
+                                  style={{padding:'8px 14px',backgroundColor:'transparent',color:'#6b7280',border:'1px solid #d1d5db',borderRadius:'6px',cursor:'pointer',fontSize:'13px'}}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                              {bondRescheduleDate[patient.id] && (
+                                <div style={{fontSize:'12px',color:'#92400e',marginTop:'6px',fontWeight:'500'}}>
+                                  📅 New check-in reminder: <strong>{new Date(getBondCheckDate({SCH:true, bondDate: bondRescheduleDate[patient.id]}) + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</strong>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
               {/* End-of-Day report for the consultant */}
               {hasAnyActivity && (() => {
-                const grouped = {};
-                todayActivity.forEach((e) => { const g = recapGroupOf(e); (grouped[g] = grouped[g] || []).push(e); });
+                const buckets = groupRecapEntries(todayActivity, todayUTC);
+                const renderRecapRow = (e, i) => {
+                  const nt = recapNextTouch(e);
+                  return (
+                    <div key={i} style={{fontSize:'14px',color:'#374151',padding:'3px 0 3px 8px',borderLeft:'2px solid #f3f4f6'}}>
+                      <strong>{e.patientName}</strong>: {recapLineText(e) || <span style={{color:'#d1d5db',fontStyle:'italic'}}>no recap</span>}
+                      {nt && <span style={{color:'#c2410c',fontWeight:500}}> — next follow-up: {nt}</span>}
+                      {(e.logged_by || e.patientTC) && <span style={{color:'#9ca3af',fontSize:'12px'}}> ({e.logged_by || e.patientTC})</span>}
+                    </div>
+                  );
+                };
                 const recipientSummary = [
                   ...(consultantRecipients.to || []),
                   ...(consultantRecipients.cc || []).map(c => `${c} (cc)`),
                 ].filter(Boolean).join(', ') || 'none set';
-                const payload = buildRecapPayload(todayActivity, dateLabel);
+                const payload = buildRecapPayload(todayActivity, dateLabel, todayUTC);
                 return (
                   <div style={{backgroundColor:'white',borderRadius:'12px',boxShadow:'0 1px 4px rgba(0,0,0,0.08)',padding:'20px 24px',marginBottom:'20px',border:'2px solid #fde68a'}}>
                     <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'16px',flexWrap:'wrap',marginBottom:'14px'}}>
@@ -7083,18 +8050,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         */}
                       </div>
                     </div>
-                    {RECAP_GROUPS.map(([key, label]) => {
-                      const list = grouped[key];
-                      if (!list || !list.length) return null;
+                    {RECAP_SECTIONS.map((sec) => {
+                      const b = buckets[sec.key];
+                      if (!b || !b.list.length) return null;
                       return (
-                        <div key={key} style={{marginBottom:'12px'}}>
-                          <div style={{fontSize:'13px',fontWeight:700,color:'#374151',marginBottom:'5px'}}>{label} <span style={{color:'#9ca3af',fontWeight:500}}>({list.length})</span></div>
-                          {list.map((e, i) => (
-                            <div key={i} style={{fontSize:'14px',color:'#374151',padding:'3px 0 3px 8px',borderLeft:'2px solid #f3f4f6'}}>
-                              <strong>{e.patientName}</strong>: {recapLineText(e) || <span style={{color:'#d1d5db',fontStyle:'italic'}}>no recap</span>}
-                              {(e.logged_by || e.patientTC) && <span style={{color:'#9ca3af',fontSize:'12px'}}> ({e.logged_by || e.patientTC})</span>}
-                            </div>
-                          ))}
+                        <div key={sec.key} style={{marginBottom:'14px'}}>
+                          <div style={{fontSize:'13px',fontWeight:700,color:'#111827',marginBottom:'5px'}}>{sec.label} <span style={{color:'#9ca3af',fontWeight:500}}>({b.list.length})</span></div>
+                          {sec.subs
+                            ? sec.subs.map(([subKey, subLabel]) => {
+                                const sl = b.subs[subKey];
+                                if (!sl || !sl.length) return null;
+                                return (
+                                  <div key={subKey} style={{marginBottom:'8px',paddingLeft:'8px'}}>
+                                    <div style={{fontSize:'12px',fontWeight:600,color:'#6b7280',marginBottom:'3px'}}>{subLabel} <span style={{color:'#b0b6c0',fontWeight:500}}>({sl.length})</span></div>
+                                    {sl.map(renderRecapRow)}
+                                  </div>
+                                );
+                              })
+                            : b.list.map(renderRecapRow)}
                         </div>
                       );
                     })}
@@ -7186,7 +8159,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         })()}
 
         {/* PRACTICE METRICS */}
-        {currentView === 'metrics' && (() => {
+        {currentView === 'metrics' && currentUser?.role !== 'manager' && (() => {
           const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
           const fmt$   = (v) => v != null && v > 0 ? '$' + Math.round(v).toLocaleString() : '—';
           const fmtPct = (v) => v != null ? Math.round(v * 100) + '%' : '—';
@@ -8088,7 +9061,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
                       {noFee.length > 0 && (
                         <div style={{marginTop:'16px',padding:'10px 12px',backgroundColor:'#fffbeb',border:'1px solid #fde68a',borderRadius:'8px',fontSize:'12px',color:'#92400e'}}>
-                          <strong>{noFee.length} start{noFee.length===1?'':'s'} missing a contract amount</strong> — excluded from the average: {noFee.map(s=>s.name).join(', ')}. Add amounts in <em>Fill Start $</em> to include them.
+                          <strong>{noFee.length} start{noFee.length===1?'':'s'} missing a contract amount</strong> — excluded from the average: {noFee.map(s=>s.name).join(', ')}. Add a contract amount on each patient's record to include them.
                         </div>
                       )}
                     </div>
@@ -8260,7 +9233,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         {/* SETTINGS */}
         {currentView === 'settings' && (
           <div style={{maxWidth:'1200px'}}>
-            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>{currentUser?.role === 'tc' ? 'My Account' : 'Goals & Settings'}</h2>
+            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>{currentUser?.role === 'tc' ? 'My Account' : currentUser?.role === 'manager' ? 'Team & Account' : 'Goals & Settings'}</h2>
 
             {/* ── Change My Password — visible to all users ── */}
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',marginBottom:'24px',maxWidth:'420px'}}>
@@ -8512,6 +9485,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </div>
                   )}
 
+                  {/* Feature Toggles + Recipients + Locations — full admins only (Office Managers skip to Team) */}
+                  {currentUser?.role === 'admin' && (<>
                   {/* Feature Toggles */}
                   <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'15px',fontWeight:'700',marginBottom:'4px',color:'#202020'}}>🔧 Features</h4>
@@ -8652,7 +9627,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </div>
                   </div>
 
-                  {/* Team Management */}
+                  </>)}
+
+                  {/* Team Management — visible to admins AND office managers */}
                   <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'15px',fontWeight:'700',marginBottom:'4px',color:'#202020'}}>👥 Team</h4>
                     <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Manage logins, roles, and bonus access. Deactivated staff are hidden from all dashboards.</p>
@@ -8691,9 +9668,49 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               <td style={{padding:'10px',fontWeight:'700',color: u.status==='inactive'?'#9ca3af':'#374151'}}>{u.name}{u.id === (currentUser?.id || '') ? <span style={{marginLeft:'6px',fontSize:'10px',color:'#2563EB',fontWeight:'800'}}>YOU</span> : null}</td>
                               <td style={{padding:'10px',color:'#6b7280'}}>{u.email}</td>
                               <td style={{padding:'10px'}}>
-                                <span style={{padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',backgroundColor: u.role==='admin'?'#fef3c7':'#eff6ff',color: u.role==='admin'?'#92400e':'#1e40af'}}>
-                                  {u.role === 'admin' ? 'Admin' : 'TC'}
-                                </span>
+                                {(u.email === currentUser?.email || currentUser?.role !== 'admin') ? (
+                                  // Only a full Admin can change roles, and never your own row (avoids locking yourself out).
+                                  <span style={{padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',
+                                    backgroundColor: u.role==='admin'?'#fef3c7':u.role==='manager'?'#f3e8ff':'#eff6ff',
+                                    color: u.role==='admin'?'#92400e':u.role==='manager'?'#6b21a8':'#1e40af'}}>
+                                    {u.role === 'admin' ? 'Admin' : u.role === 'manager' ? 'Office Mgr' : 'TC'}
+                                  </span>
+                                ) : (
+                                  <select
+                                    value={u.role === 'admin' ? 'admin' : u.role === 'manager' ? 'manager' : 'tc'}
+                                    onChange={async (e) => {
+                                      const newRole = e.target.value;
+                                      if (newRole === u.role) return;
+                                      const label = newRole === 'admin' ? 'a full Admin' : newRole === 'manager' ? 'an Office Manager' : 'a TC';
+                                      const msg = newRole === 'admin'
+                                        ? `Make ${u.name} a full Admin? They'll gain complete access — practice metrics, bonuses, pay, and every setting. Patients already assigned to ${u.name} stay assigned until you reassign them.`
+                                        : newRole === 'manager'
+                                        ? `Make ${u.name} an Office Manager? They'll see the dashboard, follow-ups, on-time performance, and can manage TC logins — but NOT practice metrics, the bonus tabs, or pay settings. They're removed from the assignable-TC list; reassign any patients still under them.`
+                                        : `Change ${u.name} to a TC? They'll appear as an assignable TC and lose admin/manager access.`;
+                                      if (!window.confirm(msg)) return;
+                                      const { data: roleUpdated, error: roleErr } = await supabase.from('tc_users').update({ role: newRole }).eq('id', u.id).select();
+                                      if (roleErr) {
+                                        setTcMgmtMsgType('error');
+                                        setTcMgmtMsg(`Couldn't change ${u.name}'s role — the database rejected it: ${roleErr.message}. If that mentions "enum" or "check constraint", the role column doesn't allow "manager" yet.`);
+                                        return;
+                                      }
+                                      if (!roleUpdated || roleUpdated.length === 0) {
+                                        setTcMgmtMsgType('error');
+                                        setTcMgmtMsg(`Couldn't change ${u.name}'s role — the update touched 0 rows, which means permissions (RLS) blocked the write. Nothing was saved.`);
+                                        return;
+                                      }
+                                      await loadTCUsers();
+                                      setTcMgmtMsgType('info');
+                                      setTcMgmtMsg(`${u.name} is now ${label}.`);
+                                      setTimeout(() => setTcMgmtMsg(''), 4000);
+                                    }}
+                                    style={{padding:'3px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',border:'1px solid #e5e7eb',cursor:'pointer',
+                                      backgroundColor: u.role==='admin'?'#fef3c7':u.role==='manager'?'#f3e8ff':'#eff6ff',color: u.role==='admin'?'#92400e':u.role==='manager'?'#6b21a8':'#1e40af'}}>
+                                    <option value="tc">TC</option>
+                                    <option value="manager">Office Manager</option>
+                                    <option value="admin">Admin</option>
+                                  </select>
+                                )}
                               </td>
                               <td style={{padding:'10px'}}>
                                 <span style={{padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',
@@ -8703,17 +9720,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 </span>
                               </td>
                               <td style={{padding:'10px'}}>
-                                {u.role === 'tc' ? (
+                                {(u.role === 'tc' || u.role === 'manager') && currentUser?.role === 'admin' ? (
                                   <label style={{display:'flex',alignItems:'center',gap:'6px',cursor:'pointer',userSelect:'none'}}>
+                                    {(() => { const bOn = u.bonus_enabled !== false; return (<>
                                     <div style={{position:'relative',display:'inline-block',width:'34px',height:'18px'}} onClick={async () => {
-                                      const newVal = !u.bonus_enabled;
-                                      await supabase.from('tc_users').update({ bonus_enabled: newVal }).eq('id', u.id);
+                                      await supabase.from('tc_users').update({ bonus_enabled: !bOn }).eq('id', u.id);
                                       await loadTCUsers();
                                     }}>
-                                      <div style={{position:'absolute',inset:0,borderRadius:'9px',backgroundColor: u.bonus_enabled ? '#2563EB' : '#d1d5db',transition:'background 0.2s'}} />
-                                      <div style={{position:'absolute',top:'2px',left: u.bonus_enabled ? '18px' : '2px',width:'14px',height:'14px',borderRadius:'50%',backgroundColor:'white',boxShadow:'0 1px 3px rgba(0,0,0,0.2)',transition:'left 0.2s'}} />
+                                      <div style={{position:'absolute',inset:0,borderRadius:'9px',backgroundColor: bOn ? '#2563EB' : '#d1d5db',transition:'background 0.2s'}} />
+                                      <div style={{position:'absolute',top:'2px',left: bOn ? '18px' : '2px',width:'14px',height:'14px',borderRadius:'50%',backgroundColor:'white',boxShadow:'0 1px 3px rgba(0,0,0,0.2)',transition:'left 0.2s'}} />
                                     </div>
-                                    <span style={{fontSize:'11px',color: u.bonus_enabled ? '#2563EB' : '#9ca3af',fontWeight:'600'}}>{u.bonus_enabled ? 'On' : 'Off'}</span>
+                                    <span style={{fontSize:'11px',color: bOn ? '#2563EB' : '#9ca3af',fontWeight:'600'}}>{bOn ? 'On' : 'Off'}</span>
+                                    </>); })()}
                                   </label>
                                 ) : (
                                   <span style={{fontSize:'11px',color:'#d1d5db'}}>—</span>
@@ -8722,7 +9740,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               <td style={{padding:'10px'}}>
                                 {u.email !== currentUser?.email && (
                                   <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
-                                    {u.auth_user_id && (<>
+                                    {u.auth_user_id && currentUser?.role === 'admin' && (<>
                                       <input
                                         type="password"
                                         placeholder="New password…"
@@ -8756,6 +9774,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                         {tcSetPwStatus[u.id]==='saved'?'✓ Saved':tcSetPwStatus[u.id]==='error'?'✗ Error':tcSetPwStatus[u.id]==='saving'?'Saving…':'Set Password'}
                                       </button>
                                     </>)}
+                                    {(currentUser?.role === 'admin' || u.role !== 'admin') && (
                                     <button onClick={async () => {
                                       const newStatus = u.status === 'active' ? 'inactive' : 'active';
                                       await supabase.from('tc_users').update({ status: newStatus }).eq('id', u.id);
@@ -8766,6 +9785,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     }} style={{fontSize:'11px',padding:'4px 10px',border:'1px solid #e5e7eb',borderRadius:'5px',cursor:'pointer',backgroundColor:'white',color: u.status==='active'?'#ef4444':'#10b981',fontWeight:'600'}}>
                                       {u.status === 'active' ? 'Deactivate' : 'Reactivate'}
                                     </button>
+                                    )}
+                                    {currentUser?.role === 'admin' && (
                                     <button onClick={async () => {
                                       if (!window.confirm(`Permanently delete ${u.name}? This cannot be undone.`)) return;
                                       await supabase.from('tc_users').delete().eq('id', u.id);
@@ -8776,6 +9797,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     }} style={{fontSize:'11px',padding:'4px 10px',border:'1px solid #fca5a5',borderRadius:'5px',cursor:'pointer',backgroundColor:'#fff1f2',color:'#dc2626',fontWeight:'600'}}>
                                       Delete
                                     </button>
+                                    )}
                                   </div>
                                 )}
                               </td>
@@ -8810,14 +9832,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             </button>
                           </div>
                         </div>
+                        {currentUser?.role === 'admin' && (
                         <div>
                           <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Role</label>
                           <select value={newTCRole} onChange={e => setNewTCRole(e.target.value)}
                             style={{padding:'9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}}>
                             <option value="tc">TC</option>
+                            <option value="manager">Office Manager</option>
                             <option value="admin">Admin</option>
                           </select>
                         </div>
+                        )}
                         <button id="guide-tc-add" onClick={async () => {
                           if (!newTCName.trim() || !newTCEmail.trim()) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Name and email are required.'); }
                           if (!newTCPassword.trim() || newTCPassword.trim().length < 6) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Password must be at least 6 characters.'); }
@@ -8848,44 +9873,165 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </div>
                   </div>
 
-                  {/* Bonus Rate Editor */}
+                  {/* Bonus Rate Editor — pay; full admins only */}
+                  {currentUser?.role === 'admin' && (
                   <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>💰 Bonus Rates</h4>
-                    <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Rates appear in the Bonus Audit tab and are calculated per qualifying patient.</p>
-                    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))',gap:'16px',marginBottom:'16px'}}>
-                      {[
-                        {key:'sds', label:'SDS Bonus', desc:'Patient starts treatment same day as NPE'},
-                        {key:'ret', label:'Retainer Bonus', desc:'Retainer add-on included at start (R+)'},
-                        {key:'white', label:'Whitening Bonus', desc:'Whitening add-on included at start (W+)'},
-                        {key:'pif', label:'PIF Bonus', desc:'Patient pays in full (no financing)'},
-                      ].map(({key, label, desc}) => (
-                        <div key={key} style={{backgroundColor:'white',padding:'12px',borderRadius:'6px',border:'1px solid #e5e7eb'}}>
-                          <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'2px'}}>{label}</label>
-                          <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'8px'}}>{desc}</div>
-                          <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
-                            <span style={{fontSize:'16px',fontWeight:'600',color:'#6b7280'}}>$</span>
-                            <input
-                              type="number" min="0"
-                              value={bonusRates[key]}
-                              onChange={e => setBonusRates(prev => ({...prev, [key]: Number(e.target.value)}))}
-                              style={{padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'16px',fontWeight:'600',width:'80px'}}
-                            />
-                            <span style={{fontSize:'13px',color:'#6b7280'}}>/ patient</span>
-                          </div>
+                    <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Every TC and Office Manager has their own rates, calculated per qualifying patient in the Bonus Audit tab. Use the toggle to turn a person's bonuses on or off. SDS = same-day start · Retainer = R+ add-on · Whitening = W+ add-on · PIF = paid in full. The 🎯 starts goal bonus pays a flat monthly amount based on the practice's total starts vs. that month's starts goal, with tier thresholds you set per person.</p>
+                    {/* Per-user rates — TCs and Office Managers, each with an admin on/off toggle */}
+                    {(() => {
+                      const eligible = tcUsers.filter(u => (u.role === 'tc' || u.role === 'manager') && u.status !== 'inactive');
+                      if (eligible.length === 0) return (
+                        <p style={{fontSize:'13px',color:'#9ca3af',marginBottom:'16px'}}>Add TCs or Office Managers in Team Management to set their bonus rates.</p>
+                      );
+                      const rateKeys = [
+                        {key:'sds', label:'SDS'},
+                        {key:'ret', label:'Retainer'},
+                        {key:'white', label:'Whitening'},
+                        {key:'pif', label:'PIF'},
+                      ];
+                      const numInput = (val, disabled, onChange, width) => (
+                        <input
+                          type="number" min="0"
+                          value={val}
+                          disabled={disabled}
+                          onChange={onChange}
+                          style={{padding:'6px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px',fontWeight:'600',width: width || '64px',backgroundColor: disabled ? '#f3f4f6' : 'white',color: disabled ? '#9ca3af' : '#202020'}}
+                        />
+                      );
+                      return (
+                        <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'16px'}}>
+                          {eligible.map(u => {
+                            const enabled = u.bonus_enabled !== false;
+                            const effective = userBonusDrafts[u.id] || { ...ZERO_RATES, ...(u.bonus_rates || {}) };
+                            const setRate = (key) => (e) => setUserBonusDrafts(prev => ({ ...prev, [u.id]: { ...effective, [key]: Number(e.target.value) } }));
+                            const belowRange = Number(effective.goalBelowRange) > 0 ? Number(effective.goalBelowRange) : 5;
+                            const beatMin = Number(effective.goalBeatMin) > 0 ? Number(effective.goalBeatMin) : 1;
+                            const hasGoalTiers = effective.goalBelow > 0 || effective.goalMet > 0 || effective.goalBeat > 0;
+                            const atGoalLabel = beatMin > 1 ? `At goal to +${beatMin - 1}` : 'Exactly at goal';
+                            return (
+                              <div key={u.id} style={{backgroundColor:'white',padding:'12px',borderRadius:'6px',border:'1px solid #e5e7eb',opacity: enabled ? 1 : 0.75}}>
+                                <div style={{display:'flex',alignItems:'center',gap:'14px',flexWrap:'wrap'}}>
+                                  <div style={{minWidth:'160px',flex:'0 0 auto'}}>
+                                    <div style={{fontSize:'14px',fontWeight:'600',color:'#374151'}}>{u.name}</div>
+                                    <div style={{fontSize:'11px',color:'#9ca3af'}}>{u.role === 'manager' ? 'Office Manager' : 'TC'}</div>
+                                  </div>
+                                  <div style={{display:'flex',alignItems:'center',gap:'6px',flex:'0 0 auto'}}>
+                                    <div
+                                      onClick={async () => {
+                                        const newVal = !enabled;
+                                        setTcUsers(prev => prev.map(x => x.id === u.id ? { ...x, bonus_enabled: newVal } : x));
+                                        await supabase.from('tc_users').update({ bonus_enabled: newVal }).eq('id', u.id);
+                                      }}
+                                      style={{position:'relative',width:'34px',height:'18px',cursor:'pointer',flexShrink:0}}
+                                    >
+                                      <div style={{position:'absolute',inset:0,borderRadius:'9px',backgroundColor: enabled ? '#2563EB' : '#d1d5db',transition:'background 0.2s'}} />
+                                      <div style={{position:'absolute',top:'2px',left: enabled ? '18px' : '2px',width:'14px',height:'14px',borderRadius:'50%',backgroundColor:'white',boxShadow:'0 1px 3px rgba(0,0,0,0.2)',transition:'left 0.2s'}} />
+                                    </div>
+                                    <span style={{fontSize:'11px',fontWeight:'600',color: enabled ? '#2563EB' : '#9ca3af'}}>{enabled ? 'Bonuses on' : 'Bonuses off'}</span>
+                                  </div>
+                                  <div style={{display:'flex',gap:'10px',flexWrap:'wrap',alignItems:'flex-end'}}>
+                                    {rateKeys.map(({key, label}) => (
+                                      <div key={key} style={{display:'flex',flexDirection:'column',gap:'2px'}}>
+                                        <span style={{fontSize:'10px',fontWeight:'600',color:'#9ca3af',textTransform:'uppercase'}}>{label}</span>
+                                        <div style={{display:'flex',alignItems:'center',gap:'3px'}}>
+                                          <span style={{fontSize:'13px',fontWeight:'600',color: enabled ? '#6b7280' : '#d1d5db'}}>$</span>
+                                          {numInput(effective[key], !enabled, setRate(key))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                {/* Starts-goal tier bonus — thresholds are adjustable per person */}
+                                <div style={{marginTop:'12px',paddingTop:'12px',borderTop:'1px dashed #e5e7eb'}}>
+                                  <div style={{fontSize:'11px',fontWeight:'700',color:'#0891b2',marginBottom:'2px'}}>🎯 STARTS GOAL BONUS</div>
+                                  <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'8px'}}>Flat amount paid once per month on the practice's total starts vs. that month's starts goal. Set how far under or over goal each tier reaches. Leave amounts at $0 to skip.</div>
+                                  <div style={{display:'flex',gap:'10px',flexWrap:'wrap',alignItems:'flex-end'}}>
+                                    <div style={{display:'flex',flexDirection:'column',gap:'2px'}}>
+                                      <span style={{fontSize:'10px',fontWeight:'600',color:'#9ca3af',textTransform:'uppercase'}}>Under goal by up to</span>
+                                      <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+                                        {numInput(effective.goalBelowRange ?? 5, !enabled, setRate('goalBelowRange'), '56px')}
+                                        <span style={{fontSize:'12px',color:'#6b7280'}}>starts →</span>
+                                        <span style={{fontSize:'13px',fontWeight:'600',color: enabled ? '#6b7280' : '#d1d5db'}}>$</span>
+                                        {numInput(effective.goalBelow, !enabled, setRate('goalBelow'))}
+                                      </div>
+                                    </div>
+                                    <div style={{display:'flex',flexDirection:'column',gap:'2px'}}>
+                                      <span style={{fontSize:'10px',fontWeight:'600',color:'#9ca3af',textTransform:'uppercase'}}>{atGoalLabel}</span>
+                                      <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+                                        <span style={{fontSize:'13px',fontWeight:'600',color: enabled ? '#6b7280' : '#d1d5db'}}>$</span>
+                                        {numInput(effective.goalMet, !enabled, setRate('goalMet'))}
+                                      </div>
+                                    </div>
+                                    <div style={{display:'flex',flexDirection:'column',gap:'2px'}}>
+                                      <span style={{fontSize:'10px',fontWeight:'600',color:'#9ca3af',textTransform:'uppercase'}}>Over goal by at least</span>
+                                      <div style={{display:'flex',alignItems:'center',gap:'4px'}}>
+                                        {numInput(effective.goalBeatMin ?? 1, !enabled, setRate('goalBeatMin'), '56px')}
+                                        <span style={{fontSize:'12px',color:'#6b7280'}}>starts →</span>
+                                        <span style={{fontSize:'13px',fontWeight:'600',color: enabled ? '#6b7280' : '#d1d5db'}}>$</span>
+                                        {numInput(effective.goalBeat, !enabled, setRate('goalBeat'))}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  {hasGoalTiers && enabled && (() => {
+                                    const thisMonth = new Date().toISOString().slice(0, 7);
+                                    const goal = startsGoalForMonth(thisMonth);
+                                    const starts = practiceStartsInMonth(thisMonth);
+                                    const monthLabel = new Date(thisMonth + '-01T12:00:00').toLocaleDateString('en-US', {month:'long'});
+                                    if (goal <= 0) return (
+                                      <div style={{fontSize:'11px',color:'#b45309',marginTop:'8px'}}>
+                                        No starts goal is set for {monthLabel} — set one in Goals above or this bonus pays $0.
+                                      </div>
+                                    );
+                                    const diff = starts - goal;
+                                    const tiers = [
+                                      { key:'below', label:`${goal - belowRange}–${goal - 1} starts (up to ${belowRange} under)`, amt: effective.goalBelow, hit: diff < 0 && diff >= -belowRange },
+                                      { key:'met',   label: beatMin > 1 ? `${goal}–${goal + beatMin - 1} starts (at goal)` : `${goal} starts (at goal)`, amt: effective.goalMet, hit: diff >= 0 && diff < beatMin },
+                                      { key:'beat',  label:`${goal + beatMin}+ starts (${beatMin}+ over)`, amt: effective.goalBeat, hit: diff >= beatMin },
+                                    ];
+                                    return (
+                                      <div style={{marginTop:'10px',padding:'10px 12px',backgroundColor:'#ecfeff',border:'1px solid #a5f3fc',borderRadius:'6px'}}>
+                                        <div style={{fontSize:'11px',fontWeight:'700',color:'#0e7490',marginBottom:'6px'}}>
+                                          What {u.name} sees — {monthLabel}: {starts} of {goal} starts
+                                          {diff < 0 ? ` (${-diff} to go)` : diff === 0 ? ' (at goal)' : ` (+${diff} over)`}
+                                        </div>
+                                        <div style={{display:'flex',flexDirection:'column',gap:'3px'}}>
+                                          {tiers.map(t => (
+                                            <div key={t.key} style={{display:'flex',justifyContent:'space-between',gap:'12px',fontSize:'12px',
+                                              color: t.hit ? '#0e7490' : '#9ca3af', fontWeight: t.hit ? '700' : '400'}}>
+                                              <span>{t.hit ? '▶ ' : '   '}{t.label}</span>
+                                              <span>${t.amt || 0}{t.hit ? ' ← earning now' : ''}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
-                      ))}
-                    </div>
+                      );
+                    })()}
                     <button
                       onClick={async () => {
-                        localStorage.setItem(`npe-bonus-rates-${currentUser?.practiceId}`, JSON.stringify(bonusRates));
                         setSaveToast('⏳ Saving bonus rates...');
-                        const { error } = await supabase.from('settings').upsert(
-                          { key: 'bonus-rates', value: bonusRates, practice_id: managedPracticeId || currentUser.practiceId },
-                          { onConflict: 'key,practice_id' }
-                        );
-                        if (error) {
-                          setSaveToast('❌ Bonus rates save failed: ' + error.message);
+                        // Persist explicit rates for every eligible user so nobody
+                        // silently depends on legacy practice-wide defaults.
+                        const eligible = tcUsers.filter(u => (u.role === 'tc' || u.role === 'manager') && u.status !== 'inactive');
+                        let userError = null;
+                        for (const u of eligible) {
+                          const effective = userBonusDrafts[u.id] || { ...ZERO_RATES, ...(u.bonus_rates || {}) };
+                          const { error: uErr } = await supabase.from('tc_users').update({ bonus_rates: effective }).eq('id', u.id);
+                          if (uErr) userError = uErr;
+                        }
+                        if (userError) {
+                          setSaveToast('❌ Bonus rates save failed: ' + userError.message);
                         } else {
+                          setUserBonusDrafts({});
+                          await loadTCUsers();
                           setSaveToast('✅ Bonus rates saved to cloud!');
                         }
                         setTimeout(() => setSaveToast(''), 4000);
@@ -8895,9 +10041,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       Save Bonus Rates
                     </button>
                   </div>
+                  )}
                 </div>
             </div>
 
+            {/* Bonus Campaigns + Supabase status + Monthly/Quarterly Goals — full admins only */}
+            {currentUser?.role === 'admin' && (<>
             {/* Popup Bonus Campaigns */}
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',border:'1px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.06)',marginBottom:'24px'}}>
               <div style={{marginBottom:'20px',paddingBottom:'14px',borderBottom:'2px solid #f3f4f6'}}>
@@ -8930,12 +10079,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}} />
                   </div>
                   <div>
-                    <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'4px'}}>TC (or All)</label>
+                    <label style={{display:'block',fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'4px'}}>Team Member (or All)</label>
                     <select value={popupBonusForm.tcFilter}
                       onChange={e => setPopupBonusForm(f => ({...f, tcFilter: e.target.value}))}
                       style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}>
-                      <option value="All">All TCs</option>
-                      {tcNames.map(tc => <option key={tc} value={tc}>{tc}</option>)}
+                      <option value="All">All Team Members</option>
+                      {bonusEligibleNames.map(n => {
+                        const u = tcUsers.find(x => x.name === n);
+                        return <option key={n} value={n}>{n}{u?.role === 'manager' ? ' (Office Manager)' : ''}</option>;
+                      })}
                     </select>
                   </div>
                   <div>
@@ -9076,9 +10228,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const startCnt = bonus.goalThreshold > 0 ? thresholdStartCount(bonus, null) : 0;
                     const qualifying = threshOk ? patients.filter(p => popupBonusEarnings(p, bonus, null) > 0) : [];
                     const earned = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, null), 0);
+                    const legacyRates = ratesForTC(bonus.tcFilter !== 'All' ? bonus.tcFilter : null);
                     const typeLabels = bonus.amtSDS !== undefined
                       ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
-                      : `$${bonus.amount}/start + $${bonusRates.ret} ret + $${bonusRates.white} whitening`;
+                      : `$${bonus.amount}/start + $${legacyRates.ret} ret + $${legacyRates.white} whitening`;
                     return (
                       <div key={bonus.id} style={{display:'flex',alignItems:'center',gap:'16px',padding:'14px 16px',backgroundColor: isActive ? '#f0fdf4' : '#f9fafb',border:`1px solid ${isActive ? '#86efac' : '#e5e7eb'}`,borderRadius:'8px',flexWrap:'wrap'}}>
                         <div style={{flex:1,minWidth:'200px'}}>
@@ -9379,7 +10532,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </button>
                 {goalsSaveMsg && <span style={{color:'#10b981',fontWeight:'600',fontSize:'15px'}}>{goalsSaveMsg}</span>}
               </div>
-            </div></>)}
+            </div></>)}</>)}
 
             {/* ── Support Inbox (superadmin only) ── */}
             {currentUser?.practiceId === 'miller-ortho' && currentUser?.role === 'admin' && (
@@ -9739,7 +10892,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       {showConvBreakdown && (() => {
         const { dashPatients: dp, dashStartPatients: dsp } = showConvBreakdown;
         const sp = dsp || dp;
-        const isMedicaid = p => p.MP === true || (p.obstacle || '').toLowerCase().includes('medicaid');
+        // isMedicaid/medicaidPipeline survive a start; MP and the obstacle text are cleared
+        // when a patient converts, so alone they'd misclassify every started Medicaid patient.
+        const isMedicaid = p => p.isMedicaid === true || p.medicaidPipeline === true || p.MP === true || (p.obstacle || '').toLowerCase().includes('medicaid');
         const medNPE = dp.filter(isMedicaid);
         const privNPE = dp.filter(p => !isMedicaid(p));
         const allStarted = sp.filter(p => isSDS(p) || p.ST || p.DBRETS);
@@ -9817,6 +10972,244 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               )}
 
               <div style={{marginTop:'16px',fontSize:'11px',color:'#9ca3af',textAlign:'center'}}>Industry average: 55–65% · Aim for 60%+</div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Starts Detail Modal — name-by-name list + per-location breakdown */}
+      {showStartsByLocation && (() => {
+        const { perLocation, label, tcFilter, list: scopedList, allList } = showStartsByLocation;
+        // A TC's dashboard is locked to their own numbers, so the list opens on their
+        // starts and can be flipped to the whole practice for the same period.
+        const canToggleScope = Array.isArray(allList) && Array.isArray(scopedList) && allList.length !== scopedList.length;
+        const scope = showStartsByLocation.scope === 'all' && canToggleScope ? 'all' : 'mine';
+        const shownList = scope === 'all' ? allList : (scopedList || []);
+        const started = shownList.length;
+        const showingPractice = scope === 'all' || !tcFilter || tcFilter === 'All';
+
+        const sortedList = [...shownList].sort((a, b) => {
+          const ad = effectiveStartDate(a) || '', bd = effectiveStartDate(b) || '';
+          if (ad !== bd) return ad.localeCompare(bd);
+          return (a.name || '').localeCompare(b.name || '');
+        });
+
+        // Default scope uses the card's own per-location metrics (which carry NPE +
+        // conversion context); the practice-wide view derives counts from the list.
+        const locCounts = {};
+        sortedList.forEach(p => { const l = p.location || 'Unassigned'; locCounts[l] = (locCounts[l] || 0) + 1; });
+        const rows = (scope === 'mine' && (perLocation || []).length > 0)
+          ? [...perLocation].map(r => ({ ...r })).sort((a, b) => b.started - a.started)
+          : Object.entries(locCounts)
+              .map(([loc, count]) => ({ loc, started: count, total: null, conv: null }))
+              .sort((a, b) => b.started - a.started);
+        const maxStarted = Math.max(...rows.map(r => r.started), 1);
+        const headerColors = ['#0369a1','#86198f','#047857','#b45309','#6d28d9'];
+        const txLabels = [['BR','Braces'],['INV','Invisalign'],['PH1','Phase 1'],['PH2','Phase 2'],['LTD','Limited']];
+        const fmtDate = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
+        const scopeBtn = (val, text) => (
+          <button key={val} onClick={() => setShowStartsByLocation({ ...showStartsByLocation, scope: val })}
+            style={{padding:'6px 12px',borderRadius:'7px',border:`1px solid ${scope===val?'#10b981':'#d1d5db'}`,backgroundColor:scope===val?'#ecfdf5':'white',color:scope===val?'#047857':'#374151',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>{text}</button>
+        );
+
+        return (
+          <div onClick={() => setShowStartsByLocation(null)} style={{position:'fixed',top:0,left:0,right:0,bottom:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10000}}>
+            <div onClick={e => e.stopPropagation()} style={{backgroundColor:'white',padding:'28px',borderRadius:'14px',maxWidth:'620px',width:'94%',boxShadow:'0 20px 40px rgba(0,0,0,0.25)',maxHeight:'85vh',overflowY:'auto'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px'}}>
+                <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:0}}>🚀 Starts — Who Started</h3>
+                <button onClick={() => setShowStartsByLocation(null)} style={{background:'none',border:'none',fontSize:'20px',cursor:'pointer',color:'#9ca3af',lineHeight:1}}>×</button>
+              </div>
+              <div style={{fontSize:'12px',color:'#9ca3af',marginBottom:'16px'}}>{label}{!showingPractice ? ` · ${tcFilter}` : ''} · {started} start{started !== 1 ? 's' : ''}</div>
+
+              {canToggleScope && (
+                <div style={{display:'flex',gap:'8px',marginBottom:'16px'}}>
+                  {scopeBtn('mine', `My starts (${scopedList.length})`)}
+                  {scopeBtn('all', `Whole practice (${allList.length})`)}
+                </div>
+              )}
+
+              {rows.length > 0 && (
+                <div style={{marginBottom:'24px'}}>
+                  <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>📍 By Location</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                    {rows.map((r, idx) => {
+                      const hColor = headerColors[idx % headerColors.length];
+                      const pct = started > 0 ? Math.round((r.started / started) * 100) : 0;
+                      return (
+                        <div key={r.loc} style={{backgroundColor:'#f9fafb',borderRadius:'10px',padding:'14px 16px'}}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'8px'}}>
+                            <span style={{fontSize:'14px',fontWeight:'700',color:hColor}}>{r.loc}</span>
+                            <span style={{fontSize:'13px',color:'#6b7280'}}>
+                              <strong style={{fontSize:'22px',color:'#10b981'}}>{r.started}</strong>
+                              <span style={{marginLeft:'6px'}}>start{r.started !== 1 ? 's' : ''}</span>
+                              <span style={{marginLeft:'8px',color:'#9ca3af'}}>{pct}% of total</span>
+                            </span>
+                          </div>
+                          <div style={{height:'8px',backgroundColor:'#e5e7eb',borderRadius:'4px',overflow:'hidden'}}>
+                            <div style={{height:'8px',borderRadius:'4px',backgroundColor:hColor,width:`${Math.round((r.started / maxStarted) * 100)}%`,transition:'width 0.4s ease'}}></div>
+                          </div>
+                          {r.total !== null && <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'6px'}}>{r.total} NPE{r.total !== 1 ? 's' : ''} · {r.conv}% conversion</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>👤 Patient Names ({sortedList.length})</div>
+              {sortedList.length === 0 ? (
+                <div style={{fontSize:'14px',color:'#6b7280',textAlign:'center',padding:'24px 0'}}>No starts in this period yet.</div>
+              ) : (
+                <div style={{border:'1px solid #f3f4f6',borderRadius:'10px',overflow:'hidden'}}>
+                  {sortedList.map((p, idx) => {
+                    const tx = txLabels.filter(([k]) => p[k]).map(([, l]) => l).join(', ');
+                    const sameDay = isSDS(p);
+                    return (
+                      <div key={p.id || `${p.name}-${idx}`} style={{display:'flex',alignItems:'flex-start',gap:'10px',padding:'10px 14px',borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6',backgroundColor: idx % 2 ? '#fafafa' : 'white'}}>
+                        <span style={{fontSize:'11px',fontWeight:'700',color:'#d1d5db',minWidth:'20px',paddingTop:'2px'}}>{idx + 1}</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:'7px',flexWrap:'wrap'}}>
+                            <span style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>{p.name}</span>
+                            <span style={{fontSize:'10px',fontWeight:'700',padding:'2px 7px',borderRadius:'10px',backgroundColor: sameDay ? '#dbeafe' : '#dcfce7',color: sameDay ? '#1e40af' : '#166534'}}>{sameDay ? 'SDS' : 'STARTED'}</span>
+                            {p.PIF && <span style={{fontSize:'10px',fontWeight:'700',padding:'2px 7px',borderRadius:'10px',backgroundColor:'#fef3c7',color:'#92400e'}}>PIF</span>}
+                            {p['R+'] && <span style={{fontSize:'10px',fontWeight:'700',padding:'2px 7px',borderRadius:'10px',backgroundColor:'#f3e8ff',color:'#6d28d9'}}>R+</span>}
+                            {p['W+'] && <span style={{fontSize:'10px',fontWeight:'700',padding:'2px 7px',borderRadius:'10px',backgroundColor:'#e0f2fe',color:'#0369a1'}}>W+</span>}
+                          </div>
+                          <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'3px'}}>
+                            {fmtDate(effectiveStartDate(p))}
+                            {p.location ? ` · ${p.location}` : ''}
+                            {showingPractice && p.tc ? ` · ${p.tc}` : ''}
+                            {tx ? ` · ${tx}` : ''}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Observation Detail Modal — name-by-name list of OBS patients */}
+      {showObsList && (() => {
+        const { list = [], perLocation = [], label, tcFilter } = showObsList;
+        const showingPractice = !tcFilter || tcFilter === 'All';
+        const todayStr = new Date().toISOString().split('T')[0];
+        const fmtDate = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
+
+        // Each OBS patient is in one of three states: a booked re-check appointment,
+        // an anticipated (not-yet-booked) date, or just the default recall cadence.
+        const stateOf = (p) => {
+          if (p.obsApptDate) return { key:'scheduled', text:`Appt ${fmtDate(p.obsApptDate)}`, date:p.obsApptDate, bg:'#dcfce7', color:'#166534', badge:'SCHEDULED' };
+          if (p.obsAnticipatedDate) return { key:'anticipated', text:`Anticipated ${fmtDate(p.obsAnticipatedDate)}`, date:p.obsAnticipatedDate, bg:'#e0f2fe', color:'#0369a1', badge:'ANTICIPATED' };
+          const recall = p.nextTouchDate || addMonths(p.npeDate, obsRecallMonths);
+          return { key:'recall', text:`Recall call ${fmtDate(recall)}`, date:recall, bg:'#f3f4f6', color:'#6b7280', badge:'RECALL' };
+        };
+
+        const sortedList = [...list].sort((a, b) => {
+          const ad = stateOf(a).date || '9999-12-31', bd = stateOf(b).date || '9999-12-31';
+          if (ad !== bd) return ad.localeCompare(bd);
+          return (a.name || '').localeCompare(b.name || '');
+        });
+
+        const scheduledCount   = list.filter(p => p.obsApptDate).length;
+        const anticipatedCount = list.filter(p => !p.obsApptDate && p.obsAnticipatedDate).length;
+        const recallCount      = list.length - scheduledCount - anticipatedCount;
+
+        // Fall back to deriving location counts from the list if the tile didn't pass any.
+        const locCounts = {};
+        sortedList.forEach(p => { const l = p.location || 'Unassigned'; locCounts[l] = (locCounts[l] || 0) + 1; });
+        const rows = perLocation.length > 0
+          ? [...perLocation].sort((a, b) => b.count - a.count)
+          : Object.entries(locCounts).map(([loc, count]) => ({ loc, count })).sort((a, b) => b.count - a.count);
+        const maxCount = Math.max(...rows.map(r => r.count), 1);
+        const headerColors = ['#0369a1','#86198f','#047857','#b45309','#6d28d9'];
+
+        return (
+          <div onClick={() => setShowObsList(null)} style={{position:'fixed',top:0,left:0,right:0,bottom:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10000}}>
+            <div onClick={e => e.stopPropagation()} style={{backgroundColor:'white',padding:'28px',borderRadius:'14px',maxWidth:'620px',width:'94%',boxShadow:'0 20px 40px rgba(0,0,0,0.25)',maxHeight:'85vh',overflowY:'auto'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px'}}>
+                <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:0}}>🔍 Observation — Who's in OBS</h3>
+                <button onClick={() => setShowObsList(null)} style={{background:'none',border:'none',fontSize:'20px',cursor:'pointer',color:'#9ca3af',lineHeight:1}}>×</button>
+              </div>
+              <div style={{fontSize:'12px',color:'#9ca3af',marginBottom:'16px'}}>{label}{!showingPractice ? ` · ${tcFilter}` : ''} · {list.length} patient{list.length !== 1 ? 's' : ''}</div>
+
+              <div style={{display:'flex',gap:'8px',marginBottom:'20px',flexWrap:'wrap'}}>
+                {[
+                  {n:scheduledCount,   t:'Appt booked',   bg:'#dcfce7', c:'#166534'},
+                  {n:anticipatedCount, t:'Anticipated',   bg:'#e0f2fe', c:'#0369a1'},
+                  {n:recallCount,      t:'Recall cadence',bg:'#f3f4f6', c:'#6b7280'},
+                ].map(s => (
+                  <div key={s.t} style={{flex:1,minWidth:'110px',padding:'10px 12px',borderRadius:'9px',backgroundColor:s.bg,textAlign:'center'}}>
+                    <div style={{fontSize:'20px',fontWeight:'800',color:s.c,lineHeight:1}}>{s.n}</div>
+                    <div style={{fontSize:'10px',fontWeight:'700',color:s.c,marginTop:'3px',textTransform:'uppercase',letterSpacing:'0.05em'}}>{s.t}</div>
+                  </div>
+                ))}
+              </div>
+
+              {rows.length > 0 && (
+                <div style={{marginBottom:'24px'}}>
+                  <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>📍 By Location</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                    {rows.map((r, idx) => {
+                      const hColor = headerColors[idx % headerColors.length];
+                      const pct = list.length > 0 ? Math.round((r.count / list.length) * 100) : 0;
+                      return (
+                        <div key={r.loc} style={{backgroundColor:'#f9fafb',borderRadius:'10px',padding:'14px 16px'}}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'8px'}}>
+                            <span style={{fontSize:'14px',fontWeight:'700',color:hColor}}>{r.loc}</span>
+                            <span style={{fontSize:'13px',color:'#6b7280'}}>
+                              <strong style={{fontSize:'22px',color:'#15803d'}}>{r.count}</strong>
+                              <span style={{marginLeft:'6px'}}>in OBS</span>
+                              <span style={{marginLeft:'8px',color:'#9ca3af'}}>{pct}% of total</span>
+                            </span>
+                          </div>
+                          <div style={{height:'8px',backgroundColor:'#e5e7eb',borderRadius:'4px',overflow:'hidden'}}>
+                            <div style={{height:'8px',borderRadius:'4px',backgroundColor:hColor,width:`${Math.round((r.count / maxCount) * 100)}%`,transition:'width 0.4s ease'}}></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>👤 Patient Names ({sortedList.length})</div>
+              {sortedList.length === 0 ? (
+                <div style={{fontSize:'14px',color:'#6b7280',textAlign:'center',padding:'24px 0'}}>No observation patients in this period.</div>
+              ) : (
+                <div style={{border:'1px solid #f3f4f6',borderRadius:'10px',overflow:'hidden'}}>
+                  {sortedList.map((p, idx) => {
+                    const st = stateOf(p);
+                    const overdue = st.key !== 'anticipated' && st.date && st.date < todayStr;
+                    return (
+                      <div key={p.id || `${p.name}-${idx}`}
+                        onClick={() => { setShowObsList(null); setShowEditModal(p); setEditForm(p); }}
+                        title="Open this patient"
+                        style={{display:'flex',alignItems:'flex-start',gap:'10px',padding:'10px 14px',borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6',backgroundColor: idx % 2 ? '#fafafa' : 'white',cursor:'pointer'}}>
+                        <span style={{fontSize:'11px',fontWeight:'700',color:'#d1d5db',minWidth:'20px',paddingTop:'2px'}}>{idx + 1}</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:'7px',flexWrap:'wrap'}}>
+                            <span style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>{p.name}</span>
+                            <span style={{fontSize:'10px',fontWeight:'700',padding:'2px 7px',borderRadius:'10px',backgroundColor:st.bg,color:st.color}}>{st.badge}</span>
+                            {overdue && <span style={{fontSize:'10px',fontWeight:'700',padding:'2px 7px',borderRadius:'10px',backgroundColor:'#fee2e2',color:'#991b1b'}}>OVERDUE</span>}
+                          </div>
+                          <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'3px'}}>
+                            NPE {fmtDate(p.npeDate)}
+                            {p.age ? ` · age ${p.age}` : ''}
+                            {p.location ? ` · ${p.location}` : ''}
+                            {showingPractice && p.tc ? ` · ${p.tc}` : ''}
+                          </div>
+                          <div style={{fontSize:'11px',fontWeight:'600',color:st.color,marginTop:'2px'}}>{st.text}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'12px',textAlign:'center'}}>Tap a patient to open their record.</div>
             </div>
           </div>
         );
