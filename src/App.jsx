@@ -1374,7 +1374,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       // Realistic demo data for a 2-location ortho practice
       const dm = (year, month, net_production, collections, npe_scheduled, npe_showed, starts, obs_added, notes='') => ({
         year, month, net_production, collections, npe_scheduled, npe_showed, starts, obs_added, notes,
-        conversion_rate: npe_showed > 0 ? starts / npe_showed : null,
+        conversion_rate: (npe_showed - obs_added) > 0 ? starts / (npe_showed - obs_added) : null,
         show_up_rate: npe_scheduled > 0 ? npe_showed / npe_scheduled : null,
         avg_case_fee: starts > 0 ? Math.round(net_production / starts) : null,
         practice_id: 'demo-ortho',
@@ -1630,8 +1630,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const whitening = whitePts.length;
     const pif = pifPts.length;
 
-    const overallConv = total > 0 ? Math.round((started.length / total) * 100) : 0;
-    const sdsConv = total > 0 ? Math.round((sds.length / total) * 100) : 0;
+    // Conversion denominator excludes Observation patients — they attended an exam but are
+    // not yet treatment candidates, so counting them as failed conversions understates the TC.
+    // Matches the Metrics tab formula: Starts ÷ (Consults Completed − OBS).
+    const convDenom = total - observation;
+    const overallConv = convDenom > 0 ? Math.round((started.length / convDenom) * 100) : 0;
+    const sdsConv = convDenom > 0 ? Math.round((sds.length / convDenom) * 100) : 0;
 
     // OBS counts per location, for the Observation pipeline tile
     const obsPerLocation = locations
@@ -1644,7 +1648,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const perLocation = locations.map(loc => {
       const locPts = pts.filter(p => p.location === loc);
       const locStarted = _sp.filter(p => p.location === loc && (isSDS(p) || p.ST)).length;
-      const locConv = locPts.length > 0 ? Math.round((locStarted / locPts.length) * 100) : 0;
+      const locConvDenom = locPts.filter(p => p.OBS !== true).length;
+      const locConv = locConvDenom > 0 ? Math.round((locStarted / locConvDenom) * 100) : 0;
       return { loc, total: locPts.length, started: locStarted, conv: locConv };
     });
     // Keep backwards-compat fields for existing code that uses carTotal/apoTotal/carConv/apoConv
@@ -3245,8 +3250,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               });
             });
             const prevOnTime = potTotal > 0 ? Math.round((potCount / potTotal) * 100) : null;
+            // Prior-month conversion uses the same OBS-excluded denominator as calculateMetrics
+            const prevConvDenom = npes.filter(p => p.OBS !== true).length;
             return {
-              conv: npes.length > 0 ? dash.overallConv - Math.round((starts.length / npes.length) * 100) : null,
+              conv: prevConvDenom > 0 ? dash.overallConv - Math.round((starts.length / prevConvDenom) * 100) : null,
               starts: (dash.started > 0 || starts.length > 0) ? dash.started - starts.length : null,
               onTime: (prevOnTime !== null && dashOnTimeRate !== null) ? dashOnTimeRate - prevOnTime : null,
             };
@@ -3957,7 +3964,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             <div>
               <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px',display:'flex',alignItems:'center',gap:'4px'}}>
                 {dashTimeframe === 'month' ? `📅 ${monthLabel}${effectiveTCFilter !== 'All' ? ` · ${effectiveTCFilter}` : ''} — Performance vs. Goal` : `📊 All-Time Performance${effectiveTCFilter !== 'All' ? ` · ${effectiveTCFilter}` : ''}`}
-                <HelpTip id="dash-metrics" tip={"NPE = New Patient Exam (anyone who comes in for a consultation).\n\nStarted = Patients who started treatment this month (SDS + ST).\n\nConversion Rate = Started ÷ NPEs. Industry average is 55-65%. Aim for 60%+.\n\nSame-Day Start (SDS) = Patient bonded the same day as their exam. These earn the highest TC bonus.\n\nOn-Time Rate = % of your scheduled follow-up calls made on or before the due date."} />
+                <HelpTip id="dash-metrics" tip={"NPE = New Patient Exam (anyone who comes in for a consultation).\n\nStarted = Patients who started treatment this month (SDS + ST).\n\nConversion Rate = Started ÷ (NPEs − Observation). OBS patients attended but are not yet treatment candidates, so they are excluded from the denominator. Industry average is 55-65%. Aim for 60%+.\n\nSame-Day Start (SDS) = Patient bonded the same day as their exam. These earn the highest TC bonus.\n\nOn-Time Rate = % of your scheduled follow-up calls made on or before the due date."} />
               </div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))',gap:'14px'}}>
                 <MetricCard label={currentUser?.role === 'tc' ? 'My NPEs' : 'Total NPE'} value={dash.total}
@@ -10895,16 +10902,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         // isMedicaid/medicaidPipeline survive a start; MP and the obstacle text are cleared
         // when a patient converts, so alone they'd misclassify every started Medicaid patient.
         const isMedicaid = p => p.isMedicaid === true || p.medicaidPipeline === true || p.MP === true || (p.obstacle || '').toLowerCase().includes('medicaid');
-        const medNPE = dp.filter(isMedicaid);
-        const privNPE = dp.filter(p => !isMedicaid(p));
-        const allStarted = sp.filter(p => isSDS(p) || p.ST || p.DBRETS);
+        // Denominators exclude OBS and the numerator excludes DBRETS, so these sub-rates
+        // roll up to the same Conversion % shown on the tile that opened this modal.
+        const convPool = dp.filter(p => p.OBS !== true);
+        const medNPE = convPool.filter(isMedicaid);
+        const privNPE = convPool.filter(p => !isMedicaid(p));
+        const allStarted = sp.filter(p => isSDS(p) || p.ST);
         const medStarted = allStarted.filter(isMedicaid);
         const privStarted = allStarted.filter(p => !isMedicaid(p));
         const medConv = medNPE.length > 0 ? Math.round((medStarted.length / medNPE.length) * 100) : null;
         const privConv = privNPE.length > 0 ? Math.round((privStarted.length / privNPE.length) * 100) : null;
         // Breakdown by obstacle for non-Medicaid non-started
         const obstacleMap = {};
-        dp.forEach(p => {
+        convPool.forEach(p => {
           if (isMedicaid(p)) return;
           const obs = p.obstacle || 'No obstacle recorded';
           if (!obstacleMap[obs]) obstacleMap[obs] = { npe: 0, started: 0 };
