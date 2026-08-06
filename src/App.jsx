@@ -3587,17 +3587,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     {label:'Conversion', value:`${nm.overallConv}%`,               goal:`${nmConvGoal}%`,                   color:'#2563EB', clickable:true, onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts })},
                     {label:'SDS Rate',   value:nm.started>0?`${nm.sdsRate}%`:'—', goal:null,                               color:'#7c3aed', clickable:false},
                     {label:'Observation', value:nm.observation,                    goal:null,                               color:'#15803d', clickable:nm.observation>0, hint:'↗ names',
-                      // Every configured location, so a location with no OBS reads as a
-                      // real zero rather than going missing. obsPerLocation is pre-filtered
-                      // to non-zero counts and may carry an "Other" bucket for locations
+                      // Every configured location always, so a location with no OBS reads
+                      // as a real zero rather than going missing — including when the
+                      // month has no OBS at all. obsPerLocation is pre-filtered to
+                      // non-zero counts and may carry an "Other" bucket for locations
                       // that have since been renamed — keep that on the end.
-                      perLocation: nm.observation > 0 ? (() => {
+                      perLocation: (() => {
                         const counts = Object.fromEntries((nm.obsPerLocation || []).map(x => [x.loc, x.count]));
                         return [
                           ...locations.map(loc => ({ loc, count: counts[loc] || 0 })),
                           ...(nm.obsPerLocation || []).filter(x => !locations.includes(x.loc)),
                         ];
-                      })() : [],
+                      })(),
                       onClick: nm.observation>0 ? () => setShowObsList({ list: selNPEPts.filter(p => p.OBS === true), perLocation: nm.obsPerLocation || [], label: dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel, tcFilter: 'All' }) : null},
                   ].map(card => {
                     const numVal  = parseFloat(String(card.value).replace('%',''));
