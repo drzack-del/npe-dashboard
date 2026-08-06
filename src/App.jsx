@@ -3652,21 +3652,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             <col style={{width:'19%'}} />
                             {KPI_COLS.map(c => <col key={c.key} />)}
                           </colgroup>
-                          <thead>
-                            <tr>
-                              <th style={{textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'bottom',paddingBottom:'11px'}}>{kpiPeriodLabel}</th>
-                              {KPI_COLS.map(col => (
-                                <th key={col.key} style={{...metricCell(col),fontSize:'10px',fontWeight:'800',color:col.color,textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'bottom',paddingBottom:'11px'}}>
-                                  {col.label}
-                                  {drill[col.key] && <span style={{fontSize:'10px',fontWeight:'500',textTransform:'none',letterSpacing:0,marginLeft:'4px',opacity:0.7}}>{drill[col.key].hint}</span>}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
                           <tbody>
-                            {/* Practice totals */}
+                            {/* Practice totals. The metric name sits at the top of its own
+                                cell rather than in a separate header row — in a header the
+                                label floated free of the number it belongs to. */}
                             <tr>
-                              <td style={{textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'top',paddingTop:'6px'}}>Practice</td>
+                              <td style={{textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'top',paddingTop:'14px'}}>Practice</td>
                               {KPI_COLS.map(col => {
                                 const d = drill[col.key];
                                 const goal = col.key === 'npe' ? (nmNPEGoal > 0 ? nmNPEGoal : null)
@@ -3681,7 +3672,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   <td key={col.key}
                                     onClick={d ? d.onClick : undefined}
                                     title={d ? 'Click for the full breakdown' : undefined}
-                                    style={{...metricCell(col),verticalAlign:'top',paddingTop:'4px',paddingBottom:'15px',cursor:d?'pointer':'default'}}>
+                                    style={{...metricCell(col),verticalAlign:'top',paddingTop:'14px',paddingBottom:'15px',cursor:d?'pointer':'default'}}>
+                                    <div style={{fontSize:'10px',fontWeight:'800',color:col.color,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px',lineHeight:1.3}}>
+                                      {col.label}
+                                      {d && <span style={{fontSize:'10px',fontWeight:'500',textTransform:'none',letterSpacing:0,marginLeft:'4px',opacity:0.7}}>{d.hint}</span>}
+                                    </div>
                                     <div style={{fontSize:'30px',fontWeight:'800',lineHeight:1.05,color:col.color}}>{value}</div>
                                     {goal !== null && (
                                       <div style={{height:'5px',borderRadius:'3px',overflow:'hidden',marginTop:'8px',backgroundColor:col.track}}>
