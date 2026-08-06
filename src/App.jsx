@@ -3415,7 +3415,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 if (!entry.date) return;
                 if (entry.date < callRange.from || entry.date > callRange.to) return;
                 const logger = entry.logged_by || p.tc || 'Unknown';
-                if (!callLoggerMap[logger]) callLoggerMap[logger] = { total:0, reached:0, voicemail:0, voicemailWithText:0, noAnswer:0, missed:0, textWithMissed:0, buckets:{}, days:{}, months:{}, touched:new Set() };
+                if (!callLoggerMap[logger]) callLoggerMap[logger] = { total:0, reached:0, voicemail:0, voicemailWithText:0, noAnswer:0, missed:0, textWithMissed:0, buckets:{}, days:{}, touched:new Set() };
                 const s = callLoggerMap[logger];
                 const spoke = entry.reachedPatient === 'Spoke with patient';
                 s.total++;
@@ -3430,16 +3430,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   s.buckets[bl].total++;
                   if (spoke) s.buckets[bl].reached++;
                 }
-                // Day-of-week and month-over-month only become readable once the
-                // window is wider than a single month, but cost nothing to collect.
+                // Day-of-week only becomes readable once the window is wider than a
+                // single month, but costs nothing to collect.
                 const dow = new Date(entry.date+'T12:00:00').getDay();
                 if (!s.days[dow]) s.days[dow] = { dow, label:DOW_LABELS[dow], total:0, reached:0 };
                 s.days[dow].total++;
                 if (spoke) s.days[dow].reached++;
-                const mk = entry.date.substring(0,7);
-                if (!s.months[mk]) s.months[mk] = { key:mk, total:0, reached:0 };
-                s.months[mk].total++;
-                if (spoke) s.months[mk].reached++;
               });
             });
             const callPerLogger = Object.entries(callLoggerMap).map(([name, s]) => ({
@@ -3461,10 +3457,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               dayBuckets: Object.values(s.days).sort((a,b)=>a.dow-b.dow)
                 .map(d=>({ ...d, rate: d.total>=3 ? Math.round((d.reached/d.total)*100) : null }))
                 .filter(d=>d.total>0),
-              // Capped at 12 bars — beyond that they're too thin to read.
-              monthTrend: Object.values(s.months).sort((a,b)=>a.key<b.key?-1:1).slice(-12)
-                .map(m=>({ ...m, label:new Date(m.key+'-15T12:00:00').toLocaleDateString('en-US',{month:'short'}),
-                           rate: m.total>0 ? Math.round((m.reached/m.total)*100) : null })),
             })).filter(l => l.totalContacts > 0 && isCurrentTC(l.name));
 
             // Queue health (always today-based)
@@ -3497,23 +3489,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               .filter(n => n >= 0);
             const pipeAvgAge = pipeAges.length ? Math.round(pipeAges.reduce((a,b)=>a+b,0)/pipeAges.length) : null;
             const pipeStale30 = pipeAges.filter(n => n > 30).length;
-            // Month-by-month conversion across the cohort, so a widened window shows
-            // direction and not just one blended number.
-            const pipeMonthly = (() => {
-              const byMonth = {};
-              pipeNPEPts.forEach(p => {
-                const k = p.npeDate.substring(0,7);
-                if (!byMonth[k]) byMonth[k] = { key:k, total:0, started:0, obs:0 };
-                byMonth[k].total++;
-                if (isSDS(p) || p.ST) byMonth[k].started++;
-                if (p.OBS === true) byMonth[k].obs++;
-              });
-              return Object.values(byMonth).sort((a,b)=>a.key<b.key?-1:1).slice(-12).map(m => ({
-                ...m,
-                label: new Date(m.key+'-15T12:00:00').toLocaleDateString('en-US',{month:'short'}),
-                conv: (m.total - m.obs) > 0 ? Math.round((m.started/(m.total-m.obs))*100) : null,
-              }));
-            })();
 
             const pctColor  = r => r===null?'#9ca3af':r>=80?'#10b981':r>=60?'#d97706':'#dc2626';
             const pctBg     = r => r===null?'#f9fafb':r>=80?'#f0fdf4':r>=60?'#fffbeb':'#fef2f2';
@@ -3603,9 +3578,27 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:'12px'}}>
                   {[
                     {label:'NPEs',       value:nm.total,                           goal:nmNPEGoal>0?nmNPEGoal:null,         color:'#374151', clickable:false},
-                    {label:'Starts',     value:nm.started,                         goal:nmStartedGoal>0?nmStartedGoal:null, color:'#10b981', clickable:true, onClick:() => setShowStartsByLocation({ perLocation: nm.perLocation || [], started: nm.started, label: dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel, tcFilter: 'All', list: selStartPts.filter(p => isSDS(p) || p.ST) })},
+                    {label:'Starts',     value:nm.started,                         goal:nmStartedGoal>0?nmStartedGoal:null, color:'#10b981', clickable:true, hint:'↗ details',
+                      // Per-location starts inline — the split is the first thing asked
+                      // of this number, so it shouldn't cost a click. The modal still
+                      // carries the full patient-by-patient detail.
+                      perLocation:(nm.perLocation || []).map(x => ({ loc:x.loc, count:x.started })),
+                      onClick:() => setShowStartsByLocation({ perLocation: nm.perLocation || [], started: nm.started, label: dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel, tcFilter: 'All', list: selStartPts.filter(p => isSDS(p) || p.ST) })},
                     {label:'Conversion', value:`${nm.overallConv}%`,               goal:`${nmConvGoal}%`,                   color:'#2563EB', clickable:true, onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts })},
                     {label:'SDS Rate',   value:nm.started>0?`${nm.sdsRate}%`:'—', goal:null,                               color:'#7c3aed', clickable:false},
+                    {label:'Observation', value:nm.observation,                    goal:null,                               color:'#15803d', clickable:nm.observation>0, hint:'↗ names',
+                      // Every configured location, so a location with no OBS reads as a
+                      // real zero rather than going missing. obsPerLocation is pre-filtered
+                      // to non-zero counts and may carry an "Other" bucket for locations
+                      // that have since been renamed — keep that on the end.
+                      perLocation: nm.observation > 0 ? (() => {
+                        const counts = Object.fromEntries((nm.obsPerLocation || []).map(x => [x.loc, x.count]));
+                        return [
+                          ...locations.map(loc => ({ loc, count: counts[loc] || 0 })),
+                          ...(nm.obsPerLocation || []).filter(x => !locations.includes(x.loc)),
+                        ];
+                      })() : [],
+                      onClick: nm.observation>0 ? () => setShowObsList({ list: selNPEPts.filter(p => p.OBS === true), perLocation: nm.obsPerLocation || [], label: dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel, tcFilter: 'All' }) : null},
                   ].map(card => {
                     const numVal  = parseFloat(String(card.value).replace('%',''));
                     const numGoal = card.goal ? parseFloat(String(card.goal).replace('%','')) : null;
@@ -3616,9 +3609,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         onMouseEnter={card.clickable ? e => { e.currentTarget.style.boxShadow='0 4px 12px rgba(0,0,0,0.12)'; e.currentTarget.style.cursor='pointer'; } : undefined}
                         onMouseLeave={card.clickable ? e => { e.currentTarget.style.boxShadow='0 1px 3px rgba(0,0,0,0.08)'; } : undefined}
                         style={{backgroundColor:'white',borderRadius:'10px',padding:'16px 18px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6',transition:'box-shadow 0.15s'}}>
-                        <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'6px'}}>{card.label}{card.clickable && <span style={{marginLeft:'5px',fontSize:'10px',color:'#93c5fd',fontWeight:'500',textTransform:'none'}}>↗ breakdown</span>}</div>
+                        <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'6px'}}>{card.label}{card.clickable && <span style={{marginLeft:'5px',fontSize:'10px',color:'#93c5fd',fontWeight:'500',textTransform:'none'}}>{card.hint || '↗ breakdown'}</span>}</div>
                         <div style={{fontSize:'28px',fontWeight:'800',color:card.color,lineHeight:1}}>{card.value}</div>
                         {card.goal&&<div style={{fontSize:'11px',marginTop:'5px',color:met?'#10b981':'#9ca3af',fontWeight:'600'}}>{met?'✓ Goal met':`Goal: ${card.goal}`}</div>}
+                        {card.perLocation && card.perLocation.length > 0 && (
+                          <div style={{marginTop:'8px',paddingTop:'6px',borderTop:'1px solid #f3f4f6',display:'flex',flexDirection:'column',gap:'3px'}}>
+                            {card.perLocation.map(x => (
+                              <div key={x.loc} style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:'11px'}}>
+                                <span style={{color:'#6b7280'}}>{x.loc}</span>
+                                <span style={{fontWeight:'700',color:'#374151'}}>{x.count}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -3755,27 +3758,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                       ))}
                     </div>
-                    {pipeMonthly.length > 1 && (
-                      <div style={{marginTop:'18px',paddingTop:'14px',borderTop:'1px solid #f3f4f6'}}>
-                        <div style={{fontSize:'10px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'10px'}}>
-                          📈 Conversion by exam month
-                        </div>
-                        <div style={{display:'flex',alignItems:'flex-end',gap:'8px',height:'92px'}}>
-                          {pipeMonthly.map(m => (
-                            <div key={m.key} style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',height:'100%'}}>
-                              <div style={{fontSize:'11px',fontWeight:'800',color:m.conv===null?'#9ca3af':m.conv>=50?'#10b981':m.conv>=35?'#d97706':'#dc2626',marginBottom:'3px'}}>
-                                {m.conv!==null?`${m.conv}%`:'—'}
-                              </div>
-                              <div title={`${m.started} of ${m.total-m.obs} converted · ${m.total} exam${m.total!==1?'s':''}`}
-                                style={{width:'100%',height:`${Math.max(3,(m.conv||0)*0.55)}px`,borderRadius:'4px 4px 0 0',
-                                  backgroundColor:m.conv===null?'#e5e7eb':m.conv>=50?'#10b981':m.conv>=35?'#f59e0b':'#ef4444'}} />
-                              <div style={{fontSize:'10px',color:'#6b7280',marginTop:'5px',whiteSpace:'nowrap'}}>{m.label}</div>
-                              <div style={{fontSize:'9px',color:'#9ca3af'}}>{m.started}/{m.total}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
 
@@ -3897,22 +3879,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                           </div>
                                         );
                                       })}
-                                    </div>
-                                  </div>
-                                )}
-                                {tc.monthTrend.length > 1 && (
-                                  <div style={{marginTop:'12px',paddingTop:'10px',borderTop:'1px solid #f3f4f6'}}>
-                                    <div style={{fontSize:'10px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'8px'}}>📈 Pick-Up Rate by Month</div>
-                                    <div style={{display:'flex',alignItems:'flex-end',gap:'5px',height:'70px'}}>
-                                      {tc.monthTrend.map(m => (
-                                        <div key={m.key} style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',height:'100%'}}>
-                                          <div style={{fontSize:'9px',fontWeight:'800',color:bClr(m.rate),marginBottom:'2px'}}>{m.rate!==null?`${m.rate}%`:'—'}</div>
-                                          <div title={`${m.reached} of ${m.total} calls picked up`}
-                                            style={{width:'100%',height:`${Math.max(3,(m.rate||0)*0.4)}px`,borderRadius:'3px 3px 0 0',backgroundColor:bClr(m.rate)}} />
-                                          <div style={{fontSize:'9px',color:'#6b7280',marginTop:'4px',whiteSpace:'nowrap'}}>{m.label}</div>
-                                          <div style={{fontSize:'9px',color:'#d1d5db'}}>{m.total}</div>
-                                        </div>
-                                      ))}
                                     </div>
                                   </div>
                                 )}
