@@ -3574,59 +3574,164 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   })()}
                 </div>
 
-                {/* KPI Row */}
-                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:'12px'}}>
-                  {[
-                    {label:'NPEs',       value:nm.total,                           goal:nmNPEGoal>0?nmNPEGoal:null,         color:'#374151', clickable:false},
-                    {label:'Starts',     value:nm.started,                         goal:nmStartedGoal>0?nmStartedGoal:null, color:'#10b981', clickable:true, hint:'↗ details',
-                      // Per-location starts inline — the split is the first thing asked
-                      // of this number, so it shouldn't cost a click. The modal still
-                      // carries the full patient-by-patient detail.
-                      perLocation:(nm.perLocation || []).map(x => ({ loc:x.loc, count:x.started })),
-                      onClick:() => setShowStartsByLocation({ perLocation: nm.perLocation || [], started: nm.started, label: dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel, tcFilter: 'All', list: selStartPts.filter(p => isSDS(p) || p.ST) })},
-                    {label:'Conversion', value:`${nm.overallConv}%`,               goal:`${nmConvGoal}%`,                   color:'#2563EB', clickable:true, onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts })},
-                    {label:'SDS Rate',   value:nm.started>0?`${nm.sdsRate}%`:'—', goal:null,                               color:'#7c3aed', clickable:false},
-                    {label:'Observation', value:nm.observation,                    goal:null,                               color:'#15803d', clickable:nm.observation>0, hint:'↗ names',
-                      // Every configured location always, so a location with no OBS reads
-                      // as a real zero rather than going missing — including when the
-                      // month has no OBS at all. obsPerLocation is pre-filtered to
-                      // non-zero counts and may carry an "Other" bucket for locations
-                      // that have since been renamed — keep that on the end.
-                      perLocation: (() => {
-                        const counts = Object.fromEntries((nm.obsPerLocation || []).map(x => [x.loc, x.count]));
-                        return [
-                          ...locations.map(loc => ({ loc, count: counts[loc] || 0 })),
-                          ...(nm.obsPerLocation || []).filter(x => !locations.includes(x.loc)),
-                        ];
-                      })(),
-                      onClick: nm.observation>0 ? () => setShowObsList({ list: selNPEPts.filter(p => p.OBS === true), perLocation: nm.obsPerLocation || [], label: dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel, tcFilter: 'All' }) : null},
-                  ].map(card => {
-                    const numVal  = parseFloat(String(card.value).replace('%',''));
-                    const numGoal = card.goal ? parseFloat(String(card.goal).replace('%','')) : null;
-                    const met = numGoal!==null && !isNaN(numVal) && numVal>=numGoal;
-                    return (
-                      <div key={card.label}
-                        onClick={card.clickable ? card.onClick : undefined}
-                        onMouseEnter={card.clickable ? e => { e.currentTarget.style.boxShadow='0 4px 12px rgba(0,0,0,0.12)'; e.currentTarget.style.cursor='pointer'; } : undefined}
-                        onMouseLeave={card.clickable ? e => { e.currentTarget.style.boxShadow='0 1px 3px rgba(0,0,0,0.08)'; } : undefined}
-                        style={{backgroundColor:'white',borderRadius:'10px',padding:'16px 18px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6',transition:'box-shadow 0.15s'}}>
-                        <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'6px'}}>{card.label}{card.clickable && <span style={{marginLeft:'5px',fontSize:'10px',color:'#93c5fd',fontWeight:'500',textTransform:'none'}}>{card.hint || '↗ breakdown'}</span>}</div>
-                        <div style={{fontSize:'28px',fontWeight:'800',color:card.color,lineHeight:1}}>{card.value}</div>
-                        {card.goal&&<div style={{fontSize:'11px',marginTop:'5px',color:met?'#10b981':'#9ca3af',fontWeight:'600'}}>{met?'✓ Goal met':`Goal: ${card.goal}`}</div>}
-                        {card.perLocation && card.perLocation.length > 0 && (
-                          <div style={{marginTop:'8px',paddingTop:'6px',borderTop:'1px solid #f3f4f6',display:'flex',flexDirection:'column',gap:'3px'}}>
-                            {card.perLocation.map(x => (
-                              <div key={x.loc} style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:'11px'}}>
-                                <span style={{color:'#6b7280'}}>{x.loc}</span>
-                                <span style={{fontWeight:'700',color:'#374151'}}>{x.count}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
+                {/* ── KPI table ────────────────────────────────────────────────
+                     Practice totals on top, locations beneath, on ONE grid — so every
+                     headline number sits directly above the offices that make it up.
+                     Each metric owns a column and its hue runs from the header all the
+                     way down, which is what tells you which metric you're reading.
+                     Health (good/behind) is a SEPARATE, semantic color, so identity and
+                     judgement never get confused — only Conversion carries one, because
+                     it's the only metric here that's a verdict rather than a count. ── */}
+                {(() => {
+                  const kpiPeriodLabel = dashTimeframe === 'custom'
+                    ? (customRangeValid ? customRangeLabel : 'Custom Range')
+                    : selMonthLabel;
+
+                  const KPI_COLS = [
+                    { key:'npe',   label:'NPEs',        color:'#374151', tint:'rgba(55,65,81,0.035)',   track:'rgba(55,65,81,0.13)',   fill:'#6b7280' },
+                    { key:'start', label:'Starts',      color:'#059669', tint:'rgba(16,185,129,0.045)', track:'rgba(16,185,129,0.16)', fill:'#10b981' },
+                    { key:'conv',  label:'Conversion',  color:'#2563EB', tint:'rgba(37,99,235,0.04)' },
+                    { key:'sds',   label:'SDS Rate',    color:'#7c3aed', tint:'rgba(124,58,237,0.04)' },
+                    { key:'obs',   label:'Observation', color:'#15803d', tint:'rgba(21,128,61,0.04)' },
+                  ];
+
+                  const drill = {
+                    start: { hint:'↗ details', onClick:() => setShowStartsByLocation({ perLocation: nm.perLocation || [], started: nm.started, label: kpiPeriodLabel, tcFilter:'All', list: selStartPts.filter(p => isSDS(p) || p.ST) }) },
+                    conv:  { hint:'↗ breakdown', onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts }) },
+                    obs:   nm.observation > 0 ? { hint:'↗ names', onClick:() => setShowObsList({ list: selNPEPts.filter(p => p.OBS === true), perLocation: nm.obsPerLocation || [], label: kpiPeriodLabel, tcFilter:'All' }) } : null,
+                  };
+
+                  // Starts are counted by start date and NPEs by exam date, so a location's
+                  // starts are not a strict subset of its exams — same convention the rest
+                  // of the dashboard uses. Conversion keeps the OBS-excluded denominator.
+                  const locRows = (nm.perLocation || []).map(L => {
+                    const sdsCount  = selStartPts.filter(p => p.location === L.loc && isSDS(p)).length;
+                    const obsCount  = selNPEPts.filter(p => p.location === L.loc && p.OBS === true).length;
+                    const convDenom = selNPEPts.filter(p => p.location === L.loc && p.OBS !== true).length;
+                    return { ...L, obs:obsCount, convDenom,
+                      conv: convDenom > 0 ? Math.round((L.started / convDenom) * 100) : null,
+                      sdsRate: L.started > 0 ? Math.round((sdsCount / L.started) * 100) : null };
+                  });
+
+                  // Below this many exams a conversion rate is too noisy to flag — one start
+                  // out of three shouldn't wave a red dot. Mirrors the 3-call floor already
+                  // used on best-time-to-call.
+                  const MIN_CONV_SAMPLE = 5;
+                  const convHealth = (rate, denom) => {
+                    if (rate === null || denom < MIN_CONV_SAMPLE) return null;
+                    if (rate >= nmConvGoal) return '#10b981';
+                    if (rate >= nmConvGoal * 0.8) return '#f59e0b';
+                    return '#ef4444';
+                  };
+
+                  const practiceDenom = nm.total - nm.observation;
+                  const convDelta = nm.overallConv - nmConvGoal;
+                  const chipTone = practiceDenom < MIN_CONV_SAMPLE ? null
+                    : convDelta >= 0 ? { bg:'#dcfce7', fg:'#166534' }
+                    : nm.overallConv >= nmConvGoal * 0.8 ? { bg:'#fef3c7', fg:'#92400e' }
+                    : { bg:'#fee2e2', fg:'#991b1b' };
+                  const chipText = convDelta === 0 ? '✓ Goal met'
+                    : convDelta > 0 ? `✓ ${convDelta} over goal`
+                    : `${Math.abs(convDelta)} under goal`;
+
+                  const cellPad = { padding:'0 15px' };
+                  const metricCell = col => ({ ...cellPad, borderLeft:'1px solid #edeff2', backgroundColor:col.tint, textAlign:'right' });
+                  const locValue = (col, L) => {
+                    if (col.key === 'npe')   return L.total;
+                    if (col.key === 'start') return L.started;
+                    if (col.key === 'obs')   return L.obs;
+                    if (col.key === 'sds')   return L.sdsRate === null ? '—' : `${L.sdsRate}%`;
+                    return L.conv === null ? '—' : `${L.conv}%`;
+                  };
+
+                  return (
+                    <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
+                      <div style={{overflowX:'auto'}}>
+                        <table style={{width:'100%',minWidth:'760px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
+                          <colgroup>
+                            <col style={{width:'19%'}} />
+                            {KPI_COLS.map(c => <col key={c.key} />)}
+                          </colgroup>
+                          <thead>
+                            <tr>
+                              <th style={{textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'bottom',paddingBottom:'11px'}}>{kpiPeriodLabel}</th>
+                              {KPI_COLS.map(col => (
+                                <th key={col.key} style={{...metricCell(col),fontSize:'10px',fontWeight:'800',color:col.color,textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'bottom',paddingBottom:'11px'}}>
+                                  {col.label}
+                                  {drill[col.key] && <span style={{fontSize:'10px',fontWeight:'500',textTransform:'none',letterSpacing:0,marginLeft:'4px',opacity:0.7}}>{drill[col.key].hint}</span>}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {/* Practice totals */}
+                            <tr>
+                              <td style={{textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'top',paddingTop:'6px'}}>Practice</td>
+                              {KPI_COLS.map(col => {
+                                const d = drill[col.key];
+                                const goal = col.key === 'npe' ? (nmNPEGoal > 0 ? nmNPEGoal : null)
+                                  : col.key === 'start' ? (nmStartedGoal > 0 ? nmStartedGoal : null) : null;
+                                const actual = col.key === 'npe' ? nm.total : nm.started;
+                                const value = col.key === 'npe' ? nm.total
+                                  : col.key === 'start' ? nm.started
+                                  : col.key === 'conv' ? `${nm.overallConv}%`
+                                  : col.key === 'sds' ? (nm.started > 0 ? `${nm.sdsRate}%` : '—')
+                                  : nm.observation;
+                                return (
+                                  <td key={col.key}
+                                    onClick={d ? d.onClick : undefined}
+                                    title={d ? 'Click for the full breakdown' : undefined}
+                                    style={{...metricCell(col),verticalAlign:'top',paddingTop:'4px',paddingBottom:'15px',cursor:d?'pointer':'default'}}>
+                                    <div style={{fontSize:'30px',fontWeight:'800',lineHeight:1.05,color:col.color}}>{value}</div>
+                                    {goal !== null && (
+                                      <div style={{height:'5px',borderRadius:'3px',overflow:'hidden',marginTop:'8px',backgroundColor:col.track}}>
+                                        <div style={{height:'100%',borderRadius:'3px',backgroundColor:col.fill,width:`${Math.min(100,Math.round((actual/goal)*100))}%`}} />
+                                      </div>
+                                    )}
+                                    {goal !== null && <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>Goal: {goal}</div>}
+                                    {col.key === 'conv' && chipTone && (
+                                      <div><span style={{display:'inline-block',fontSize:'11px',fontWeight:'700',padding:'3px 9px',borderRadius:'20px',marginTop:'8px',backgroundColor:chipTone.bg,color:chipTone.fg}}>{chipText}</span></div>
+                                    )}
+                                    {col.key === 'sds' && nm.started > 0 && (
+                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.sds} of {nm.started} starts</div>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+
+                            {locRows.length > 0 && (
+                              <>
+                                <tr><td colSpan={KPI_COLS.length + 1} style={{borderBottom:'2px solid #e8eaed',padding:0,height:0}} /></tr>
+                                <tr><td colSpan={KPI_COLS.length + 1} style={{paddingTop:'13px',paddingBottom:'5px',fontSize:'10px',fontWeight:'700',color:'#b6bcc6',textTransform:'uppercase',letterSpacing:'0.08em'}}>By location</td></tr>
+                                {locRows.map((L, i) => {
+                                  const last = i === locRows.length - 1;
+                                  const health = convHealth(L.conv, L.convDenom);
+                                  return (
+                                    <tr key={L.loc}>
+                                      <td style={{textAlign:'left',fontSize:'13px',fontWeight:'600',color:'#4b5563',padding:'10px 10px 10px 0',borderBottom:last?'none':'1px solid #f4f5f7'}}>{L.loc}</td>
+                                      {KPI_COLS.map(col => {
+                                        const v = locValue(col, L);
+                                        return (
+                                          <td key={col.key} style={{...metricCell(col),paddingTop:'10px',paddingBottom:'10px',fontSize:'15px',fontWeight:'700',color:col.color,borderBottom:last?'none':'1px solid #f4f5f7',opacity:v===0?0.33:1}}>
+                                            {col.key === 'conv' && health && (
+                                              <span style={{display:'inline-block',width:'7px',height:'7px',borderRadius:'50%',marginRight:'8px',verticalAlign:'2px',backgroundColor:health}} />
+                                            )}
+                                            {v}
+                                          </td>
+                                        );
+                                      })}
+                                    </tr>
+                                  );
+                                })}
+                              </>
+                            )}
+                          </tbody>
+                        </table>
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Queue Health — compact horizontal strip */}
                 <div style={{backgroundColor:'white',borderRadius:'10px',padding:'12px 20px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6',display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap'}}>
