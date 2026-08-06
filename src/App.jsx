@@ -3382,27 +3382,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 if (!isThresholdMet(b, tcName)) return;
                 patients.forEach(p => { tcCampaignBonus += popupBonusEarnings(p, b, tcName); });
               });
-              // Due today count
-              const tcDueToday = patients.filter(p => {
-                if (p.tc!==tcName || (!p.PEN&&!p.MP&&!p.OBS)) return false;
-                if (!p.nextTouchDate || p.nextTouchDate==='__MAX__') return false;
-                return skipWeekend(p.nextTouchDate) <= todayStrNew;
-              }).length;
               // Starts this month (for campaign threshold display)
               const tcStartsThisMonth = selStartPts.filter(p => p.tc===tcName && (isSDS(p)||p.ST)).length;
               return {
                 name: tcName,
+                // Denominator counts only log entries carrying a scheduledDate — follow-ups
+                // that were actually due, not total call volume.
                 onTimeRate: tcOTTotal>0 ? Math.round((tcOT/tcOTTotal)*100) : null,
-                // tcOTTotal counts only log entries that carried a scheduledDate, i.e.
-                // follow-ups that were actually due — not every call logged. Expose the
-                // numerator too so the card can state the fraction rather than imply
-                // the denominator is total call volume.
-                onTimeCount: tcOT,
                 onTimeTotal: tcOTTotal,
                 baseBonus: tcBaseBonus,
                 campaignBonus: tcCampaignBonus,
                 totalBonus: tcBaseBonus + tcCampaignBonus,
-                dueToday: tcDueToday,
                 startsThisMonth: tcStartsThisMonth,
                 activeCampaigns,
               };
@@ -3563,7 +3553,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           const statusLabel = r===null?'No follow-ups due yet':r>=80?'On track':r>=60?'Needs improvement':'Falling behind';
                           const statusIcon  = r===null?'—':r>=80?'✓':r>=60?'⚠️':'🔴';
                           return (
-                            <div key={tc.name} style={{display:'grid',gridTemplateColumns:'minmax(96px,1fr) 62px minmax(120px,2fr) minmax(150px,1fr) auto',alignItems:'center',gap:'16px',
+                            <div key={tc.name} style={{display:'grid',gridTemplateColumns:'minmax(96px,1fr) 62px minmax(140px,3fr) minmax(150px,1fr)',alignItems:'center',gap:'16px',
                               padding:'12px 0',borderBottom:i===displayTCNew.length-1?'none':'1px solid #f4f5f7'}}>
                               <div style={{fontSize:'13px',fontWeight:'700',color:'#374151'}}>{tc.name}</div>
                               <div style={{fontSize:'22px',fontWeight:'800',textAlign:'right',color:pctColor(r),fontVariantNumeric:'tabular-nums',lineHeight:1}}>{r!==null?`${r}%`:'—'}</div>
@@ -3571,13 +3561,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 <div style={{height:'100%',width:`${r||0}%`,backgroundColor:pctColor(r),borderRadius:'4px',transition:'width 0.4s ease'}} />
                               </div>
                               <div style={{fontSize:'12px',fontWeight:'700',color:pctColor(r)}}>{statusIcon} {statusLabel}</div>
-                              <div style={{fontSize:'11px',color:'#9ca3af',textAlign:'right',fontVariantNumeric:'tabular-nums',whiteSpace:'nowrap'}}>
-                                {tc.onTimeTotal > 0 ? `${tc.onTimeCount} of ${tc.onTimeTotal} on time` : 'No follow-ups due'}
-                                {' · '}
-                                {tc.dueToday > 0
-                                  ? <span style={{color:'#c2410c',fontWeight:'700'}} title="Patients still open whose follow-up date has arrived or passed — as of today, not the month shown">{tc.dueToday} due now</span>
-                                  : <span style={{color:'#10b981',fontWeight:'700'}}>queue clear</span>}
-                              </div>
                             </div>
                           );
                         })}
