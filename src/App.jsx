@@ -3393,6 +3393,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               return {
                 name: tcName,
                 onTimeRate: tcOTTotal>0 ? Math.round((tcOT/tcOTTotal)*100) : null,
+                // tcOTTotal counts only log entries that carried a scheduledDate, i.e.
+                // follow-ups that were actually due — not every call logged. Expose the
+                // numerator too so the card can state the fraction rather than imply
+                // the denominator is total call volume.
+                onTimeCount: tcOT,
                 onTimeTotal: tcOTTotal,
                 baseBonus: tcBaseBonus,
                 campaignBonus: tcCampaignBonus,
@@ -3538,10 +3543,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'12px'}}>
                     <div>
                       <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>⏱️ TC Follow-Up Accountability</div>
-                      <div style={{fontSize:'12px',color:'#6b7280',marginTop:'1px'}}>Are your TCs completing follow-ups on time? Goal: 80%+</div>
+                      <div style={{fontSize:'12px',color:'#6b7280',marginTop:'1px'}}>Scheduled follow-ups completed on or before their due date · Goal 80%</div>
                     </div>
                     <button onClick={()=>setCurrentView('ontime')} style={{padding:'8px 16px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
                   </div>
+                  {/* One line per coordinator. The bars share a baseline so ranking is
+                      immediate, and the section stays an alert rather than becoming
+                      another data table — that's the job this card does. */}
                   {(() => {
                     const activeTCNew = perTCNew.filter(tc => tc.onTimeTotal > 0);
                     const displayTCNew = activeTCNew.length > 0 ? activeTCNew : perTCNew;
@@ -3549,22 +3557,26 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <div style={{backgroundColor:'white',borderRadius:'12px',padding:'24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',color:'#9ca3af',fontSize:'14px'}}>No TCs configured</div>
                     );
                     return (
-                      <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.min(displayTCNew.length,3)},1fr)`,gap:'14px'}}>
-                        {displayTCNew.map(tc => {
+                      <div style={{backgroundColor:'white',borderRadius:'10px',padding:'6px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
+                        {displayTCNew.map((tc, i) => {
                           const r = tc.onTimeRate;
-                          const statusLabel = r===null?'No calls logged yet':r>=80?'On track':r>=60?'Needs improvement':'Falling behind';
+                          const statusLabel = r===null?'No follow-ups due yet':r>=80?'On track':r>=60?'Needs improvement':'Falling behind';
                           const statusIcon  = r===null?'—':r>=80?'✓':r>=60?'⚠️':'🔴';
                           return (
-                            <div key={tc.name} style={{backgroundColor:pctBg(r),border:`2px solid ${pctBorder(r)}`,borderRadius:'14px',padding:'24px 28px',boxShadow:'0 2px 6px rgba(0,0,0,0.06)'}}>
-                              <div style={{fontSize:'13px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px'}}>{tc.name}</div>
-                              <div style={{fontSize:'56px',fontWeight:'900',color:pctColor(r),lineHeight:1,marginBottom:'4px'}}>{r!==null?`${r}%`:'—'}</div>
-                              <div style={{fontSize:'12px',fontWeight:'700',color:pctColor(r),marginBottom:'16px'}}>{statusIcon} {statusLabel}</div>
-                              <div style={{height:'10px',backgroundColor:'rgba(255,255,255,0.5)',borderRadius:'5px',overflow:'hidden',marginBottom:'14px'}}>
-                                <div style={{height:'100%',width:`${r||0}%`,backgroundColor:pctColor(r),borderRadius:'5px',transition:'width 0.4s ease'}} />
+                            <div key={tc.name} style={{display:'grid',gridTemplateColumns:'minmax(96px,1fr) 62px minmax(120px,2fr) minmax(150px,1fr) auto',alignItems:'center',gap:'16px',
+                              padding:'12px 0',borderBottom:i===displayTCNew.length-1?'none':'1px solid #f4f5f7'}}>
+                              <div style={{fontSize:'13px',fontWeight:'700',color:'#374151'}}>{tc.name}</div>
+                              <div style={{fontSize:'22px',fontWeight:'800',textAlign:'right',color:pctColor(r),fontVariantNumeric:'tabular-nums',lineHeight:1}}>{r!==null?`${r}%`:'—'}</div>
+                              <div style={{height:'8px',borderRadius:'4px',backgroundColor:'#f1f3f5',overflow:'hidden'}}>
+                                <div style={{height:'100%',width:`${r||0}%`,backgroundColor:pctColor(r),borderRadius:'4px',transition:'width 0.4s ease'}} />
                               </div>
-                              <div style={{display:'flex',flexDirection:'column',gap:'5px'}}>
-                                <div style={{fontSize:'12px',color:'#6b7280'}}><span style={{fontWeight:'600',color:'#374151'}}>{tc.onTimeTotal}</span> calls logged this month</div>
-                                <div style={{fontSize:'12px'}}>{tc.dueToday>0?<span style={{color:'#d97706',fontWeight:'700'}}>⚡ {tc.dueToday} in queue today</span>:<span style={{color:'#10b981',fontWeight:'600'}}>✓ Queue clear</span>}</div>
+                              <div style={{fontSize:'12px',fontWeight:'700',color:pctColor(r)}}>{statusIcon} {statusLabel}</div>
+                              <div style={{fontSize:'11px',color:'#9ca3af',textAlign:'right',fontVariantNumeric:'tabular-nums',whiteSpace:'nowrap'}}>
+                                {tc.onTimeTotal > 0 ? `${tc.onTimeCount} of ${tc.onTimeTotal} on time` : 'No follow-ups due'}
+                                {' · '}
+                                {tc.dueToday > 0
+                                  ? <span style={{color:'#c2410c',fontWeight:'700'}} title="Patients still open whose follow-up date has arrived or passed — as of today, not the month shown">{tc.dueToday} due now</span>
+                                  : <span style={{color:'#10b981',fontWeight:'700'}}>queue clear</span>}
                               </div>
                             </div>
                           );
