@@ -765,6 +765,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [dashYear, setDashYear] = useState(new Date().getFullYear());
   const [dashCustomFrom, setDashCustomFrom] = useState('');
   const [dashCustomTo, setDashCustomTo] = useState('');
+  // Call Performance and Pipeline read a wider window than the rest of the
+  // dashboard — one month is too thin a sample for pick-up rates, and a cohort
+  // needs time to land before its pipeline mix means anything. 1|3|6|12|'all'.
+  const [callRangeMonths, setCallRangeMonths] = useState(3);
+  const [pipeRangeMonths, setPipeRangeMonths] = useState(3);
   const [showContactLog, setShowContactLog] = useState(null);
   const [showEditModal, setShowEditModal] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -3284,6 +3289,43 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               ? `${new Date(dashCustomFrom+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})} – ${new Date(dashCustomTo+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
               : 'Custom Range';
 
+            // ── Card-level lookback windows ──────────────────────────────
+            // Anchored to the END of whatever period the dashboard is showing, so
+            // stepping the month back also walks the wider window back with it.
+            const ymdStr = (y, m, d) => `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+            const monthShort = s => new Date(s+'T12:00:00').toLocaleDateString('en-US',{month:'short',year:'numeric'});
+            const RANGE_OPTIONS = [{v:1,l:'1 mo'},{v:3,l:'3 mo'},{v:6,l:'6 mo'},{v:12,l:'12 mo'},{v:'all',l:'All'}];
+            const makeRange = months => {
+              const end = dashTimeframe === 'custom'
+                ? (customRangeValid ? dashCustomTo : todayStrNew)
+                : ymdStr(dashYear, dashMonth, new Date(dashYear, dashMonth+1, 0).getDate());
+              if (months === 'all') return { from:'0000-01-01', to:end, label:'All time' };
+              if (months === 1) return {
+                from: dashTimeframe === 'custom' ? (customRangeValid ? dashCustomFrom : end) : ymdStr(dashYear, dashMonth, 1),
+                to: end,
+                label: dashTimeframe === 'custom' ? customRangeLabel : selMonthLabel,
+              };
+              const d = new Date(end+'T12:00:00');
+              d.setDate(1);
+              d.setMonth(d.getMonth() - (months - 1));
+              const from = ymdStr(d.getFullYear(), d.getMonth(), 1);
+              return { from, to:end, label:`${monthShort(from)} – ${monthShort(end)}` };
+            };
+            const callRange = makeRange(callRangeMonths);
+            const pipeRange = makeRange(pipeRangeMonths);
+            const rangePicker = (value, onChange) => (
+              <div style={{display:'flex',border:'1px solid #e5e7eb',borderRadius:'8px',overflow:'hidden',flexShrink:0}}>
+                {RANGE_OPTIONS.map((o, i) => (
+                  <button key={o.l} onClick={()=>onChange(o.v)}
+                    style={{padding:'5px 10px',border:'none',borderLeft:i===0?'none':'1px solid #e5e7eb',
+                      fontSize:'11px',fontWeight:'700',cursor:'pointer',lineHeight:1.4,
+                      backgroundColor:value===o.v?'#202020':'white',color:value===o.v?'white':'#6b7280'}}>
+                    {o.l}
+                  </button>
+                ))}
+              </div>
+            );
+
             // Metrics for selected period (all TCs combined)
             const selNPEPts = dashTimeframe === 'custom'
               ? (customRangeValid ? patients.filter(p => p.npeDate >= dashCustomFrom && p.npeDate <= dashCustomTo) : [])
@@ -3361,7 +3403,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               };
             });
 
-            // Call performance grouped by who LOGGED the call (logged_by), filtered to selected period
+            // Call performance grouped by who LOGGED the call (logged_by), over the
+            // card's own lookback window (callRange) rather than the dashboard month.
+            const DOW_LABELS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
             const callLoggerMap = {};
             patients.forEach(p => {
               (p.contact_log||[]).forEach(entry => {
@@ -3369,15 +3413,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 if (entry.noCount) return;
                 if (entry.reachedPatient === "Waiting on Medicaid — didn't call") return;
                 if (!entry.date) return;
-                const inPeriod = dashTimeframe === 'custom'
-                  ? (customRangeValid && entry.date >= dashCustomFrom && entry.date <= dashCustomTo)
-                  : entry.date.startsWith(selMonthStr);
-                if (!inPeriod) return;
+                if (entry.date < callRange.from || entry.date > callRange.to) return;
                 const logger = entry.logged_by || p.tc || 'Unknown';
-                if (!callLoggerMap[logger]) callLoggerMap[logger] = { total:0, reached:0, voicemail:0, voicemailWithText:0, noAnswer:0, missed:0, textWithMissed:0, buckets:{} };
+                if (!callLoggerMap[logger]) callLoggerMap[logger] = { total:0, reached:0, voicemail:0, voicemailWithText:0, noAnswer:0, missed:0, textWithMissed:0, buckets:{}, days:{}, months:{}, touched:new Set() };
                 const s = callLoggerMap[logger];
+                const spoke = entry.reachedPatient === 'Spoke with patient';
                 s.total++;
-                if (entry.reachedPatient === 'Spoke with patient') s.reached++;
+                s.touched.add(p.id ?? p.name);
+                if (spoke) s.reached++;
                 else if (entry.reachedPatient === 'Left voicemail') { s.voicemail++; s.missed++; if (entry.sentText) { s.textWithMissed++; s.voicemailWithText++; } }
                 else if (entry.reachedPatient === 'No answer') { s.noAnswer++; s.missed++; if (entry.sentText) s.textWithMissed++; }
                 if (entry.time) {
@@ -3385,13 +3428,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const bl = hr<10?'8–10 AM':hr<12?'10–12 PM':hr<14?'12–2 PM':hr<16?'2–4 PM':hr<18?'4–6 PM':'6+ PM';
                   if (!s.buckets[bl]) s.buckets[bl] = { label:bl, start:hr, total:0, reached:0 };
                   s.buckets[bl].total++;
-                  if (entry.reachedPatient === 'Spoke with patient') s.buckets[bl].reached++;
+                  if (spoke) s.buckets[bl].reached++;
                 }
+                // Day-of-week and month-over-month only become readable once the
+                // window is wider than a single month, but cost nothing to collect.
+                const dow = new Date(entry.date+'T12:00:00').getDay();
+                if (!s.days[dow]) s.days[dow] = { dow, label:DOW_LABELS[dow], total:0, reached:0 };
+                s.days[dow].total++;
+                if (spoke) s.days[dow].reached++;
+                const mk = entry.date.substring(0,7);
+                if (!s.months[mk]) s.months[mk] = { key:mk, total:0, reached:0 };
+                s.months[mk].total++;
+                if (spoke) s.months[mk].reached++;
               });
             });
             const callPerLogger = Object.entries(callLoggerMap).map(([name, s]) => ({
               name,
               totalContacts: s.total,
+              patientsTouched: s.touched.size,
               reachRate: s.total>0 ? Math.round((s.reached/s.total)*100) : null,
               reachedCount: s.reached,
               voicemailCount: s.voicemail,
@@ -3404,6 +3458,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               timeBuckets: Object.values(s.buckets).sort((a,b)=>a.start-b.start)
                 .map(b=>({ ...b, rate: b.total>=3 ? Math.round((b.reached/b.total)*100) : null }))
                 .filter(b=>b.total>0),
+              dayBuckets: Object.values(s.days).sort((a,b)=>a.dow-b.dow)
+                .map(d=>({ ...d, rate: d.total>=3 ? Math.round((d.reached/d.total)*100) : null }))
+                .filter(d=>d.total>0),
+              // Capped at 12 bars — beyond that they're too thin to read.
+              monthTrend: Object.values(s.months).sort((a,b)=>a.key<b.key?-1:1).slice(-12)
+                .map(m=>({ ...m, label:new Date(m.key+'-15T12:00:00').toLocaleDateString('en-US',{month:'short'}),
+                           rate: m.total>0 ? Math.round((m.reached/m.total)*100) : null })),
             })).filter(l => l.totalContacts > 0 && isCurrentTC(l.name));
 
             // Queue health (always today-based)
@@ -3424,6 +3485,35 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               if (p.nextTouchDate && p.nextTouchDate !== '__MAX__' && p.nextTouchDate > todayStrNew) return false;
               return !p.npeDate||p.npeDate<=staleCutoffNew;
             }).length;
+
+            // Pipeline cohort — every NPE inside the pipeline card's own lookback.
+            // Starts are counted from within the cohort (not by start date), so the
+            // tiles are a true breakdown of those exams and add up to the total.
+            const pipeNPEPts = patients.filter(p => p.npeDate && p.npeDate >= pipeRange.from && p.npeDate <= pipeRange.to);
+            const pm = calculateMetrics(pipeNPEPts);
+            // Aging is a right-now fact, so it measures from today regardless of window.
+            const pipeAges = pipeNPEPts.filter(p => p.PEN === true)
+              .map(p => Math.round((new Date(todayStrNew+'T12:00:00') - new Date(p.npeDate+'T12:00:00'))/86400000))
+              .filter(n => n >= 0);
+            const pipeAvgAge = pipeAges.length ? Math.round(pipeAges.reduce((a,b)=>a+b,0)/pipeAges.length) : null;
+            const pipeStale30 = pipeAges.filter(n => n > 30).length;
+            // Month-by-month conversion across the cohort, so a widened window shows
+            // direction and not just one blended number.
+            const pipeMonthly = (() => {
+              const byMonth = {};
+              pipeNPEPts.forEach(p => {
+                const k = p.npeDate.substring(0,7);
+                if (!byMonth[k]) byMonth[k] = { key:k, total:0, started:0, obs:0 };
+                byMonth[k].total++;
+                if (isSDS(p) || p.ST) byMonth[k].started++;
+                if (p.OBS === true) byMonth[k].obs++;
+              });
+              return Object.values(byMonth).sort((a,b)=>a.key<b.key?-1:1).slice(-12).map(m => ({
+                ...m,
+                label: new Date(m.key+'-15T12:00:00').toLocaleDateString('en-US',{month:'short'}),
+                conv: (m.total - m.obs) > 0 ? Math.round((m.started/(m.total-m.obs))*100) : null,
+              }));
+            })();
 
             const pctColor  = r => r===null?'#9ca3af':r>=80?'#10b981':r>=60?'#d97706':'#dc2626';
             const pctBg     = r => r===null?'#f9fafb':r>=80?'#f0fdf4':r>=60?'#fffbeb':'#fef2f2';
@@ -3625,17 +3715,28 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 })()}
 
                 {/* Pipeline */}
-                {nm.total > 0 && (
+                {pm.total > 0 && (
                   <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
-                    <div style={{fontSize:'15px',fontWeight:'800',color:'#202020',marginBottom:'14px'}}>🔄 Pipeline — Where Patients Are Now</div>
+                    <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'12px',flexWrap:'wrap',marginBottom:'14px'}}>
+                      <div>
+                        <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>🔄 Pipeline — Where Patients Are Now</div>
+                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'3px'}}>
+                          {pm.total} exam{pm.total!==1?'s':''} · {pipeRange.label} · {pm.overallConv}% converted
+                          {pipeAvgAge !== null && ` · pending avg ${pipeAvgAge}d old`}
+                          {pipeStale30 > 0 && ` · ${pipeStale30} pending 30+ days`}
+                        </div>
+                      </div>
+                      {rangePicker(pipeRangeMonths, setPipeRangeMonths)}
+                    </div>
                     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))',gap:'10px'}}>
                       {[
-                        {count:nm.pending,        label:'Pending',    sub:'In follow-up',      bg:'#fff7ed',border:'#fed7aa',color:'#c2410c'},
-                        {count:nm.scheduled,       label:'Scheduled',  sub:'Bond upcoming',     bg:'#eff6ff',border:'#bfdbfe',color:'#1d4ed8'},
-                        {count:nm.observation,     label:'Observation',sub:'6-mo re-check',     bg:'#f0fdf4',border:'#bbf7d0',color:'#15803d',byLocation:nm.obsPerLocation,
-                          onClick: nm.observation > 0 ? () => setShowObsList({ list: selNPEPts.filter(p => p.OBS === true), perLocation: nm.obsPerLocation || [], label: dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel, tcFilter: 'All' }) : null},
-                        {count:nm.medicaidPending, label:'Medicaid',   sub:'Awaiting approval', bg:'#fef3c7',border:'#fde68a',color:'#92400e'},
-                        {count:nm.noTx,            label:'Declined',   sub:'No treatment',      bg:'#f9fafb',border:'#e5e7eb',color:'#6b7280'},
+                        {count:pm.started,         label:'Started',    sub:'Won',               bg:'#ecfdf5',border:'#6ee7b7',color:'#047857'},
+                        {count:pm.pending,         label:'Pending',    sub:'In follow-up',      bg:'#fff7ed',border:'#fed7aa',color:'#c2410c'},
+                        {count:pm.scheduled,       label:'Scheduled',  sub:'Bond upcoming',     bg:'#eff6ff',border:'#bfdbfe',color:'#1d4ed8'},
+                        {count:pm.observation,     label:'Observation',sub:'6-mo re-check',     bg:'#f0fdf4',border:'#bbf7d0',color:'#15803d',byLocation:pm.obsPerLocation,
+                          onClick: pm.observation > 0 ? () => setShowObsList({ list: pipeNPEPts.filter(p => p.OBS === true), perLocation: pm.obsPerLocation || [], label: pipeRange.label, tcFilter: 'All' }) : null},
+                        {count:pm.medicaidPending, label:'Medicaid',   sub:'Awaiting approval', bg:'#fef3c7',border:'#fde68a',color:'#92400e'},
+                        {count:pm.noTx,            label:'Declined',   sub:'No treatment',      bg:'#f9fafb',border:'#e5e7eb',color:'#6b7280'},
                       ].map(item => (
                         <div key={item.label} onClick={item.onClick || undefined}
                           title={item.onClick ? 'Click to see each patient by name' : undefined}
@@ -3654,6 +3755,27 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                       ))}
                     </div>
+                    {pipeMonthly.length > 1 && (
+                      <div style={{marginTop:'18px',paddingTop:'14px',borderTop:'1px solid #f3f4f6'}}>
+                        <div style={{fontSize:'10px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'10px'}}>
+                          📈 Conversion by exam month
+                        </div>
+                        <div style={{display:'flex',alignItems:'flex-end',gap:'8px',height:'92px'}}>
+                          {pipeMonthly.map(m => (
+                            <div key={m.key} style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',height:'100%'}}>
+                              <div style={{fontSize:'11px',fontWeight:'800',color:m.conv===null?'#9ca3af':m.conv>=50?'#10b981':m.conv>=35?'#d97706':'#dc2626',marginBottom:'3px'}}>
+                                {m.conv!==null?`${m.conv}%`:'—'}
+                              </div>
+                              <div title={`${m.started} of ${m.total-m.obs} converted · ${m.total} exam${m.total!==1?'s':''}`}
+                                style={{width:'100%',height:`${Math.max(3,(m.conv||0)*0.55)}px`,borderRadius:'4px 4px 0 0',
+                                  backgroundColor:m.conv===null?'#e5e7eb':m.conv>=50?'#10b981':m.conv>=35?'#f59e0b':'#ef4444'}} />
+                              <div style={{fontSize:'10px',color:'#6b7280',marginTop:'5px',whiteSpace:'nowrap'}}>{m.label}</div>
+                              <div style={{fontSize:'9px',color:'#9ca3af'}}>{m.started}/{m.total}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -3702,14 +3824,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       )}
                       {callPerLogger.length > 0 && (
                         <div style={{flex:'1',minWidth:'280px',backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
-                          <div style={{fontSize:'15px',fontWeight:'800',color:'#202020',marginBottom:'16px'}}>📞 Call Performance</div>
-                          <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(callPerLogger.length,1)},1fr)`,gap:'20px'}}>
+                          <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'12px',flexWrap:'wrap',marginBottom:'16px'}}>
+                            <div>
+                              <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>📞 Call Performance</div>
+                              <div style={{fontSize:'12px',color:'#6b7280',marginTop:'3px'}}>{callRange.label}</div>
+                            </div>
+                            {rangePicker(callRangeMonths, setCallRangeMonths)}
+                          </div>
+                          <div style={{display:'grid',gridTemplateColumns:`repeat(auto-fit,minmax(240px,1fr))`,gap:'20px'}}>
                             {callPerLogger.map(tc => (
                               <div key={tc.name}>
                                 <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'10px'}}>{tc.name}</div>
-                                <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'8px'}}>
+                                <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'4px'}}>
                                   <span style={{fontSize:'24px',fontWeight:'800',color:tc.reachRate>=50?'#10b981':tc.reachRate>=30?'#d97706':'#dc2626',lineHeight:1}}>{tc.reachRate}%</span>
                                   <span style={{fontSize:'12px',color:'#6b7280'}}>pick-up rate</span>
+                                </div>
+                                <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'10px'}}>
+                                  {tc.totalContacts} call{tc.totalContacts!==1?'s':''} · {tc.patientsTouched} patient{tc.patientsTouched!==1?'s':''}
+                                  {tc.patientsTouched>0 && ` · ${(tc.totalContacts/tc.patientsTouched).toFixed(1)} per patient`}
                                 </div>
                                 <div style={{display:'flex',gap:'14px',marginBottom:'12px'}}>
                                   {[{val:tc.reachedCount,lbl:'Spoke'},{val:tc.voicemailCount,lbl:'Voicemail'},{val:tc.noAnswerCount,lbl:'No Answer'}].map(({val,lbl})=>(
@@ -3745,6 +3877,42 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                           </div>
                                         );
                                       })}
+                                    </div>
+                                  </div>
+                                )}
+                                {tc.dayBuckets.some(d => d.rate !== null) && (
+                                  <div style={{marginTop:'12px'}}>
+                                    <div style={{fontSize:'10px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'6px'}}>📅 Best Day to Call</div>
+                                    <div style={{display:'flex',flexDirection:'column',gap:'5px'}}>
+                                      {tc.dayBuckets.map(d => {
+                                        const isBest = d.rate!==null && d.rate===Math.max(...tc.dayBuckets.filter(x=>x.rate!==null).map(x=>x.rate),0);
+                                        return (
+                                          <div key={d.dow} style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                                            <div style={{fontSize:'11px',fontWeight:'600',color:'#374151',minWidth:'62px'}}>{d.label}</div>
+                                            <div style={{flex:1,height:'6px',backgroundColor:'#f3f4f6',borderRadius:'3px',overflow:'hidden'}}>
+                                              <div style={{width:d.rate!==null?`${d.rate}%`:'0%',height:'100%',backgroundColor:bClr(d.rate),borderRadius:'3px'}}/>
+                                            </div>
+                                            <div style={{fontSize:'11px',fontWeight:'700',color:bClr(d.rate),minWidth:'30px',textAlign:'right'}}>{d.rate!==null?`${d.rate}%`:'—'}</div>
+                                            {isBest&&<span style={{fontSize:'9px',fontWeight:'700',padding:'1px 4px',backgroundColor:'#dcfce7',color:'#166534',borderRadius:'3px'}}>BEST</span>}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                                {tc.monthTrend.length > 1 && (
+                                  <div style={{marginTop:'12px',paddingTop:'10px',borderTop:'1px solid #f3f4f6'}}>
+                                    <div style={{fontSize:'10px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'8px'}}>📈 Pick-Up Rate by Month</div>
+                                    <div style={{display:'flex',alignItems:'flex-end',gap:'5px',height:'70px'}}>
+                                      {tc.monthTrend.map(m => (
+                                        <div key={m.key} style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',height:'100%'}}>
+                                          <div style={{fontSize:'9px',fontWeight:'800',color:bClr(m.rate),marginBottom:'2px'}}>{m.rate!==null?`${m.rate}%`:'—'}</div>
+                                          <div title={`${m.reached} of ${m.total} calls picked up`}
+                                            style={{width:'100%',height:`${Math.max(3,(m.rate||0)*0.4)}px`,borderRadius:'3px 3px 0 0',backgroundColor:bClr(m.rate)}} />
+                                          <div style={{fontSize:'9px',color:'#6b7280',marginTop:'4px',whiteSpace:'nowrap'}}>{m.label}</div>
+                                          <div style={{fontSize:'9px',color:'#d1d5db'}}>{m.total}</div>
+                                        </div>
+                                      ))}
                                     </div>
                                   </div>
                                 )}
@@ -4079,10 +4247,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               );
             })()}
 
-            {/* ── Pipeline — single clean section ── */}
-            {currentUser?.role !== 'tc' && dash.total > 0 && (
+            {/* ── Pipeline — single clean section. TCs see it too, scoped to their own
+                 patients (dash/dashPatients already run through effectiveTCFilter). ── */}
+            {dash.total > 0 && (
               <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
-                <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'14px',display:'flex',alignItems:'center',gap:'6px'}}>🔄 Pipeline — Where Patients Are Now</h3>
+                <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'14px',display:'flex',alignItems:'center',gap:'6px'}}>
+                  🔄 {currentUser?.role === 'tc' ? 'My Pipeline' : 'Pipeline'} — Where Patients Are Now
+                  <HelpTip id="dash-pipeline" tip={"Where every " + (dashTimeframe === 'month' ? monthLabel : 'all-time') + " NPE stands right now.\n\nPending = still in your follow-up queue.\nScheduled = bond appointment on the books.\nObservation = 6-month re-check (click to see names).\nMedicaid = waiting on approval.\nDeclined = no treatment."} />
+                </h3>
                 <div style={{display:'flex',gap:'12px',flexWrap:'wrap'}}>
                   {[
                     {count: dash.pending,         label:'Pending',     sub:'In follow-up',      bg:'#fff7ed', border:'#fed7aa', color:'#c2410c'},
