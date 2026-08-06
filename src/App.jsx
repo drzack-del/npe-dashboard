@@ -3279,7 +3279,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           };
 
           // ── NEW DASHBOARD (miller-ortho owner only) ──────────────────
-          const useNewDashboard = hasFeature('newDashboard', currentUser?.practiceId) && currentUser?.role === 'admin';
+          // Every role gets this layout — admins, office managers and TCs alike. The
+          // only thing that varies by role is bonus visibility, handled on the bonus
+          // card below: admins see the whole team, everyone else sees only themselves.
+          const useNewDashboard = hasFeature('newDashboard', currentUser?.practiceId);
           if (useNewDashboard) {
             const selMonthStr  = `${dashYear}-${String(dashMonth + 1).padStart(2, '0')}`;
             const selMonthLabel = new Date(dashYear, dashMonth, 1).toLocaleDateString('en-US', {month:'long', year:'numeric'});
@@ -3749,18 +3752,26 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
                 {/* TC Bonus — full width (hidden in custom range; bonuses are calendar-month) */}
                 {dashTimeframe !== 'custom' && (() => {
-                  const bonusPerTC = perTCNew.filter(tc => {
-                    const u = tcUsers.find(u => u.name === tc.name);
-                    return !u || u.bonus_enabled !== false;
-                  });
+                  // Compensation is need-to-know: the admin sees the whole team, while
+                  // managers and TCs see only their own figure — and only when their own
+                  // bonus display is enabled. Mirrors how the Bonus Audit view already
+                  // scopes itself, so neither route exposes a colleague's pay.
+                  const isAdmin = currentUser?.role === 'admin';
+                  const bonusPerTC = (isAdmin || currentUser?.bonusEnabled)
+                    ? perTCNew.filter(tc => {
+                        const u = tcUsers.find(u => u.name === tc.name);
+                        if (u && u.bonus_enabled === false) return false;
+                        return isAdmin || tc.name === currentUser?.name;
+                      })
+                    : [];
                   if (bonusPerTC.length === 0) return null;
                   return (
                   <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
                     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px'}}>
-                      <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>💰 TC Bonus — {selMonthLabel}</div>
+                      <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>💰 {isAdmin ? 'TC Bonus' : 'My Bonus'} — {selMonthLabel}</div>
                       <button onClick={()=>setCurrentView('bonus')} style={{padding:'7px 14px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'12px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
                     </div>
-                    <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(bonusPerTC.length,1)},1fr)`,gap:'14px'}}>
+                    <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(bonusPerTC.length,1)},1fr)`,gap:'14px',maxWidth:bonusPerTC.length===1?'380px':'none'}}>
                       {bonusPerTC.map(tc => {
                         const todayStr2 = todayStrNew;
                         const activePops = tc.activeCampaigns.filter(b => todayStr2>=b.startDate && todayStr2<=b.endDate);
