@@ -3457,11 +3457,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 .filter(d=>d.total>0),
             })).filter(l => l.totalContacts > 0 && isCurrentTC(l.name));
 
-            // Queue health (always today-based)
+            // Queue health (always today-based, never the viewed month).
+            // Due today and Past due are disjoint: this one is exactly today, so the two
+            // counts no longer contain each other and add up to the real size of the pile.
             const allDueTodayNew = patients.filter(p => {
               if (!p.PEN&&!p.MP&&!p.OBS) return false;
               if (!p.nextTouchDate||p.nextTouchDate==='__MAX__') return false;
-              return skipWeekend(p.nextTouchDate) <= todayStrNew;
+              return skipWeekend(p.nextTouchDate) === todayStrNew;
             }).length;
             const overdueNew = patients.filter(p => {
               if (!p.PEN&&!p.MP&&!p.OBS) return false;
@@ -3735,15 +3737,26 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{backgroundColor:'white',borderRadius:'10px',padding:'12px 20px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6',display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap'}}>
                   <div style={{fontSize:'13px',fontWeight:'700',color:'#374151',marginRight:'4px',whiteSpace:'nowrap'}}>📋 Queue Health</div>
                   {[
-                    {label:'Due today',          value:allDueTodayNew, warnIf:v=>v>0, warnColor:'#c2410c',warnBg:'#fff7ed',warnBorder:'#fed7aa',okColor:'#15803d',okBg:'#f0fdf4',okBorder:'#bbf7d0'},
-                    {label:'Past due',            value:overdueNew,     warnIf:v=>v>0, warnColor:'#dc2626',warnBg:'#fee2e2',warnBorder:'#fca5a5',okColor:'#15803d',okBg:'#f0fdf4',okBorder:'#bbf7d0'},
-                    {label:'14+ days no contact', value:staleCountNew,  warnIf:v=>v>0, warnColor:'#92400e',warnBg:'#fef3c7',warnBorder:'#fde68a',okColor:'#15803d',okBg:'#f0fdf4',okBorder:'#bbf7d0'},
-                  ].map(row => {
-                    const warn = row.warnIf(row.value);
+                    // Two disjoint buckets, then a flag. "14+ days no contact" is not a
+                    // third pile — it cuts across the other two and can also catch someone
+                    // with no next touch date at all, so it sits after a divider rather
+                    // than reading as another bucket you could add up.
+                    {label:'Due today',          value:allDueTodayNew, tip:'Open patients whose follow-up lands today. Past-due patients are counted separately.',
+                      warnColor:'#c2410c',warnBg:'#fff7ed',warnBorder:'#fed7aa'},
+                    {label:'Past due',           value:overdueNew,     tip:'Open patients whose follow-up date has already passed.',
+                      warnColor:'#dc2626',warnBg:'#fee2e2',warnBorder:'#fca5a5'},
+                    {divider:true},
+                    {label:'14+ days no contact', value:staleCountNew, tip:'Pending or Medicaid patients with no logged contact in 14 days. Overlaps the counts above.',
+                      warnColor:'#92400e',warnBg:'#fef3c7',warnBorder:'#fde68a'},
+                  ].map((row, i) => {
+                    if (row.divider) return <div key={`d${i}`} style={{width:'1px',alignSelf:'stretch',backgroundColor:'#e5e7eb',margin:'0 4px'}} />;
+                    const warn = row.value > 0;
                     return (
-                      <div key={row.label} style={{display:'flex',alignItems:'center',gap:'8px',padding:'6px 12px',borderRadius:'8px',backgroundColor:warn?row.warnBg:row.okBg,border:`1px solid ${warn?row.warnBorder:row.okBorder}`}}>
-                        <span style={{fontSize:'18px',fontWeight:'900',color:warn?row.warnColor:row.okColor,lineHeight:1}}>{row.value}</span>
-                        <span style={{fontSize:'12px',fontWeight:'600',color:warn?row.warnColor:row.okColor}}>{row.label}</span>
+                      <div key={row.label} title={row.tip}
+                        style={{display:'flex',alignItems:'center',gap:'8px',padding:'6px 12px',borderRadius:'8px',
+                          backgroundColor:warn?row.warnBg:'#f0fdf4',border:`1px solid ${warn?row.warnBorder:'#bbf7d0'}`}}>
+                        <span style={{fontSize:'18px',fontWeight:'900',lineHeight:1,color:warn?row.warnColor:'#15803d'}}>{row.value}</span>
+                        <span style={{fontSize:'12px',fontWeight:'600',color:warn?row.warnColor:'#15803d'}}>{row.label}</span>
                       </div>
                     );
                   })}
