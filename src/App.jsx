@@ -902,6 +902,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [showConvBreakdown, setShowConvBreakdown] = useState(null); // { dashPatients, dashStartPatients }
   const [showStartsByLocation, setShowStartsByLocation] = useState(null); // { perLocation, started, label } starts-per-location breakdown
   const [showObsList, setShowObsList] = useState(null); // { list, label, tcFilter } name-by-name Observation patients
+  const [showProductionDetail, setShowProductionDetail] = useState(null); // { fees, label, perLocation, booksNet } contract-by-contract production
   const [goalAdjust, setGoalAdjust] = useState({ production: 0, npe: 0, starts: 0, conversion: 0, case_fee: 0 });
   const [metricsSaveMsg, setMetricsSaveMsg] = useState('');
   const [showDetailedMetricsCols, setShowDetailedMetricsCols] = useState(false);
@@ -3494,6 +3495,39 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const pctBg     = r => r===null?'#f9fafb':r>=80?'#f0fdf4':r>=60?'#fffbeb':'#fef2f2';
             const pctBorder = r => r===null?'#e5e7eb':r>=80?'#86efac':r>=60?'#fde68a':'#fca5a5';
 
+            // ── Production ────────────────────────────────────────────────
+            // Contracted production: the contract amounts on the starts inside the
+            // period on screen. Derived per-patient rather than read from the Metrics
+            // tab's hand-entered net production, because only this version can follow a
+            // custom range or split by location. The two are different numbers and the
+            // card says so — net production from the books shows as a reconciliation
+            // line rather than being blended in.
+            //
+            // Revenue is owner-level information: TCs and managers share this layout
+            // (see the bonus card below), so the whole column is admin-only.
+            const showProduction = currentUser?.role === 'admin';
+            const feeOf = p => parseFloat((p.contractAmount || '').toString().replace(/[^0-9.]/g, '')) || 0;
+            const prodStartPts   = selStartPts.filter(p => isSDS(p) || p.ST);
+            const prodFees       = prodStartPts.map(p => ({ p, fee: feeOf(p) }));
+            const prodTotal      = prodFees.reduce((s, f) => s + f.fee, 0);
+            // A start with no contract amount silently understates the total, so the
+            // card reports its own coverage instead of quietly averaging it away.
+            const prodWithFee    = prodFees.filter(f => f.fee > 0).length;
+            const prodMissingFee = prodFees.length - prodWithFee;
+            const prodByLoc = {};
+            prodFees.forEach(({ p, fee }) => { prodByLoc[p.location] = (prodByLoc[p.location] || 0) + fee; });
+            // Monthly figures only — a monthly goal or a booked month total means
+            // nothing against an arbitrary custom span.
+            const prodMonthly    = dashTimeframe !== 'custom';
+            const prodGoal       = prodMonthly
+              ? (practiceGoals.find(g => g.year === dashYear && g.month === dashMonth + 1)?.production_goal || 0)
+              : 0;
+            const prodBooksNet   = prodMonthly
+              ? (practiceMetrics.find(m => m.year === dashYear && m.month === dashMonth + 1)?.net_production || 0)
+              : 0;
+            const fmtMoney = v => v >= 10000 ? `$${Math.round(v/1000)}k` : `$${Math.round(v).toLocaleString()}`;
+            const fmtMoneyFull = v => `$${Math.round(v).toLocaleString()}`;
+
             return (
               <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
 
@@ -3587,9 +3621,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     ? (customRangeValid ? customRangeLabel : 'Custom Range')
                     : selMonthLabel;
 
+                  // Production sits immediately right of Starts: it is the dollar
+                  // version of the same event, so the row reads NPEs → Starts →
+                  // Production, with the rate metrics grouped after it.
                   const KPI_COLS = [
                     { key:'npe',   label:'NPEs',        color:'#374151', tint:'rgba(55,65,81,0.035)',   track:'rgba(55,65,81,0.13)',   fill:'#6b7280' },
                     { key:'start', label:'Starts',      color:'#059669', tint:'rgba(16,185,129,0.045)', track:'rgba(16,185,129,0.16)', fill:'#10b981' },
+                    ...(showProduction ? [
+                    { key:'prod',  label:'Production',  color:'#0f766e', tint:'rgba(15,118,110,0.045)', track:'rgba(15,118,110,0.16)', fill:'#0d9488' },
+                    ] : []),
                     { key:'conv',  label:'Conversion',  color:'#2563EB', tint:'rgba(37,99,235,0.04)' },
                     { key:'sds',   label:'SDS Rate',    color:'#7c3aed', tint:'rgba(124,58,237,0.04)' },
                     { key:'obs',   label:'Observation', color:'#15803d', tint:'rgba(21,128,61,0.04)' },
@@ -3597,6 +3637,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
                   const drill = {
                     start: { hint:'↗ details', onClick:() => setShowStartsByLocation({ perLocation: nm.perLocation || [], started: nm.started, label: kpiPeriodLabel, tcFilter:'All', list: selStartPts.filter(p => isSDS(p) || p.ST) }) },
+                    prod:  prodFees.length > 0 ? { hint:'↗ contracts', onClick:() => setShowProductionDetail({
+                             fees: prodFees.map(({ p, fee }) => ({ id:p.id, name:p.name || '(unnamed)', fee, location:p.location, tc:p.tc, startDate:effectiveStartDate(p), patient:p })),
+                             label: kpiPeriodLabel, total: prodTotal, booksNet: prodBooksNet, goal: prodGoal,
+                             perLocation: Object.entries(prodByLoc).map(([loc, amt]) => ({ loc, amt })).sort((a,b)=>b.amt-a.amt),
+                           }) } : null,
                     conv:  { hint:'↗ breakdown', onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts }) },
                     obs:   nm.observation > 0 ? { hint:'↗ names', onClick:() => setShowObsList({ list: selNPEPts.filter(p => p.OBS === true), perLocation: nm.obsPerLocation || [], label: kpiPeriodLabel, tcFilter:'All' }) } : null,
                   };
@@ -3608,7 +3653,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const sdsCount  = selStartPts.filter(p => p.location === L.loc && isSDS(p)).length;
                     const obsCount  = selNPEPts.filter(p => p.location === L.loc && p.OBS === true).length;
                     const convDenom = selNPEPts.filter(p => p.location === L.loc && p.OBS !== true).length;
-                    return { ...L, obs:obsCount, convDenom,
+                    return { ...L, obs:obsCount, convDenom, prod: prodByLoc[L.loc] || 0,
                       conv: convDenom > 0 ? Math.round((L.started / convDenom) * 100) : null,
                       sdsRate: L.started > 0 ? Math.round((sdsCount / L.started) * 100) : null };
                   });
@@ -3639,6 +3684,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const locValue = (col, L) => {
                     if (col.key === 'npe')   return L.total;
                     if (col.key === 'start') return L.started;
+                    if (col.key === 'prod')  return L.prod > 0 ? fmtMoney(L.prod) : '—';
                     if (col.key === 'obs')   return L.obs;
                     if (col.key === 'sds')   return L.sdsRate === null ? '—' : `${L.sdsRate}%`;
                     return L.conv === null ? '—' : `${L.conv}%`;
@@ -3647,7 +3693,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   return (
                     <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
                       <div style={{overflowX:'auto'}}>
-                        <table style={{width:'100%',minWidth:'760px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
+                        <table style={{width:'100%',minWidth:showProduction?'880px':'760px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
                           <colgroup>
                             <col style={{width:'19%'}} />
                             {KPI_COLS.map(c => <col key={c.key} />)}
@@ -3661,10 +3707,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               {KPI_COLS.map(col => {
                                 const d = drill[col.key];
                                 const goal = col.key === 'npe' ? (nmNPEGoal > 0 ? nmNPEGoal : null)
-                                  : col.key === 'start' ? (nmStartedGoal > 0 ? nmStartedGoal : null) : null;
-                                const actual = col.key === 'npe' ? nm.total : nm.started;
+                                  : col.key === 'start' ? (nmStartedGoal > 0 ? nmStartedGoal : null)
+                                  : col.key === 'prod' ? (prodGoal > 0 ? prodGoal : null) : null;
+                                const goalLabel = col.key === 'prod' && goal !== null ? fmtMoneyFull(goal) : goal;
+                                const actual = col.key === 'npe' ? nm.total : col.key === 'prod' ? prodTotal : nm.started;
                                 const value = col.key === 'npe' ? nm.total
                                   : col.key === 'start' ? nm.started
+                                  : col.key === 'prod' ? (prodTotal > 0 ? fmtMoney(prodTotal) : '—')
                                   : col.key === 'conv' ? `${nm.overallConv}%`
                                   : col.key === 'sds' ? (nm.started > 0 ? `${nm.sdsRate}%` : '—')
                                   : nm.observation;
@@ -3683,7 +3732,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                         <div style={{height:'100%',borderRadius:'3px',backgroundColor:col.fill,width:`${Math.min(100,Math.round((actual/goal)*100))}%`}} />
                                       </div>
                                     )}
-                                    {goal !== null && <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>Goal: {goal}</div>}
+                                    {goal !== null && <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>Goal: {goalLabel}</div>}
+                                    {/* Production carries two footnotes the other columns don't
+                                        need: how much of the period actually has a contract
+                                        amount behind it, and what the books say for the month.
+                                        Contracted and net production are different numbers, so
+                                        the second is shown beside the first, never merged in. */}
+                                    {col.key === 'prod' && prodMissingFee > 0 && (
+                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#b45309',marginTop:'6px'}}>{prodWithFee} of {prodFees.length} starts have a fee</div>
+                                    )}
+                                    {col.key === 'prod' && prodBooksNet > 0 && (
+                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>Books: {fmtMoneyFull(prodBooksNet)} net</div>
+                                    )}
                                     {col.key === 'conv' && chipTone && (
                                       <div><span style={{display:'inline-block',fontSize:'11px',fontWeight:'700',padding:'3px 9px',borderRadius:'20px',marginTop:'8px',backgroundColor:chipTone.bg,color:chipTone.fg}}>{chipText}</span></div>
                                     )}
@@ -11475,6 +11535,113 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </div>
                     );
                   })}
+                </div>
+              )}
+              <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'12px',textAlign:'center'}}>Tap a patient to open their record.</div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Production detail — the contracts behind the dashboard's production figure */}
+      {showProductionDetail && (() => {
+        const { fees = [], label, total = 0, booksNet = 0, goal = 0, perLocation = [] } = showProductionDetail;
+        const money = v => `$${Math.round(v).toLocaleString()}`;
+        const fmtDate = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
+        const sorted = [...fees].sort((a, b) => b.fee - a.fee);
+        const missing = fees.filter(f => !f.fee).length;
+        const withFee = fees.length - missing;
+        const avgFee  = withFee > 0 ? Math.round(total / withFee) : 0;
+        const maxAmt  = Math.max(...perLocation.map(r => r.amt), 1);
+        const locColors = ['#0f766e','#86198f','#0369a1','#b45309','#6d28d9'];
+        return (
+          <div onClick={() => setShowProductionDetail(null)} style={{position:'fixed',top:0,left:0,right:0,bottom:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10000}}>
+            <div onClick={e => e.stopPropagation()} style={{backgroundColor:'white',padding:'28px',borderRadius:'14px',maxWidth:'620px',width:'94%',boxShadow:'0 20px 40px rgba(0,0,0,0.25)',maxHeight:'85vh',overflowY:'auto'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px'}}>
+                <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:0}}>💵 Production — Contracts Behind the Number</h3>
+                <button onClick={() => setShowProductionDetail(null)} style={{background:'none',border:'none',fontSize:'20px',cursor:'pointer',color:'#9ca3af',lineHeight:1}}>×</button>
+              </div>
+              <div style={{fontSize:'12px',color:'#9ca3af',marginBottom:'16px'}}>{label} · {fees.length} start{fees.length !== 1 ? 's' : ''}</div>
+
+              <div style={{display:'flex',gap:'8px',marginBottom:'18px',flexWrap:'wrap'}}>
+                {[
+                  {n:money(total), t:'Contracted', bg:'#f0fdfa', c:'#0f766e'},
+                  {n:money(avgFee), t:'Avg case fee', bg:'#f5f3ff', c:'#6d28d9'},
+                  ...(goal > 0 ? [{n:`${Math.round((total/goal)*100)}%`, t:`of ${money(goal)} goal`, bg:'#eff6ff', c:'#1d4ed8'}] : []),
+                ].map(s => (
+                  <div key={s.t} style={{flex:1,minWidth:'110px',padding:'10px 12px',borderRadius:'9px',backgroundColor:s.bg,textAlign:'center'}}>
+                    <div style={{fontSize:'20px',fontWeight:'800',color:s.c,lineHeight:1}}>{s.n}</div>
+                    <div style={{fontSize:'10px',fontWeight:'700',color:s.c,marginTop:'3px',textTransform:'uppercase',letterSpacing:'0.05em'}}>{s.t}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Contracted is what was signed; net production is what the practice
+                  management software reports after discounts and adjustments. Naming the
+                  gap is the point — a large one usually means a missing contract amount
+                  or a month that hasn't been entered yet. */}
+              {booksNet > 0 && (
+                <div style={{padding:'12px 14px',borderRadius:'10px',backgroundColor:'#f9fafb',border:'1px solid #f3f4f6',marginBottom:'18px',fontSize:'12px',color:'#4b5563',lineHeight:1.6}}>
+                  <strong style={{color:'#202020'}}>Books say {money(booksNet)} net</strong> for this month, against {money(total)} contracted here.
+                  {' '}Contracted counts what was signed at start; net production comes from the Metrics tab after discounts and adjustments — they are not meant to match exactly.
+                </div>
+              )}
+              {missing > 0 && (
+                <div style={{padding:'12px 14px',borderRadius:'10px',backgroundColor:'#fffbeb',border:'1px solid #fde68a',marginBottom:'18px',fontSize:'12px',color:'#92400e',lineHeight:1.6}}>
+                  <strong>{missing} start{missing !== 1 ? 's have' : ' has'} no contract amount</strong> and contribute{missing === 1 ? 's' : ''} $0 to the total above. Open the patient and add the fee to correct it.
+                </div>
+              )}
+
+              {perLocation.length > 0 && (
+                <div style={{marginBottom:'24px'}}>
+                  <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>📍 By Location</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                    {perLocation.map((r, idx) => {
+                      const hColor = locColors[idx % locColors.length];
+                      const pct = total > 0 ? Math.round((r.amt / total) * 100) : 0;
+                      return (
+                        <div key={r.loc} style={{backgroundColor:'#f9fafb',borderRadius:'10px',padding:'14px 16px'}}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'8px'}}>
+                            <span style={{fontSize:'14px',fontWeight:'700',color:hColor}}>{r.loc}</span>
+                            <span style={{fontSize:'13px',color:'#6b7280'}}>
+                              <strong style={{fontSize:'20px',color:'#0f766e'}}>{money(r.amt)}</strong>
+                              <span style={{marginLeft:'8px',color:'#9ca3af'}}>{pct}% of total</span>
+                            </span>
+                          </div>
+                          <div style={{height:'8px',backgroundColor:'#e5e7eb',borderRadius:'4px',overflow:'hidden'}}>
+                            <div style={{height:'8px',borderRadius:'4px',backgroundColor:hColor,width:`${Math.round((r.amt / maxAmt) * 100)}%`,transition:'width 0.4s ease'}}></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>📄 Contracts ({sorted.length})</div>
+              {sorted.length === 0 ? (
+                <div style={{fontSize:'14px',color:'#6b7280',textAlign:'center',padding:'24px 0'}}>No starts in this period.</div>
+              ) : (
+                <div style={{border:'1px solid #f3f4f6',borderRadius:'10px',overflow:'hidden'}}>
+                  {sorted.map((f, idx) => (
+                    <div key={f.id || `${f.name}-${idx}`}
+                      onClick={() => { setShowProductionDetail(null); setShowEditModal(f.patient); setEditForm(f.patient); }}
+                      title="Open this patient"
+                      style={{display:'flex',alignItems:'center',gap:'10px',padding:'10px 14px',borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6',backgroundColor: idx % 2 ? '#fafafa' : 'white',cursor:'pointer'}}>
+                      <span style={{fontSize:'11px',fontWeight:'700',color:'#d1d5db',minWidth:'20px'}}>{idx + 1}</span>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>{f.name}</div>
+                        <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px'}}>
+                          Start {fmtDate(f.startDate)}
+                          {f.location ? ` · ${f.location}` : ''}
+                          {f.tc ? ` · ${f.tc}` : ''}
+                        </div>
+                      </div>
+                      {f.fee > 0
+                        ? <span style={{fontSize:'15px',fontWeight:'800',color:'#0f766e',fontVariantNumeric:'tabular-nums'}}>{money(f.fee)}</span>
+                        : <span style={{fontSize:'10px',fontWeight:'700',padding:'3px 8px',borderRadius:'10px',backgroundColor:'#fef3c7',color:'#92400e'}}>NO FEE</span>}
+                    </div>
+                  ))}
                 </div>
               )}
               <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'12px',textAlign:'center'}}>Tap a patient to open their record.</div>
