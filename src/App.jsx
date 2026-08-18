@@ -384,7 +384,10 @@ import { createClient } from '@supabase/supabase-js';
                     const { data: practiceData } = await supabase.from('practices').select('name').eq('id', practiceId).maybeSingle();
                     if (practiceData?.name) practiceName = practiceData.name;
                 } catch {}
-                return { id: userId, name: data.name, role: data.role, email: userEmail, practiceId, practiceName, bonusEnabled: data.bonus_enabled !== false };
+                // A location-scoped login (see 20260818_location_scope.sql) sees one
+                // location and nothing else. null for everyone else, which is the
+                // unscoped behaviour every existing role already has.
+                return { id: userId, name: data.name, role: data.role, email: userEmail, practiceId, practiceName, bonusEnabled: data.bonus_enabled !== false, locationScope: data.location_scope || null, locationLabel: data.location_label || data.location_scope || null };
             };
 
             useEffect(() => {
@@ -916,6 +919,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [newTCPassword, setNewTCPassword] = useState('');
   const [showNewTCPw, setShowNewTCPw] = useState(false);
   const [newTCRole, setNewTCRole] = useState('tc');
+  const [newTCLocationScope, setNewTCLocationScope] = useState('');
+  const [newTCLocationLabel, setNewTCLocationLabel] = useState('');
   const [tcMgmtMsg, setTcMgmtMsg] = useState('');
   const [tcMgmtMsgType, setTcMgmtMsgType] = useState('info');
   const [tcSetPwInputs, setTcSetPwInputs] = useState({});
@@ -988,7 +993,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         return;
       }
       if (supabase) {
-        const { data, error } = await supabase.from('patients').select('*').eq('practice_id', currentUser.practiceId).order('npe_date', { ascending: false });
+        // RLS enforces this too (patients_select). Filtering here as well keeps the
+        // payload small and makes the scope legible at the call site.
+        let q = supabase.from('patients').select('*').eq('practice_id', currentUser.practiceId);
+        if (currentUser.locationScope) q = q.eq('location', currentUser.locationScope);
+        const { data, error } = await q.order('npe_date', { ascending: false });
         if (cancelled) return;
         if (!error && data) {
           setPatients(data.map(r => ({
@@ -1367,13 +1376,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     }
   }, []);
 
-  // Show onboarding modal for new real practices with no patients
+  // Show onboarding modal for new real practices with no patients. Skipped for
+  // a location-scoped login: the tour ends by sending them to Add NPE, which
+  // isn't in their nav (data entry isn't their job), and "no patients yet" is
+  // an expected, unremarkable state for a single location, not a sign the
+  // account needs setup.
   useEffect(() => {
-    if (!loading && currentUser?.id !== 'demo' && patients.length === 0) {
+    if (!loading && currentUser?.id !== 'demo' && !currentUser?.locationScope && patients.length === 0) {
       const dismissed = localStorage.getItem(`onboarding-dismissed-${currentUser?.practiceId}`);
       if (!dismissed) setShowOnboarding(true);
     }
-  }, [loading, patients.length, currentUser?.practiceId]);
+  }, [loading, patients.length, currentUser?.practiceId, currentUser?.locationScope]);
   // ── Practice Metrics Supabase helpers ────────────────────────────────
   const loadPracticeMetrics = async () => {
     if (currentUser?.id === 'demo') {
@@ -2762,8 +2775,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
           {/* Practice / Client info */}
           <div>
-            <p style={{fontSize:'15px',fontWeight:'700',color:'white',margin:0}}>{currentUser?.practiceName || 'Practice'}</p>
-            <p style={{fontSize:'11px',color:'rgba(255,255,255,0.45)',margin:'2px 0 0 0',letterSpacing:'0.03em'}}>{currentUser?.role === 'tc' ? 'Treatment Coordinator Portal' : 'Practice Owner Portal'}</p>
+            <p style={{fontSize:'15px',fontWeight:'700',color:'white',margin:0}}>{currentUser?.locationLabel || currentUser?.practiceName || 'Practice'}</p>
+            <p style={{fontSize:'11px',color:'rgba(255,255,255,0.45)',margin:'2px 0 0 0',letterSpacing:'0.03em'}}>{currentUser?.locationScope ? 'Owner Portal' : currentUser?.role === 'tc' ? 'Treatment Coordinator Portal' : 'Practice Owner Portal'}</p>
           </div>
 
           {/* Save-failure warning chip — sits in the empty header space */}
@@ -2819,7 +2832,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             )}
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:'13px',fontWeight:'700',color:'white'}}>{currentUser?.name}</div>
-              <div style={{fontSize:'10px',color:'rgba(255,255,255,0.4)',textTransform:'uppercase',letterSpacing:'0.06em',marginTop:'1px'}}>{currentUser?.role === 'admin' ? 'Practice Owner' : 'Treatment Coordinator'}</div>
+              <div style={{fontSize:'10px',color:'rgba(255,255,255,0.4)',textTransform:'uppercase',letterSpacing:'0.06em',marginTop:'1px'}}>{currentUser?.locationScope ? `${currentUser.locationLabel} Owner` : currentUser?.role === 'admin' ? 'Practice Owner' : 'Treatment Coordinator'}</div>
             </div>
             <button onClick={onSignOut}
               style={{padding:'7px 14px',backgroundColor:'rgba(255,255,255,0.1)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:'7px',color:'rgba(255,255,255,0.7)',fontSize:'12px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap'}}>
@@ -2833,7 +2846,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       {/* Navigation */}
       <nav style={{backgroundColor:'white',borderBottom:'1px solid #e5e7eb'}}>
         <div style={{maxWidth:'1400px',margin:'0 auto',padding:'0 16px',display:'flex',gap:'8px',overflowX:'auto'}}>
-          {(currentUser?.role === 'tc'
+          {(currentUser?.locationScope
+            // A location owner gets a dashboard, a read-only roster, and Settings —
+            // which for this role is the account panel only, so they can change
+            // their own password. Everything else is practice-wide or data entry.
+            ? ['dashboard', 'patients', 'settings']
+            : currentUser?.role === 'tc'
             ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
             : currentUser?.role === 'manager'
             ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
@@ -3016,8 +3034,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               return cd && cd < todayStr;
             }).length;
 
+          // A location owner reads their location's numbers, not their staff's.
+          // Accountability, bonus and call performance are all person-level, so the
+          // whole set comes off for this role.
+          const isLocationOwner = !!currentUser?.locationScope;
+
           // Whether bonus figures should be shown to this viewer (TCs can have bonus disabled).
-          const showBonus = (currentUser?.role !== 'tc' && currentUser?.role !== 'manager') || currentUser?.bonusEnabled;
+          const showBonus = !isLocationOwner && ((currentUser?.role !== 'tc' && currentUser?.role !== 'manager') || currentUser?.bonusEnabled);
 
           // ── Priority call list — the actual patients due/overdue today, most overdue first ──
           const dayMs = 86400000;
@@ -3505,7 +3528,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             //
             // Revenue is owner-level information: TCs and managers share this layout
             // (see the bonus card below), so the whole column is admin-only.
-            const showProduction = currentUser?.role === 'admin';
+            const showProduction = currentUser?.role === 'admin' || isLocationOwner;
             const feeOf = p => parseFloat((p.contractAmount || '').toString().replace(/[^0-9.]/g, '')) || 0;
             const prodStartPts   = selStartPts.filter(p => isSDS(p) || p.ST);
             const prodFees       = prodStartPts.map(p => ({ p, fee: feeOf(p) }));
@@ -3536,7 +3559,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <div>
                     <div style={{fontSize:'13px',color:'#6b7280',marginBottom:'2px'}}>{dateLabel}</div>
                     <h2 style={{fontSize:'26px',fontWeight:'800',color:'#202020',margin:0}}>
-                      Practice Health — {dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel}
+                      {currentUser?.locationScope ? currentUser.locationLabel : 'Practice'} Health — {dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel}
                     </h2>
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
@@ -3567,7 +3590,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   </div>
                 </div>
 
-                {/* HERO — TC Follow-Up Accountability */}
+                {/* HERO — TC Follow-Up Accountability. Person-level, so a location
+                    owner (who reads the location, not the staff) doesn't get it. */}
+                {!isLocationOwner && (
                 <div>
                   <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'12px'}}>
                     <div>
@@ -3607,6 +3632,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     );
                   })()}
                 </div>
+                )}
 
                 {/* ── KPI table ────────────────────────────────────────────────
                      Practice totals on top, locations beneath, on ONE grid — so every
@@ -3703,10 +3729,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 cell rather than in a separate header row — in a header the
                                 label floated free of the number it belongs to. */}
                             <tr>
-                              <td style={{textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'top',paddingTop:'14px'}}>Practice</td>
+                              <td style={{textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'top',paddingTop:'14px'}}>{isLocationOwner ? `${currentUser.locationLabel} Owner` : 'Practice'}</td>
                               {KPI_COLS.map(col => {
                                 const d = drill[col.key];
-                                const goal = col.key === 'npe' ? (nmNPEGoal > 0 ? nmNPEGoal : null)
+                                const goal = isLocationOwner ? null
+                                  : col.key === 'npe' ? (nmNPEGoal > 0 ? nmNPEGoal : null)
                                   : col.key === 'start' ? (nmStartedGoal > 0 ? nmStartedGoal : null)
                                   : col.key === 'prod' ? (prodGoal > 0 ? prodGoal : null) : null;
                                 const goalLabel = col.key === 'prod' && goal !== null ? fmtMoneyFull(goal) : goal;
@@ -3755,7 +3782,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               })}
                             </tr>
 
-                            {locRows.length > 0 && (
+                            {!isLocationOwner && locRows.length > 0 && (
                               <>
                                 <tr><td colSpan={KPI_COLS.length + 1} style={{borderBottom:'2px solid #e8eaed',padding:0,height:0}} /></tr>
                                 <tr><td colSpan={KPI_COLS.length + 1} style={{paddingTop:'13px',paddingBottom:'5px',fontSize:'10px',fontWeight:'700',color:'#b6bcc6',textTransform:'uppercase',letterSpacing:'0.08em'}}>By location</td></tr>
@@ -3818,8 +3845,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <button onClick={()=>setCurrentView('followup')} style={{marginLeft:'auto',padding:'7px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'8px',fontSize:'12px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap'}}>View Queue →</button>
                 </div>
 
-                {/* TC Bonus — full width (hidden in custom range; bonuses are calendar-month) */}
-                {dashTimeframe !== 'custom' && (() => {
+                {/* TC Bonus — full width (hidden in custom range; bonuses are calendar-month).
+                    A location owner never sees this — it's staff pay, not a location
+                    number, and bonusPerTC alone isn't a reliable gate since an admin
+                    could still flip bonus_enabled on for this row later. */}
+                {!isLocationOwner && dashTimeframe !== 'custom' && (() => {
                   // Compensation is need-to-know: the admin sees the whole team, while
                   // managers and TCs see only their own figure — and only when their own
                   // bonus display is enabled. Mirrors how the Bonus Audit view already
@@ -3957,7 +3987,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const barColor = r => r===null?'#9ca3af':r>=50?'#10b981':r>=25?'#f59e0b':'#ef4444';
                   const bClr = r=>r===null?'#9ca3af':r>=50?'#10b981':r>=30?'#f59e0b':'#ef4444';
 
-                  if (winRates.length === 0 && callPerLogger.length === 0) return null;
+                  if (winRates.length === 0 && (isLocationOwner || callPerLogger.length === 0)) return null;
                   return (
                     <div style={{display:'flex',gap:'16px',alignItems:'flex-start',flexWrap:'wrap'}}>
                       {winRates.length > 0 && (
@@ -3984,7 +4014,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           </div>
                         </div>
                       )}
-                      {callPerLogger.length > 0 && (
+                      {/* Person-level, like accountability and bonus — off for a location owner. */}
+                      {!isLocationOwner && callPerLogger.length > 0 && (
                         <div style={{flex:'1',minWidth:'280px',backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
                           <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'12px',flexWrap:'wrap',marginBottom:'16px'}}>
                             <div>
@@ -6707,6 +6738,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         <span style={{fontSize:'13px',color:'#374151',fontWeight:'500'}}>📅 Next Touch:</span>
                         <input
                           type="date"
+                          disabled={!!currentUser?.locationScope}
                           value={patient.nextTouchDate === '__MAX__' ? '' : (patient.nextTouchDate || '')}
                           onChange={async (e) => {
                             const val = e.target.value;
@@ -6716,7 +6748,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             setPatients(updated);
                             await dbUpsert({...patient, nextTouchDate: skipped});
                           }}
-                          style={{padding:'4px 8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'13px'}}
+                          style={{padding:'4px 8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'13px',
+                            backgroundColor: currentUser?.locationScope ? '#f3f4f6' : 'white', color: currentUser?.locationScope ? '#9ca3af' : 'inherit'}}
                         />
                         {patient.contactAttempts > 0 && (
                           <span style={{fontSize:'12px',color:'#6b7280'}}>({patient.contactAttempts} contact{patient.contactAttempts > 1 ? 's' : ''} logged)</span>
@@ -6731,6 +6764,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         <span style={{fontSize:'13px',color:'#1e40af',fontWeight:'500'}}>🦷 Bond Date:</span>
                         <input
                           type="date"
+                          disabled={!!currentUser?.locationScope}
                           value={patient.bondDate || ''}
                           onChange={async (e) => {
                             const val = e.target.value;
@@ -6740,12 +6774,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             setPatients(updated);
                             await dbUpsert(updatedPat);
                           }}
-                          style={{padding:'4px 8px',border:'1px solid #bfdbfe',borderRadius:'4px',fontSize:'13px',backgroundColor:'#eff6ff'}}
+                          style={{padding:'4px 8px',border:'1px solid #bfdbfe',borderRadius:'4px',fontSize:'13px',
+                            backgroundColor: currentUser?.locationScope ? '#f3f4f6' : '#eff6ff', color: currentUser?.locationScope ? '#9ca3af' : 'inherit'}}
                         />
                         {patient.bondDate && <span style={{fontSize:'12px',color:'#6b7280'}}>Check-in: {getBondCheckDate(patient) || '—'}</span>}
                       </div>
                     )}
                   </div>
+                  {/* A location owner's login is read-only (RLS enforces this too —
+                      patients_update/delete require an unscoped user), so the whole
+                      write-action column is gone rather than disabled piecemeal. */}
+                  {!currentUser?.locationScope && (
                   <div style={{display:'flex',gap:'8px',flexDirection:'column'}}>
                     {(patient.PEN || patient.SCH || patient.MP) && (
                       <button
@@ -6784,6 +6823,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       🗑️ Delete
                     </button>
                   </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -9558,7 +9598,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         {/* SETTINGS */}
         {currentView === 'settings' && (
           <div style={{maxWidth:'1200px'}}>
-            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>{currentUser?.role === 'tc' ? 'My Account' : currentUser?.role === 'manager' ? 'Team & Account' : 'Goals & Settings'}</h2>
+            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>{currentUser?.locationScope ? 'My Account' : currentUser?.role === 'tc' ? 'My Account' : currentUser?.role === 'manager' ? 'Team & Account' : 'Goals & Settings'}</h2>
 
             {/* ── Change My Password — visible to all users ── */}
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',marginBottom:'24px',maxWidth:'420px'}}>
@@ -9801,7 +9841,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             )}
 
             {/* ADMIN PANEL + goals — hidden from TCs */}
-            {currentUser?.role !== 'tc' && (<><div style={{backgroundColor:'white',border:'1px solid #e5e7eb',padding:'24px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.06)',marginBottom:'24px'}}>
+            {/* Feature toggles, locations, goals, team roster and bonus rates all live in
+                this one card. A location owner gets none of it -- it's practice-wide
+                configuration and the staff directory, neither of which is "their
+                account" -- so the gate excludes locationScope alongside 'tc'. */}
+            {currentUser?.role !== 'tc' && !currentUser?.locationScope && (<><div style={{backgroundColor:'white',border:'1px solid #e5e7eb',padding:'24px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.06)',marginBottom:'24px'}}>
               <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',marginBottom:'20px',paddingBottom:'14px',borderBottom:'2px solid #f3f4f6'}}>⚙️ Practice Settings</h3>
                 <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
                   {adminMsg && (
@@ -9993,12 +10037,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               <td style={{padding:'10px',fontWeight:'700',color: u.status==='inactive'?'#9ca3af':'#374151'}}>{u.name}{u.id === (currentUser?.id || '') ? <span style={{marginLeft:'6px',fontSize:'10px',color:'#2563EB',fontWeight:'800'}}>YOU</span> : null}</td>
                               <td style={{padding:'10px',color:'#6b7280'}}>{u.email}</td>
                               <td style={{padding:'10px'}}>
-                                {(u.email === currentUser?.email || currentUser?.role !== 'admin') ? (
-                                  // Only a full Admin can change roles, and never your own row (avoids locking yourself out).
+                                {(u.email === currentUser?.email || currentUser?.role !== 'admin' || u.role === 'location_owner') ? (
+                                  // Only a full Admin can change roles, never your own row (avoids locking
+                                  // yourself out), and never a Location Owner row — the dropdown below only
+                                  // offers tc/manager/admin and doesn't clear location_scope, so routing one
+                                  // through it would silently leave a 'tc' user filtered to one location.
                                   <span style={{padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',
-                                    backgroundColor: u.role==='admin'?'#fef3c7':u.role==='manager'?'#f3e8ff':'#eff6ff',
-                                    color: u.role==='admin'?'#92400e':u.role==='manager'?'#6b21a8':'#1e40af'}}>
-                                    {u.role === 'admin' ? 'Admin' : u.role === 'manager' ? 'Office Mgr' : 'TC'}
+                                    backgroundColor: u.role==='admin'?'#fef3c7':u.role==='manager'?'#f3e8ff':u.role==='location_owner'?'#ecfdf5':'#eff6ff',
+                                    color: u.role==='admin'?'#92400e':u.role==='manager'?'#6b21a8':u.role==='location_owner'?'#047857':'#1e40af'}}>
+                                    {u.role === 'admin' ? 'Admin' : u.role === 'manager' ? 'Office Mgr' : u.role === 'location_owner' ? `Location Owner · ${u.location_label || u.location_scope}` : 'TC'}
                                   </span>
                                 ) : (
                                   <select
@@ -10135,7 +10182,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     {/* Add TC form */}
                     <div id="guide-team-form" style={{borderTop: tcUsers.length > 0 ? '1px solid #e5e7eb' : 'none', paddingTop: tcUsers.length > 0 ? '16px' : '0'}}>
                       <div style={{fontSize:'12px',fontWeight:'700',color:'#374151',marginBottom:'10px'}}>Add a Team Member</div>
-                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto auto',gap:'8px',alignItems:'end'}}>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:'8px',alignItems:'end'}}>
                         <div>
                           <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Name</label>
                           <input id="guide-tc-name" value={newTCName} onChange={e => setNewTCName(e.target.value)} placeholder="First name"
@@ -10165,12 +10212,38 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             <option value="tc">TC</option>
                             <option value="manager">Office Manager</option>
                             <option value="admin">Admin</option>
+                            <option value="location_owner">Location Owner</option>
                           </select>
                         </div>
+                        )}
+                        {/* Location Owner reads one location's numbers and nothing else —
+                            see 20260818_location_scope.sql. location_scope must match a
+                            patients.location value exactly, so it's a dropdown over the
+                            practice's own locations rather than free text. location_label
+                            is the human-readable name shown on their dashboard, since
+                            location codes ("Apo") aren't something to hand a partner. */}
+                        {currentUser?.role === 'admin' && newTCRole === 'location_owner' && (
+                          <>
+                            <div style={{minWidth:'140px'}}>
+                              <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Location</label>
+                              <select value={newTCLocationScope} onChange={e => setNewTCLocationScope(e.target.value)}
+                                style={{padding:'9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',width:'100%'}}>
+                                <option value="">Select a location…</option>
+                                {locations.map(loc => <option key={loc} value={loc}>{loc}</option>)}
+                              </select>
+                            </div>
+                            <div style={{minWidth:'160px'}}>
+                              <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Display Name</label>
+                              <input value={newTCLocationLabel} onChange={e => setNewTCLocationLabel(e.target.value)} placeholder="e.g. Apollo Beach"
+                                style={{width:'100%',padding:'9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',boxSizing:'border-box'}} />
+                            </div>
+                          </>
                         )}
                         <button id="guide-tc-add" onClick={async () => {
                           if (!newTCName.trim() || !newTCEmail.trim()) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Name and email are required.'); }
                           if (!newTCPassword.trim() || newTCPassword.trim().length < 6) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Password must be at least 6 characters.'); }
+                          const isLocationOwnerRole = newTCRole === 'location_owner';
+                          if (isLocationOwnerRole && !newTCLocationScope) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Pick a location for a Location Owner login.'); }
                           const addedName = newTCName.trim();
                           const addedEmail = newTCEmail.trim().toLowerCase();
                           const addedPassword = newTCPassword.trim();
@@ -10178,10 +10251,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           const tempClient = createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false, detectSessionInUrl: false } });
                           const { error: authError } = await tempClient.auth.signUp({ email: addedEmail, password: addedPassword });
                           if (authError && !authError.message?.includes('already registered')) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Auth error: ' + authError.message); }
-                          // Insert into tc_users
-                          const { error } = await supabase.from('tc_users').insert({ name: addedName, email: addedEmail, role: newTCRole, status: 'active', practice_id: managedPracticeId || currentUser.practiceId });
+                          // Insert into tc_users. location_scope/location_label stay null for
+                          // every other role -- see 20260818_location_scope.sql.
+                          const { error } = await supabase.from('tc_users').insert({
+                            name: addedName, email: addedEmail, role: newTCRole, status: 'active',
+                            practice_id: managedPracticeId || currentUser.practiceId,
+                            location_scope: isLocationOwnerRole ? newTCLocationScope : null,
+                            location_label: isLocationOwnerRole ? (newTCLocationLabel.trim() || newTCLocationScope) : null,
+                          });
                           if (error) { setTcMgmtMsgType('error'); setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.')); return; }
-                          setNewTCName(''); setNewTCEmail(''); setNewTCPassword(''); setNewTCRole('tc');
+                          setNewTCName(''); setNewTCEmail(''); setNewTCPassword(''); setNewTCRole('tc'); setNewTCLocationScope(''); setNewTCLocationLabel('');
                           await loadTCUsers();
                           setGuidedHighlight(null);
                           setShowOnboarding(true);
