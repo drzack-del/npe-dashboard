@@ -762,10 +762,11 @@ const GuidedHighlight = ({ highlight, onDismiss, onComplete }) => {
 
 const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [currentView, setCurrentView] = useState(currentUser?.role === 'tc' ? 'followup' : 'dashboard');
-  const [dashTimeframe, setDashTimeframe] = useState('month'); // 'month' | 'all' | 'custom'
+  const [dashTimeframe, setDashTimeframe] = useState('month'); // 'month' | 'all' | 'custom' | 'quarter' (quarter: Apollo Beach Owner Portal only)
   const [dashTCFilter, setDashTCFilter] = useState('All');
   const [dashMonth, setDashMonth] = useState(new Date().getMonth());
   const [dashYear, setDashYear] = useState(new Date().getFullYear());
+  const [dashQuarter, setDashQuarter] = useState(Math.floor(new Date().getMonth() / 3) + 1);
   const [dashCustomFrom, setDashCustomFrom] = useState('');
   const [dashCustomTo, setDashCustomTo] = useState('');
   // Call Performance and Pipeline read a wider window than the rest of the
@@ -3301,6 +3302,29 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             if (y > nowY || (y === nowY && m > nowM)) return; // don't go past current month
             setDashMonth(m); setDashYear(y);
           };
+          // Quarter view — Apollo Beach Owner Portal only (see isLocationOwner below).
+          // Reuses dashCustomFrom/dashCustomTo as the actual filter range, so every
+          // NPE/start/production calculation that already understands 'custom' picks
+          // up a selected quarter for free — only the header/controls need to know
+          // the mode is 'quarter' rather than 'custom'.
+          const quarterBounds = (y, q) => {
+            const startMonth = (q - 1) * 3;
+            const endObj = new Date(y, startMonth + 3, 0); // last day of the quarter's last month
+            const pad = n => String(n).padStart(2, '0');
+            return {
+              start: `${y}-${pad(startMonth + 1)}-01`,
+              end: `${endObj.getFullYear()}-${pad(endObj.getMonth() + 1)}-${pad(endObj.getDate())}`,
+            };
+          };
+          const navDashQuarter = (dir) => {
+            let q = dashQuarter + dir, y = dashYear;
+            if (q < 1) { q = 4; y--; }
+            if (q > 4) { q = 1; y++; }
+            const currentQ = Math.floor(nowM / 3) + 1;
+            if (y > nowY || (y === nowY && q > currentQ)) return; // don't go past current quarter
+            const { start, end } = quarterBounds(y, q);
+            setDashQuarter(q); setDashYear(y); setDashCustomFrom(start); setDashCustomTo(end);
+          };
 
           // ── NEW DASHBOARD (miller-ortho owner only) ──────────────────
           // Every role gets this layout — admins, office managers and TCs alike. The
@@ -3311,8 +3335,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const selMonthStr  = `${dashYear}-${String(dashMonth + 1).padStart(2, '0')}`;
             const selMonthLabel = new Date(dashYear, dashMonth, 1).toLocaleDateString('en-US', {month:'long', year:'numeric'});
             const todayStrNew  = new Date().toISOString().split('T')[0];
-            const customRangeValid = dashTimeframe === 'custom' && dashCustomFrom && dashCustomTo && dashCustomFrom <= dashCustomTo;
-            const customRangeLabel = customRangeValid
+            const quarterLabel = `Q${dashQuarter} ${dashYear}`;
+            const currentQ = Math.floor(nowM / 3) + 1;
+            const isCurrentQuarter = dashQuarter === currentQ && dashYear === nowY;
+            // 'quarter' behaves exactly like 'custom' for every data computation below —
+            // it just arrives at dashCustomFrom/dashCustomTo a different way (see
+            // navDashQuarter above). isRangeMode is the one flag every such site checks.
+            const isRangeMode = dashTimeframe === 'custom' || dashTimeframe === 'quarter';
+            const customRangeValid = isRangeMode && dashCustomFrom && dashCustomTo && dashCustomFrom <= dashCustomTo;
+            const customRangeLabel = dashTimeframe === 'quarter'
+              ? quarterLabel
+              : customRangeValid
               ? `${new Date(dashCustomFrom+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})} – ${new Date(dashCustomTo+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
               : 'Custom Range';
 
@@ -3323,14 +3356,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const monthShort = s => new Date(s+'T12:00:00').toLocaleDateString('en-US',{month:'short',year:'numeric'});
             const RANGE_OPTIONS = [{v:1,l:'1 mo'},{v:3,l:'3 mo'},{v:6,l:'6 mo'},{v:12,l:'12 mo'},{v:'all',l:'All'}];
             const makeRange = months => {
-              const end = dashTimeframe === 'custom'
+              const end = isRangeMode
                 ? (customRangeValid ? dashCustomTo : todayStrNew)
                 : ymdStr(dashYear, dashMonth, new Date(dashYear, dashMonth+1, 0).getDate());
               if (months === 'all') return { from:'0000-01-01', to:end, label:'All time' };
               if (months === 1) return {
-                from: dashTimeframe === 'custom' ? (customRangeValid ? dashCustomFrom : end) : ymdStr(dashYear, dashMonth, 1),
+                from: isRangeMode ? (customRangeValid ? dashCustomFrom : end) : ymdStr(dashYear, dashMonth, 1),
                 to: end,
-                label: dashTimeframe === 'custom' ? customRangeLabel : selMonthLabel,
+                label: isRangeMode ? customRangeLabel : selMonthLabel,
               };
               const d = new Date(end+'T12:00:00');
               d.setDate(1);
@@ -3354,10 +3387,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             );
 
             // Metrics for selected period (all TCs combined)
-            const selNPEPts = dashTimeframe === 'custom'
+            const selNPEPts = isRangeMode
               ? (customRangeValid ? patients.filter(p => p.npeDate >= dashCustomFrom && p.npeDate <= dashCustomTo) : [])
               : patients.filter(p => { const d = new Date(p.npeDate+'T12:00:00'); return d.getMonth()===dashMonth && d.getFullYear()===dashYear; });
-            const selStartPts = dashTimeframe === 'custom'
+            const selStartPts = isRangeMode
               ? (customRangeValid ? patients.filter(p => { const sd=effectiveStartDate(p); return sd && sd >= dashCustomFrom && sd <= dashCustomTo; }) : [])
               : patients.filter(p => { const sd=effectiveStartDate(p); if(!sd) return false; const d=new Date(sd+'T12:00:00'); return d.getMonth()===dashMonth && d.getFullYear()===dashYear; });
             const nm = calculateMetrics(selNPEPts, selStartPts);
@@ -3373,7 +3406,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               patients.forEach(p => {
                 (p.contact_log||[]).forEach(entry => {
                   if (!entry.scheduledDate || !entry.date) return;
-                  const inPeriod = dashTimeframe === 'custom'
+                  const inPeriod = isRangeMode
                     ? (customRangeValid && entry.date >= dashCustomFrom && entry.date <= dashCustomTo)
                     : entry.date.startsWith(selMonthStr);
                   if (!inPeriod) return;
@@ -3541,7 +3574,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             prodFees.forEach(({ p, fee }) => { prodByLoc[p.location] = (prodByLoc[p.location] || 0) + fee; });
             // Monthly figures only — a monthly goal or a booked month total means
             // nothing against an arbitrary custom span.
-            const prodMonthly    = dashTimeframe !== 'custom';
+            const prodMonthly    = !isRangeMode;
             const prodGoal       = prodMonthly
               ? (practiceGoals.find(g => g.year === dashYear && g.month === dashMonth + 1)?.production_goal || 0)
               : 0;
@@ -3559,15 +3592,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <div>
                     <div style={{fontSize:'13px',color:'#6b7280',marginBottom:'2px'}}>{dateLabel}</div>
                     <h2 style={{fontSize:'26px',fontWeight:'800',color:'#202020',margin:0}}>
-                      {currentUser?.locationScope ? currentUser.locationLabel : 'Practice'} Health — {dashTimeframe === 'custom' ? (customRangeValid ? customRangeLabel : 'Custom Range') : selMonthLabel}
+                      {currentUser?.locationScope ? currentUser.locationLabel : 'Practice'} Health — {isRangeMode ? customRangeLabel : selMonthLabel}
                     </h2>
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
-                    {dashTimeframe !== 'custom' && (
+                    {dashTimeframe === 'month' && (
                       <div style={{display:'flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:'8px',overflow:'hidden',backgroundColor:'white'}}>
                         <button onClick={()=>navDashMonth(-1)} style={{padding:'8px 14px',border:'none',cursor:'pointer',fontSize:'14px',fontWeight:'700',color:'#374151',backgroundColor:'transparent'}}>◀</button>
                         <span style={{padding:'8px 12px',fontSize:'13px',fontWeight:'700',color:'#202020',minWidth:'130px',textAlign:'center',borderLeft:'1px solid #e5e7eb',borderRight:'1px solid #e5e7eb'}}>{selMonthLabel}</span>
                         <button onClick={()=>navDashMonth(1)} disabled={isCurrentMonth} style={{padding:'8px 14px',border:'none',cursor:isCurrentMonth?'default':'pointer',fontSize:'14px',fontWeight:'700',color:isCurrentMonth?'#d1d5db':'#374151',backgroundColor:'transparent'}}>▶</button>
+                      </div>
+                    )}
+                    {dashTimeframe === 'quarter' && (
+                      <div style={{display:'flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:'8px',overflow:'hidden',backgroundColor:'white'}}>
+                        <button onClick={()=>navDashQuarter(-1)} style={{padding:'8px 14px',border:'none',cursor:'pointer',fontSize:'14px',fontWeight:'700',color:'#374151',backgroundColor:'transparent'}}>◀</button>
+                        <span style={{padding:'8px 12px',fontSize:'13px',fontWeight:'700',color:'#202020',minWidth:'130px',textAlign:'center',borderLeft:'1px solid #e5e7eb',borderRight:'1px solid #e5e7eb'}}>{quarterLabel}</span>
+                        <button onClick={()=>navDashQuarter(1)} disabled={isCurrentQuarter} style={{padding:'8px 14px',border:'none',cursor:isCurrentQuarter?'default':'pointer',fontSize:'14px',fontWeight:'700',color:isCurrentQuarter?'#d1d5db':'#374151',backgroundColor:'transparent'}}>▶</button>
                       </div>
                     )}
                     {dashTimeframe === 'custom' && (
@@ -3580,13 +3620,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           style={{padding:'7px 10px',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',fontWeight:'600',color:'#374151',backgroundColor:'white',cursor:'pointer'}} />
                       </div>
                     )}
-                    <button
-                      onClick={() => dashTimeframe === 'custom' ? setDashTimeframe('month') : setDashTimeframe('custom')}
-                      style={{padding:'8px 14px',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',fontWeight:'600',cursor:'pointer',
-                        backgroundColor: dashTimeframe === 'custom' ? '#1e40af' : 'white',
-                        color: dashTimeframe === 'custom' ? 'white' : '#374151'}}>
-                      {dashTimeframe === 'custom' ? '← Month View' : '📅 Custom Range'}
-                    </button>
+                    <div style={{display:'flex',border:'1px solid #d1d5db',borderRadius:'8px',overflow:'hidden'}}>
+                      {[{v:'month',l:'Month'},{v:'quarter',l:'Quarter'},{v:'custom',l:'📅 Custom'}].map((opt, i) => (
+                        <button key={opt.v} onClick={() => {
+                            if (opt.v === 'quarter') {
+                              const { start, end } = quarterBounds(dashYear, dashQuarter);
+                              setDashCustomFrom(start); setDashCustomTo(end);
+                            }
+                            setDashTimeframe(opt.v);
+                          }}
+                          style={{padding:'8px 14px',border:'none',borderLeft: i>0 ? '1px solid #d1d5db' : 'none',cursor:'pointer',fontSize:'13px',fontWeight:'600',
+                            backgroundColor: dashTimeframe === opt.v ? '#1e40af' : 'white',
+                            color: dashTimeframe === opt.v ? 'white' : '#374151'}}>
+                          {opt.l}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -3643,9 +3692,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                      judgement never get confused — only Conversion carries one, because
                      it's the only metric here that's a verdict rather than a count. ── */}
                 {(() => {
-                  const kpiPeriodLabel = dashTimeframe === 'custom'
-                    ? (customRangeValid ? customRangeLabel : 'Custom Range')
-                    : selMonthLabel;
+                  const kpiPeriodLabel = isRangeMode ? customRangeLabel : selMonthLabel;
 
                   // Production sits immediately right of Starts: it is the dollar
                   // version of the same event, so the row reads NPEs → Starts →
@@ -3697,7 +3744,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
                   const practiceDenom = nm.total - nm.observation;
                   const convDelta = nm.overallConv - nmConvGoal;
-                  const chipTone = practiceDenom < MIN_CONV_SAMPLE ? null
+                  // Goal-derived, like the bars/labels above -- off for a location owner
+                  // for the same reason (practice-wide target, not this location's).
+                  // Goals only mean anything against a single calendar month. Suppressed
+                  // for a location owner (practice-wide target, not this location's) and
+                  // for anyone viewing a quarter/custom range (would compare a multi-month
+                  // total against one month's target, which is comparing wrong nothing).
+                  const chipTone = (isLocationOwner || isRangeMode || practiceDenom < MIN_CONV_SAMPLE) ? null
                     : convDelta >= 0 ? { bg:'#dcfce7', fg:'#166534' }
                     : nm.overallConv >= nmConvGoal * 0.8 ? { bg:'#fef3c7', fg:'#92400e' }
                     : { bg:'#fee2e2', fg:'#991b1b' };
@@ -3732,7 +3785,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               <td style={{textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',verticalAlign:'top',paddingTop:'14px'}}>{isLocationOwner ? `${currentUser.locationLabel} Owner` : 'Practice'}</td>
                               {KPI_COLS.map(col => {
                                 const d = drill[col.key];
-                                const goal = isLocationOwner ? null
+                                const goal = (isLocationOwner || isRangeMode) ? null
                                   : col.key === 'npe' ? (nmNPEGoal > 0 ? nmNPEGoal : null)
                                   : col.key === 'start' ? (nmStartedGoal > 0 ? nmStartedGoal : null)
                                   : col.key === 'prod' ? (prodGoal > 0 ? prodGoal : null) : null;
@@ -3849,7 +3902,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     A location owner never sees this — it's staff pay, not a location
                     number, and bonusPerTC alone isn't a reliable gate since an admin
                     could still flip bonus_enabled on for this row later. */}
-                {!isLocationOwner && dashTimeframe !== 'custom' && (() => {
+                {!isLocationOwner && !isRangeMode && (() => {
                   // Compensation is need-to-know: the admin sees the whole team, while
                   // managers and TCs see only their own figure — and only when their own
                   // bonus display is enabled. Mirrors how the Bonus Audit view already
