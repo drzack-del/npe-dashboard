@@ -3123,7 +3123,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 (b.maxedOut ? 1 : 0) - (a.maxedOut ? 1 : 0) ||
                 b.daysOver - a.daysOver ||
                 (b.daysStuck || 0) - (a.daysStuck || 0));
-              g.dueCount     = g.patients.filter(x => x.due && x.due <= todayStr).length;
+              // Due today and overdue are DISJOINT — this used to count every past-due
+              // patient in both, so the two chips on a row added up to more than the row.
+              g.dueCount     = g.patients.filter(x => x.due === todayStr).length;
               g.overdueCount = g.patients.filter(x => x.daysOver > 0).length;
               g.maxedCount   = g.patients.filter(x => x.maxedOut).length;
               g.staleCount   = g.patients.filter(x => x.daysSinceContact !== null && x.daysSinceContact >= 14).length;
@@ -3131,10 +3133,31 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 const vals = g.patients.map(x => x.daysStuck).filter(v => v !== null);
                 return vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : null;
               })();
+              // Win rate for this obstacle — every patient ever tagged with it, not just
+              // the ones stuck right now, so it answers "do we usually beat this one?".
+              // All-time on purpose (a single month is far too thin a sample), and the
+              // column header says so. Same TC scope as the queue above it. The synthetic
+              // "No obstacle tagged" bucket has no history to rate.
+              const ever = g.obstacle === 'No obstacle tagged' ? []
+                : queueScoped.filter(p => p.obstacle === g.obstacle);
+              g.everCount = ever.length;
+              g.everStarted = ever.filter(p => isSDS(p) || p.ST).length;
+              g.winRate = ever.length > 0 ? Math.round((g.everStarted / ever.length) * 100) : null;
               return g;
             }).sort((a, b) => b.patients.length - a.patients.length);
           })();
           const obstacleQueueTotal = obstacleGroups.reduce((n, g) => n + g.patients.length, 0);
+          // Queue health totals, summed straight off the rows below them so the header
+          // and the list can never disagree. They replace the separate Queue Health
+          // strip, which counted a slightly different population and so never quite
+          // reconciled with this card.
+          const queueSum = k => obstacleGroups.reduce((n, g) => n + g[k], 0);
+          const queueHealth = {
+            dueToday: queueSum('dueCount'),
+            overdue:  queueSum('overdueCount'),
+            maxed:    queueSum('maxedCount'),
+            stale:    queueSum('staleCount'),
+          };
 
           // ── Call performance for the signed-in TC — her own logged calls only.
           // Credits whoever logged the call (logged_by), falling back to the patient's TC
@@ -3179,24 +3202,68 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           // ── "Who's Stuck" card — the follow-up queue bucketed by obstacle, one row per
           // group, click a row to see the actual patients in it. Built once here and
           // rendered by both dashboard layouts below.
+          //
+          // This is now the ONLY place the pending pile is reported. It absorbed two
+          // cards that said the same thing in different words: the Queue Health strip
+          // (whose due/past-due/stale totals are the header pills here, summed from
+          // these very rows) and Obstacle Intelligence (whose per-obstacle win rate is
+          // the right-hand column here). One pile, one card — and "how often we win
+          // this obstacle" now sits next to "who is stuck on it", which is the actual
+          // decision being made.
           const obstacleQueueCard = obstacleGroups.length === 0 ? null : (() => {
-            const maxGroup = Math.max(...obstacleGroups.map(g => g.patients.length), 1);
             const chip = (text, color, bg, border) => (
               <span key={text} style={{fontSize:'10px',fontWeight:'700',color,backgroundColor:bg,border:`1px solid ${border}`,borderRadius:'20px',padding:'2px 8px',whiteSpace:'nowrap'}}>{text}</span>
             );
+            const winColor = r => r === null ? '#9ca3af' : r >= 50 ? '#10b981' : r >= 25 ? '#f59e0b' : '#ef4444';
+            // Due today / Past due / Out of attempts are disjoint piles and add to the
+            // total; "14+ days no contact" cuts across all three, so it sits after a
+            // divider rather than reading as a fourth bucket you could add up.
+            const healthPills = [
+              { label:'Due today',           value:queueHealth.dueToday, color:'#c2410c', bg:'#fff7ed', border:'#fed7aa',
+                tip:'Open patients whose follow-up lands today. Past-due patients are counted separately.' },
+              { label:'Past due',            value:queueHealth.overdue,  color:'#dc2626', bg:'#fee2e2', border:'#fca5a5',
+                tip:'Open patients whose follow-up date has already passed.' },
+              { label:'Out of attempts',     value:queueHealth.maxed,    color:'#7c3aed', bg:'#f5f3ff', border:'#ddd6fe',
+                tip:'Cadence exhausted — no next touch scheduled. The most stuck patients of all.' },
+              { divider:true },
+              { label:'14+ days no contact', value:queueHealth.stale,    color:'#92400e', bg:'#fef3c7', border:'#fde68a',
+                tip:'No logged contact in 14 days. Overlaps the counts to its left.' },
+            ];
             return (
               <div style={{backgroundColor:'white',borderRadius:'12px',padding:'18px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
-                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'8px',marginBottom:'14px'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'8px',marginBottom:'12px'}}>
                   <div>
                     <h3 style={{fontSize:'15px',fontWeight:'800',color:'#111827',margin:0}}>🚧 Who's Stuck — Follow-Up Queue by Obstacle</h3>
                     <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>
-                      {obstacleQueueTotal} patient{obstacleQueueTotal !== 1 ? 's' : ''} waiting across {obstacleGroups.length} obstacle{obstacleGroups.length !== 1 ? 's' : ''} · click a group to see who
+                      {obstacleQueueTotal} patient{obstacleQueueTotal !== 1 ? 's' : ''} waiting across {obstacleGroups.length} obstacle{obstacleGroups.length !== 1 ? 's' : ''} · as of today · click a group to see who
                     </div>
                   </div>
                   <button onClick={() => setCurrentView('followup')}
                     style={{background:'none',border:'none',color:'#2563EB',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
                     View full queue →
                   </button>
+                </div>
+                {/* Queue health — the state of the pile above the pile itself. */}
+                <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',marginBottom:'14px'}}>
+                  {healthPills.map((row, i) => {
+                    if (row.divider) return <div key={`qd${i}`} style={{width:'1px',alignSelf:'stretch',minHeight:'26px',backgroundColor:'#e5e7eb',margin:'0 2px'}} />;
+                    const warn = row.value > 0;
+                    return (
+                      <div key={row.label} title={row.tip}
+                        style={{display:'flex',alignItems:'center',gap:'7px',padding:'5px 11px',borderRadius:'8px',
+                          backgroundColor: warn ? row.bg : '#f0fdf4', border:`1px solid ${warn ? row.border : '#bbf7d0'}`}}>
+                        <span style={{fontSize:'17px',fontWeight:'900',lineHeight:1,color: warn ? row.color : '#15803d'}}>{row.value}</span>
+                        <span style={{fontSize:'12px',fontWeight:'600',color: warn ? row.color : '#15803d'}}>{row.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Column key for the two numbers on the right of every row. */}
+                <div style={{display:'flex',alignItems:'center',gap:'12px',padding:'0 14px 6px',fontSize:'10px',fontWeight:'700',color:'#b6bcc6',textTransform:'uppercase',letterSpacing:'0.07em'}}>
+                  <span style={{width:'10px',flexShrink:0}} />
+                  <span style={{flex:'1 1 200px',minWidth:0}} />
+                  <span style={{flex:'1 1 120px',minWidth:'90px',textAlign:'right'}}>Win rate · all time</span>
+                  <span style={{minWidth:'28px',flexShrink:0,textAlign:'right'}}>Stuck</span>
                 </div>
                 <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                   {obstacleGroups.map(g => {
@@ -3217,8 +3284,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               {g.avgDaysStuck !== null && chip(`avg ${g.avgDaysStuck}d since NPE`, '#6b7280', '#f9fafb', '#e5e7eb')}
                             </div>
                           </div>
-                          <div style={{flex:'1 1 90px',minWidth:'60px',height:'8px',backgroundColor:'#f3f4f6',borderRadius:'4px',overflow:'hidden'}}>
-                            <div style={{height:'100%',width:`${Math.round((g.patients.length / maxGroup) * 100)}%`,backgroundColor: g.overdueCount > 0 ? '#ef4444' : '#f59e0b',borderRadius:'4px'}} />
+                          {/* Win rate, not group size — the size is already the number to
+                              its right, so a bar of the same thing said nothing. */}
+                          <div style={{flex:'1 1 120px',minWidth:'90px',display:'flex',alignItems:'center',gap:'8px'}}
+                            title={g.winRate !== null
+                              ? `${g.everStarted} of ${g.everCount} patients ever tagged "${g.obstacle}" have started`
+                              : 'No history to rate'}>
+                            <div style={{flex:1,height:'8px',backgroundColor:'#f3f4f6',borderRadius:'4px',overflow:'hidden'}}>
+                              <div style={{height:'100%',width:`${g.winRate || 0}%`,backgroundColor:winColor(g.winRate),borderRadius:'4px'}} />
+                            </div>
+                            <span style={{fontSize:'13px',fontWeight:'800',color:winColor(g.winRate),minWidth:'34px',textAlign:'right'}}>{g.winRate !== null ? `${g.winRate}%` : '—'}</span>
                           </div>
                           <div style={{fontSize:'20px',fontWeight:'900',color:'#111827',minWidth:'28px',textAlign:'right',flexShrink:0}}>{g.patients.length}</div>
                         </div>
@@ -3520,26 +3595,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 .filter(d=>d.total>0),
             })).filter(l => l.totalContacts > 0 && isCurrentTC(l.name));
 
-            // Queue health (always today-based, never the viewed month).
-            // Due today and Past due are disjoint: this one is exactly today, so the two
-            // counts no longer contain each other and add up to the real size of the pile.
-            const allDueTodayNew = patients.filter(p => {
-              if (!p.PEN&&!p.MP&&!p.OBS) return false;
-              if (!p.nextTouchDate||p.nextTouchDate==='__MAX__') return false;
-              return skipWeekend(p.nextTouchDate) === todayStrNew;
-            }).length;
-            const overdueNew = patients.filter(p => {
-              if (!p.PEN&&!p.MP&&!p.OBS) return false;
-              if (!p.nextTouchDate||p.nextTouchDate==='__MAX__') return false;
-              return skipWeekend(p.nextTouchDate) < todayStrNew;
-            }).length;
-            const staleCutoffNew = (() => { const d=new Date(todayStrNew+'T12:00:00'); d.setDate(d.getDate()-14); return d.toISOString().split('T')[0]; })();
-            const staleCountNew = patients.filter(p => {
-              if (!p.PEN&&!p.MP) return false;
-              if ((p.contact_log||[]).some(e=>e.date&&e.date>staleCutoffNew)) return false;
-              if (p.nextTouchDate && p.nextTouchDate !== '__MAX__' && p.nextTouchDate > todayStrNew) return false;
-              return !p.npeDate||p.npeDate<=staleCutoffNew;
-            }).length;
+            // Queue health now lives on the Who's Stuck card, derived from that
+            // card's own obstacle rows so header and rows always agree.
 
             // Pipeline cohort — every NPE inside the pipeline card's own lookback.
             // Starts are counted from within the cohort (not by start date), so the
@@ -3711,7 +3768,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     ] : []),
                     { key:'conv',  label:'Conversion',  color:'#2563EB', tint:'rgba(37,99,235,0.04)' },
                     { key:'sds',   label:'SDS Rate',    color:'#7c3aed', tint:'rgba(124,58,237,0.04)' },
-                    { key:'obs',   label:'Observation', color:'#15803d', tint:'rgba(21,128,61,0.04)' },
+                    // No Observation column. OBS is a patient *state*, not a monthly
+                    // performance number, and it already has a tile (with the same drill)
+                    // on the Pipeline card — where the whole point is where patients sit.
+                    // It stays out of the denominator here either way.
                   ];
 
                   const drill = {
@@ -3722,7 +3782,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                              perLocation: Object.entries(prodByLoc).map(([loc, amt]) => ({ loc, amt })).sort((a,b)=>b.amt-a.amt),
                            }) } : null,
                     conv:  { hint:'↗ breakdown', onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts }) },
-                    obs:   nm.observation > 0 ? { hint:'↗ names', onClick:() => setShowObsList({ list: selNPEPts.filter(p => p.OBS === true), perLocation: nm.obsPerLocation || [], label: kpiPeriodLabel, tcFilter:'All' }) } : null,
                   };
 
                   // Starts are counted by start date and NPEs by exam date, so a location's
@@ -3730,9 +3789,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   // of the dashboard uses. Conversion keeps the OBS-excluded denominator.
                   const locRows = (nm.perLocation || []).map(L => {
                     const sdsCount  = selStartPts.filter(p => p.location === L.loc && isSDS(p)).length;
-                    const obsCount  = selNPEPts.filter(p => p.location === L.loc && p.OBS === true).length;
                     const convDenom = selNPEPts.filter(p => p.location === L.loc && p.OBS !== true).length;
-                    return { ...L, obs:obsCount, convDenom, prod: prodByLoc[L.loc] || 0,
+                    return { ...L, convDenom, prod: prodByLoc[L.loc] || 0,
                       conv: convDenom > 0 ? Math.round((L.started / convDenom) * 100) : null,
                       sdsRate: L.started > 0 ? Math.round((sdsCount / L.started) * 100) : null };
                   });
@@ -3770,7 +3828,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     if (col.key === 'npe')   return L.total;
                     if (col.key === 'start') return L.started;
                     if (col.key === 'prod')  return L.prod > 0 ? fmtMoney(L.prod) : '—';
-                    if (col.key === 'obs')   return L.obs;
                     if (col.key === 'sds')   return L.sdsRate === null ? '—' : `${L.sdsRate}%`;
                     return L.conv === null ? '—' : `${L.conv}%`;
                   };
@@ -3778,7 +3835,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   return (
                     <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
                       <div style={{overflowX:'auto'}}>
-                        <table style={{width:'100%',minWidth:showProduction?'880px':'760px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
+                        <table style={{width:'100%',minWidth:showProduction?'760px':'620px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
                           <colgroup>
                             <col style={{width:'19%'}} />
                             {KPI_COLS.map(c => <col key={c.key} />)}
@@ -3801,8 +3858,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   : col.key === 'start' ? nm.started
                                   : col.key === 'prod' ? (prodTotal > 0 ? fmtMoney(prodTotal) : '—')
                                   : col.key === 'conv' ? `${nm.overallConv}%`
-                                  : col.key === 'sds' ? (nm.started > 0 ? `${nm.sdsRate}%` : '—')
-                                  : nm.observation;
+                                  : (nm.started > 0 ? `${nm.sdsRate}%` : '—');
                                 return (
                                   <td key={col.key}
                                     onClick={d ? d.onClick : undefined}
@@ -3874,35 +3930,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   );
                 })()}
 
-                {/* Queue Health — compact horizontal strip */}
-                <div style={{backgroundColor:'white',borderRadius:'10px',padding:'12px 20px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6',display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap'}}>
-                  <div style={{fontSize:'13px',fontWeight:'700',color:'#374151',marginRight:'4px',whiteSpace:'nowrap'}}>📋 Queue Health</div>
-                  {[
-                    // Two disjoint buckets, then a flag. "14+ days no contact" is not a
-                    // third pile — it cuts across the other two and can also catch someone
-                    // with no next touch date at all, so it sits after a divider rather
-                    // than reading as another bucket you could add up.
-                    {label:'Due today',          value:allDueTodayNew, tip:'Open patients whose follow-up lands today. Past-due patients are counted separately.',
-                      warnColor:'#c2410c',warnBg:'#fff7ed',warnBorder:'#fed7aa'},
-                    {label:'Past due',           value:overdueNew,     tip:'Open patients whose follow-up date has already passed.',
-                      warnColor:'#dc2626',warnBg:'#fee2e2',warnBorder:'#fca5a5'},
-                    {divider:true},
-                    {label:'14+ days no contact', value:staleCountNew, tip:'Pending or Medicaid patients with no logged contact in 14 days. Overlaps the counts above.',
-                      warnColor:'#92400e',warnBg:'#fef3c7',warnBorder:'#fde68a'},
-                  ].map((row, i) => {
-                    if (row.divider) return <div key={`d${i}`} style={{width:'1px',alignSelf:'stretch',backgroundColor:'#e5e7eb',margin:'0 4px'}} />;
-                    const warn = row.value > 0;
-                    return (
-                      <div key={row.label} title={row.tip}
-                        style={{display:'flex',alignItems:'center',gap:'8px',padding:'6px 12px',borderRadius:'8px',
-                          backgroundColor:warn?row.warnBg:'#f0fdf4',border:`1px solid ${warn?row.warnBorder:'#bbf7d0'}`}}>
-                        <span style={{fontSize:'18px',fontWeight:'900',lineHeight:1,color:warn?row.warnColor:'#15803d'}}>{row.value}</span>
-                        <span style={{fontSize:'12px',fontWeight:'600',color:warn?row.warnColor:'#15803d'}}>{row.label}</span>
-                      </div>
-                    );
-                  })}
-                  <button onClick={()=>setCurrentView('followup')} style={{marginLeft:'auto',padding:'7px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'8px',fontSize:'12px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap'}}>View Queue →</button>
-                </div>
+                {/* Queue Health used to live here as its own strip. It is now the
+                    row of pills inside the Who's Stuck card below, summed from that
+                    card's own rows — one pile, reported once, in the place where you
+                    can actually act on it. */}
 
                 {/* TC Bonus — full width (hidden in custom range; bonuses are calendar-month).
                     A location owner never sees this — it's staff pay, not a location
@@ -3986,14 +4017,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   );
                 })()}
 
-                {/* Pipeline */}
+                {/* Pipeline — a COHORT card, not a period card. It answers "of the exams
+                    we saw in this window, where did each one end up", so its tiles are a
+                    breakdown of one group of patients and always add to the exam count.
+                    That is a different question from the KPI row above, which counts
+                    starts by start date inside the selected month. The heading says
+                    "these exams" and the tiles say "of these" precisely so the two
+                    Started/Starts numbers are never read as the same measurement. */}
                 {pm.total > 0 && (
                   <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
                     <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'12px',flexWrap:'wrap',marginBottom:'14px'}}>
                       <div>
-                        <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>🔄 Pipeline — Where Patients Are Now</div>
+                        <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>
+                          🔄 Pipeline — Where the {pipeRange.label} Exams Landed
+                        </div>
                         <div style={{fontSize:'12px',color:'#6b7280',marginTop:'3px'}}>
-                          {pm.total} exam{pm.total!==1?'s':''} · {pipeRange.label} · {pm.overallConv}% converted
+                          All {pm.total} exam{pm.total!==1?'s':''} from {pipeRange.label}, by where each patient sits today
                           {pipeAvgAge !== null && ` · pending avg ${pipeAvgAge}d old`}
                           {pipeStale30 > 0 && ` · ${pipeStale30} pending 30+ days`}
                         </div>
@@ -4002,8 +4041,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </div>
                     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))',gap:'10px'}}>
                       {[
-                        {count:pm.started,         label:'Started',    sub:'Won',               bg:'#ecfdf5',border:'#6ee7b7',color:'#047857'},
-                        {count:pm.pending,         label:'Pending',    sub:'In follow-up',      bg:'#fff7ed',border:'#fed7aa',color:'#c2410c'},
+                        {count:pm.started,         label:'Started',    sub:'Won from this group',bg:'#ecfdf5',border:'#6ee7b7',color:'#047857'},
+                        {count:pm.pending,         label:'Pending',    sub:'Still in follow-up',bg:'#fff7ed',border:'#fed7aa',color:'#c2410c'},
                         {count:pm.scheduled,       label:'Scheduled',  sub:'Bond upcoming',     bg:'#eff6ff',border:'#bfdbfe',color:'#1d4ed8'},
                         {count:pm.observation,     label:'Observation',sub:'6-mo re-check',     bg:'#f0fdf4',border:'#bbf7d0',color:'#15803d',byLocation:pm.obsPerLocation,
                           onClick: pm.observation > 0 ? () => setShowObsList({ list: pipeNPEPts.filter(p => p.OBS === true), perLocation: pm.obsPerLocation || [], label: pipeRange.label, tcFilter: 'All' }) : null},
@@ -4027,52 +4066,33 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                       ))}
                     </div>
+                    {/* Cohort conversion is NOT the Conversion in the KPI row and is named
+                        so it can't be mistaken for it. Here both halves of the fraction are
+                        the same patients, so it can never exceed 100%; the KPI version
+                        divides starts-by-start-date by exams-by-exam-date, which can. */}
+                    <div style={{marginTop:'12px',paddingTop:'11px',borderTop:'1px solid #f1f3f5',fontSize:'12px',color:'#6b7280'}}>
+                      <span style={{fontWeight:'700',color:'#374151'}}>Cohort conversion {pm.overallConv}%</span>
+                      {' — '}{pm.started} of these {pm.total - pm.observation} exam{pm.total - pm.observation !== 1 ? 's' : ''} started
+                      {pm.observation > 0 && `, Observation excluded`}
+                      {'. '}Counts each exam by its own outcome, so it won't match the monthly Conversion above.
+                    </div>
                   </div>
                 )}
 
                 {/* Who's Stuck — live follow-up queue grouped by obstacle */}
                 {obstacleQueueCard}
 
-                {/* Obstacle Intelligence + Call Performance — side by side */}
+                {/* Call Performance. The Obstacle Intelligence card that used to sit
+                    beside it is gone — its per-obstacle win rate is now a column inside
+                    Who's Stuck, next to the patients actually stuck on that obstacle,
+                    instead of repeating the same obstacle list one card later with a
+                    silently different (all-time, unlabelled) time base. */}
                 {(() => {
-                  const winRates = OBSTACLE_OPTIONS.map(obs => {
-                    const withObs = patients.filter(p=>p.obstacle===obs);
-                    const started = withObs.filter(p=>isSDS(p)||p.ST).length;
-                    const total   = withObs.length;
-                    const active  = withObs.filter(p=>p.PEN||p.MP).length;
-                    const rate    = total>0?Math.round((started/total)*100):null;
-                    return {obs,total,started,active,rate};
-                  }).filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
-                  const barColor = r => r===null?'#9ca3af':r>=50?'#10b981':r>=25?'#f59e0b':'#ef4444';
+                  // Person-level, like accountability and bonus — off for a location owner.
+                  if (isLocationOwner || callPerLogger.length === 0) return null;
                   const bClr = r=>r===null?'#9ca3af':r>=50?'#10b981':r>=30?'#f59e0b':'#ef4444';
-
-                  if (winRates.length === 0 && (isLocationOwner || callPerLogger.length === 0)) return null;
                   return (
                     <div style={{display:'flex',gap:'16px',alignItems:'flex-start',flexWrap:'wrap'}}>
-                      {winRates.length > 0 && (
-                        <div style={{flex:'1',minWidth:'280px',backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
-                          <div style={{fontSize:'15px',fontWeight:'800',color:'#202020',marginBottom:'16px'}}>🚧 Obstacle Intelligence</div>
-                          <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
-                            {winRates.map(({obs,total,started,active,rate}) => (
-                              <div key={obs}>
-                                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:'4px'}}>
-                                  <div>
-                                    <span style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>{obs}</span>
-                                    {active>0&&<span style={{fontSize:'11px',color:'#6b7280',marginLeft:'6px'}}>{active} active</span>}
-                                  </div>
-                                  <div style={{display:'flex',alignItems:'center',gap:'10px',flexShrink:0}}>
-                                    <span style={{fontSize:'11px',color:'#9ca3af'}}>{started}/{total} started</span>
-                                    <span style={{fontSize:'15px',fontWeight:'800',color:barColor(rate),minWidth:'36px',textAlign:'right'}}>{rate!==null?`${rate}%`:'—'}</span>
-                                  </div>
-                                </div>
-                                <div style={{height:'6px',backgroundColor:'#f3f4f6',borderRadius:'3px'}}>
-                                  <div style={{height:'6px',borderRadius:'3px',backgroundColor:barColor(rate),width:`${rate||0}%`}} />
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                       {/* Person-level, like accountability and bonus — off for a location owner. */}
                       {!isLocationOwner && callPerLogger.length > 0 && (
                         <div style={{flex:'1',minWidth:'280px',backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
