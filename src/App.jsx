@@ -426,7 +426,7 @@ import { createClient } from '@supabase/supabase-js';
                 setLoginError('');
                 setLoginLoading(true);
                 try {
-                    const { data, error } = await withTimeout(supabase.auth.signInWithPassword({ email, password }));
+                    const { data, error } = await withTimeout(supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password }));
                     if (error) {
                         setLoginError(error.message);
                     } else if (data?.session) {
@@ -9820,7 +9820,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                         <button
                                           disabled={setPasswordStatus[owner.id] === 'saving' || !setPasswordInputs[owner.id]}
                                           onClick={async () => {
-                                            const newPw = setPasswordInputs[owner.id];
+                                            // Same trim as the Team path -- see comment there.
+                                            const newPw = (setPasswordInputs[owner.id] || '').trim();
                                             if (!newPw || newPw.length < 6) return alert('Password must be at least 6 characters');
                                             setSetPasswordStatus(s => ({ ...s, [owner.id]: 'saving' }));
                                             try {
@@ -10155,7 +10156,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   <label style={{display:'flex',alignItems:'center',gap:'6px',cursor:'pointer',userSelect:'none'}}>
                                     {(() => { const bOn = u.bonus_enabled !== false; return (<>
                                     <div style={{position:'relative',display:'inline-block',width:'34px',height:'18px'}} onClick={async () => {
-                                      await supabase.from('tc_users').update({ bonus_enabled: !bOn }).eq('id', u.id);
+                                      const { data: rows, error } = await supabase.from('tc_users').update({ bonus_enabled: !bOn }).eq('id', u.id).select();
+                                      if (error || !rows || rows.length === 0) {
+                                        setTcMgmtMsgType('error');
+                                        setTcMgmtMsg(`Couldn't change ${u.name}'s bonus access${error ? ': ' + error.message : ' — permissions (RLS) blocked the write. Nothing was saved.'}`);
+                                        return;
+                                      }
                                       await loadTCUsers();
                                     }}>
                                       <div style={{position:'absolute',inset:0,borderRadius:'9px',backgroundColor: bOn ? '#2563EB' : '#d1d5db',transition:'background 0.2s'}} />
@@ -10182,7 +10188,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                       <button
                                         disabled={!tcSetPwInputs[u.id] || tcSetPwStatus[u.id] === 'saving'}
                                         onClick={async () => {
-                                          const newPw = tcSetPwInputs[u.id];
+                                          // Trim before validating AND before sending: a pasted
+                                          // trailing space silently becomes part of the stored
+                                          // password and locks the person out.
+                                          const newPw = (tcSetPwInputs[u.id] || '').trim();
                                           if (!newPw || newPw.length < 6) return alert('Password must be at least 6 characters');
                                           setTcSetPwStatus(s => ({ ...s, [u.id]: 'saving' }));
                                           try {
@@ -10208,7 +10217,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     {(currentUser?.role === 'admin' || u.role !== 'admin') && (
                                     <button onClick={async () => {
                                       const newStatus = u.status === 'active' ? 'inactive' : 'active';
-                                      await supabase.from('tc_users').update({ status: newStatus }).eq('id', u.id);
+                                      const { data: rows, error } = await supabase.from('tc_users').update({ status: newStatus }).eq('id', u.id).select();
+                                      if (error || !rows || rows.length === 0) {
+                                        setTcMgmtMsgType('error');
+                                        setTcMgmtMsg(error
+                                          ? `Couldn't update ${u.name}: ${error.message}`
+                                          : `Couldn't update ${u.name} — the write touched 0 rows, which means permissions (RLS) blocked it. Only a full Admin can change team members. Nothing was saved.`);
+                                        return;
+                                      }
                                       await loadTCUsers();
                                       setTcMgmtMsgType('info');
                                       setTcMgmtMsg(`${u.name} ${newStatus === 'active' ? 'reactivated' : 'deactivated'}.`);
@@ -10219,12 +10235,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     )}
                                     {currentUser?.role === 'admin' && (
                                     <button onClick={async () => {
-                                      if (!window.confirm(`Permanently delete ${u.name}? This cannot be undone.`)) return;
-                                      await supabase.from('tc_users').delete().eq('id', u.id);
+                                      if (!window.confirm(`Remove ${u.name} from the team?\n\nThis deletes their team row so they can no longer sign in to this practice. Their login itself is NOT deleted — if you add ${u.email} again later, the ORIGINAL password still applies and any new password you type on the add form will be ignored. Use Set Password instead in that case.`)) return;
+                                      const { data: rows, error } = await supabase.from('tc_users').delete().eq('id', u.id).select();
+                                      if (error || !rows || rows.length === 0) {
+                                        setTcMgmtMsgType('error');
+                                        setTcMgmtMsg(error
+                                          ? `Couldn't delete ${u.name}: ${error.message}`
+                                          : `Couldn't delete ${u.name} — the write touched 0 rows, which means permissions (RLS) blocked it. Only a full Admin can remove team members. Nothing was saved.`);
+                                        return;
+                                      }
                                       await loadTCUsers();
                                       setTcMgmtMsgType('info');
-                                      setTcMgmtMsg(`${u.name} deleted.`);
-                                      setTimeout(() => setTcMgmtMsg(''), 3000);
+                                      setTcMgmtMsg(`${u.name} removed from the team.`);
+                                      setTimeout(() => setTcMgmtMsg(''), 5000);
                                     }} style={{fontSize:'11px',padding:'4px 10px',border:'1px solid #fca5a5',borderRadius:'5px',cursor:'pointer',backgroundColor:'#fff1f2',color:'#dc2626',fontWeight:'600'}}>
                                       Delete
                                     </button>
@@ -10306,10 +10329,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           const addedName = newTCName.trim();
                           const addedEmail = newTCEmail.trim().toLowerCase();
                           const addedPassword = newTCPassword.trim();
+                          // Refuse a duplicate before touching auth. Two tc_users rows sharing an
+                          // email break login outright: fetchProfile uses .single(), which errors on
+                          // multiple matches, and the person is bounced with "No account found".
+                          if (tcUsers.some(u => (u.email || '').toLowerCase() === addedEmail)) {
+                            setTcMgmtMsgType('error');
+                            return setTcMgmtMsg(`${addedEmail} is already on your team. Use the Set Password box on their row to change their password, or Delete that row first.`);
+                          }
                           // Create Supabase auth account using a temp client so admin stays signed in
                           const tempClient = createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false, detectSessionInUrl: false } });
                           const { error: authError } = await tempClient.auth.signUp({ email: addedEmail, password: addedPassword });
-                          if (authError && !authError.message?.includes('already registered')) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Auth error: ' + authError.message); }
+                          // "Already registered" means the auth account survived an earlier Delete
+                          // (Delete only removes the tc_users row). signUp then does NOT change the
+                          // password -- so the credentials handed out below would be wrong. This used
+                          // to be swallowed silently, which is how someone ends up with a green
+                          // "ready to go" message and an account they cannot log into.
+                          const authExisted = !!authError && /already.*registered/i.test(authError.message || '');
+                          if (authError && !authExisted) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Auth error: ' + authError.message); }
                           // Insert into tc_users. location_scope/location_label stay null for
                           // every other role -- see 20260818_location_scope.sql.
                           const { error } = await supabase.from('tc_users').insert({
@@ -10323,6 +10359,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           await loadTCUsers();
                           setGuidedHighlight(null);
                           setShowOnboarding(true);
+                          if (authExisted) {
+                            setTcMgmtMsgType('error');
+                            setTcMgmtMsg(`${addedName} was added to the team, but a login already existed for ${addedEmail} — so the password you just typed was NOT applied. Their previous password still works. To set a new one, use the "New password…" box on their row above.`);
+                            return;
+                          }
                           setTcMgmtMsgType('success');
                           setTcMgmtMsg(`✅ ${addedName} is ready to go!\n\nSend them:\n🌐 ${APP_URL}\n📧 ${addedEmail}\n🔑 ${addedPassword}\n\nThey can log in right now and change their password in Settings.`);
                           setTimeout(() => setTcMgmtMsg(''), 60000);
