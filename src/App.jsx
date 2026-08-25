@@ -81,6 +81,12 @@ import { createClient } from '@supabase/supabase-js';
           'Scheduling / Logistics':              [2, 7, 14],
         };
         const DEFAULT_CADENCE = [1, 3, 7, 14];
+        // `obstacle` (patient.obstacle / DB column `obstacle`) is historical reporting data —
+        // it feeds the Conversion Breakdown "by obstacle" KPI (see showConvBreakdown below) and
+        // must survive PEN -> SCH -> ST transitions. Never reset it to '' as part of a workflow
+        // status change; only overwrite it when the user is actually recording a new/different
+        // obstacle. (We previously cleared it on the Scheduled transition and permanently lost
+        // the recorded obstacle for every patient who later started — don't repeat that.)
         const OBSTACLE_OPTIONS = [
           'Price / Down Payment',
           'Spouse / Partner Needs to Approve',
@@ -2218,9 +2224,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       PEN: false,
       MP: false,
       insuranceWorkflow: {}, // clear stale Medicaid pipeline state when leaving the pipeline
+      // obstacle is intentionally NOT cleared here — it's historical reporting data, see OBSTACLE_OPTIONS comment
       bondDate,
       nextTouchDate: checkDate || '',
-      obstacle: '',
       contactAttempts: 0,
       lastContactDate: todayStr,
       contact_log: [...(patient.contact_log || []), logEntry]
@@ -2267,11 +2273,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       MP: false,
       OBS: false,
       insuranceWorkflow: {}, // clear stale Medicaid pipeline state when leaving the pipeline
+      // obstacle is intentionally NOT cleared here — it's historical reporting data, see OBSTACLE_OPTIONS comment
       bondDate,
       obsApptDate: '',
       obsAnticipatedDate: '',
       nextTouchDate: checkDate || '',
-      obstacle: '',
       contactAttempts: 0,
       lastContactDate: todayStr,
       fromPending: patient.PEN || patient.MP || patient.OBS || patient.fromPending || false,
@@ -11349,8 +11355,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       {showConvBreakdown && (() => {
         const { dashPatients: dp, dashStartPatients: dsp } = showConvBreakdown;
         const sp = dsp || dp;
-        // isMedicaid/medicaidPipeline survive a start; MP and the obstacle text are cleared
-        // when a patient converts, so alone they'd misclassify every started Medicaid patient.
+        // isMedicaid/medicaidPipeline survive a start; MP is cleared when a patient converts,
+        // so MP alone would misclassify every started Medicaid patient — obstacle text is
+        // checked too since it now persists through the start (no longer wiped at scheduling).
         const isMedicaid = p => p.isMedicaid === true || p.medicaidPipeline === true || p.MP === true || (p.obstacle || '').toLowerCase().includes('medicaid');
         // Denominators exclude OBS and the numerator excludes DBRETS, so these sub-rates
         // roll up to the same Conversion % shown on the tile that opened this modal.
