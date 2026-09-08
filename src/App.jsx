@@ -850,6 +850,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // Supabase connection test (#9)
   const [supabaseTestResult, setSupabaseTestResult] = useState(null); // null | 'testing' | { count, ok }
   const [saveFailures, setSaveFailures] = useState([]); // persisted failed saves shown as banner
+  // True when the cloud patient load errored. While set, the localStorage backup is
+  // NOT overwritten — otherwise a failed load blanks the only local copy we have.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0); // writes queued in the outbox
+  const flushingRef = useRef(false); // guards against overlapping outbox flushes
 
   const [newPatientForm, setNewPatientForm] = useState({
     name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: '', dp: '', contractAmount: '', tc: '', status: '',
@@ -1004,9 +1009,29 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         // payload small and makes the scope legible at the call site.
         let q = supabase.from('patients').select('*').eq('practice_id', currentUser.practiceId);
         if (currentUser.locationScope) q = q.eq('location', currentUser.locationScope);
-        const { data, error } = await q.order('npe_date', { ascending: false });
+        // A network drop rejects rather than returning an error object — catch both.
+        let data = null, error = null;
+        try {
+          ({ data, error } = await q.order('npe_date', { ascending: false }));
+        } catch (e) {
+          error = e;
+        }
         if (cancelled) return;
-        if (!error && data) {
+        if (error || !data) {
+          // Cloud load failed. Fall back to the last good local copy and flag the
+          // failure so the backup effect does NOT overwrite it with an empty list.
+          console.error('Patient load failed:', error);
+          setLoadFailed(true);
+          const saved = localStorage.getItem(`npe-patients-${currentUser.practiceId}`);
+          if (saved) {
+            try { setPatients(JSON.parse(saved)); } catch (e) { console.error('Local backup unreadable:', e); }
+          }
+          setSaveError('⚠️ Could not load patients from the cloud — showing the last copy saved on this device. Do not re-enter patients; reload once you are back online.');
+          setLoading(false);
+          return;
+        }
+        setLoadFailed(false);
+        if (data) {
           setPatients(data.map(r => ({
             id: r.id, name: r.name, phone: r.phone || '', age: r.age || null,
             npeDate: r.npe_date, location: r.location,
@@ -1084,16 +1109,69 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     }));
   }, [loading]);
 
-  // Always backup to localStorage — safety net even when Supabase is active
+  // Always backup to localStorage — safety net even when Supabase is active.
+  // Guarded: if the cloud load failed, `patients` is a fallback (or empty) view, not
+  // the truth. Writing it back would destroy the only good copy on this device.
   useEffect(() => {
-    if (!loading && currentUser?.practiceId) {
-      localStorage.setItem(`npe-patients-${currentUser.practiceId}`, JSON.stringify(patients));
-    }
-  }, [patients, loading]);
+    if (loading || loadFailed || !currentUser?.practiceId) return;
+    localStorage.setItem(`npe-patients-${currentUser.practiceId}`, JSON.stringify(patients));
+  }, [patients, loading, loadFailed]);
+
+  // ── Cloud write reliability ─────────────────────────────────────────────
+  // A dropped connection surfaces as `TypeError: Failed to fetch` — the request never
+  // reached Supabase. These are transient and safe to retry; a real rejection (RLS,
+  // constraint violation) comes back as an error object with a code and must NOT be.
+  const isTransientNetworkError = (error) => {
+    if (!error) return false;
+    if (error.code) return false; // PostgREST/Postgres rejection — retrying won't help
+    const msg = String(error.message || error);
+    return /failed to fetch|networkerror|load failed|network request failed|fetch failed/i.test(msg);
+  };
+
+  const pendingKey = () => `cadenceiq-pending-writes-${managedPracticeId || currentUser?.practiceId}`;
+
+  const readPending = () => {
+    try { return JSON.parse(localStorage.getItem(pendingKey()) || '[]'); }
+    catch { return []; }
+  };
+
+  const writePending = (rows) => {
+    localStorage.setItem(pendingKey(), JSON.stringify(rows));
+    setPendingSyncCount(rows.length);
+  };
+
+  // Queue a row that could not reach the cloud. Keyed by patient id so repeated edits
+  // to the same patient collapse to the latest state rather than stacking up.
+  const enqueuePending = (row) => {
+    const rows = readPending().filter(r => r.id !== row.id);
+    rows.push(row);
+    writePending(rows);
+  };
+
+  /**
+   * Drop a patient's queued write.
+   * With no `onlyIfMatches`, drops any queued row for that patient — used after a live
+   * save succeeds, because that write is newer than anything sitting in the queue.
+   * With `onlyIfMatches`, drops the row only if it is still byte-identical to what was
+   * replayed, so a fresher edit queued mid-flush is not thrown away.
+   */
+  const dequeuePending = (id, onlyIfMatches) => {
+    const rows = readPending();
+    const next = rows.filter(r => {
+      if (r.id !== id) return true;
+      return onlyIfMatches ? JSON.stringify(r) !== JSON.stringify(onlyIfMatches) : false;
+    });
+    if (next.length !== rows.length) writePending(next);
+  };
 
   const autoReportBug = (patientId, patientName, description) => {
     if (!supabase || currentUser?.id === 'demo') return;
-    // Log to feedback table for admin visibility
+    const key = `cadenceiq-save-failures-${managedPracticeId || currentUser.practiceId}`;
+    const existing = JSON.parse(localStorage.getItem(key) || '[]');
+    // Already flagged — the outage is ongoing, not a new fault. Bail before the insert
+    // so a TC hitting Save four times does not file four identical support tickets.
+    if (existing.some(f => f.patientId === patientId)) return;
+
     supabase.from('feedback').insert({
       practice_id: managedPracticeId || currentUser.practiceId,
       tc_name: currentUser.name,
@@ -1103,62 +1181,163 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       description,
     }).then(({ error }) => {
       if (error) console.error('Failed to auto-report bug:', error);
+    }, err => console.error('Failed to auto-report bug:', err));
+
+    existing.push({ patientId, patientName, ts: new Date().toISOString() });
+    localStorage.setItem(key, JSON.stringify(existing));
+    setSaveFailures(existing);
+  };
+
+  const clearSaveFailure = (patientId) => {
+    setSaveFailures(prev => {
+      if (!prev.some(f => f.patientId === patientId)) return prev;
+      const next = prev.filter(f => f.patientId !== patientId);
+      localStorage.setItem(`cadenceiq-save-failures-${managedPracticeId || currentUser.practiceId}`, JSON.stringify(next));
+      return next;
     });
-    // Persist to localStorage — banner stays until this patient is successfully re-saved
-    const key = `cadenceiq-save-failures-${managedPracticeId || currentUser.practiceId}`;
-    const existing = JSON.parse(localStorage.getItem(key) || '[]');
-    // Don't duplicate if this patient is already flagged
-    if (!existing.some(f => f.patientId === patientId)) {
-      existing.push({ patientId, patientName, ts: new Date().toISOString() });
-      localStorage.setItem(key, JSON.stringify(existing));
-      setSaveFailures(existing);
+  };
+
+  // The exact row shape written to Supabase. Extracted so the offline outbox can store
+  // and replay a byte-identical payload later.
+  const buildPatientRow = (patient) => ({
+    id: patient.id, name: patient.name, phone: patient.phone || '', age: patient.age || null,
+    npe_date: patient.npeDate, location: patient.location,
+    dp: patient.dp, contract_amount: patient.contractAmount || '', tc: patient.tc || '',
+    br: patient.BR, inv: patient.INV, ph1: patient.PH1, ph2: patient.PH2, ltd: patient.LTD,
+    r_plus: patient['R+'], w_plus: patient['W+'], pif: patient.PIF,
+    st: patient.ST, sch: patient.SCH, pen: patient.PEN, obs: patient.OBS, mp: patient.MP, notx: patient.NOTX, dbrets: patient.DBRETS || false,
+    obstacle: patient.obstacle, notes: patient.notes, obs_appt_date: patient.obsApptDate || null, obs_anticipated_date: patient.obsAnticipatedDate || null,
+    bond_date: patient.bondDate || '',
+    start_date: patient.startDate || '',
+    contact_attempts: patient.contactAttempts,
+    next_touch_date: patient.nextTouchDate,
+    last_contact_date: patient.lastContactDate,
+    contact_log: patient.contact_log || [],
+    from_pending: patient.fromPending || false,
+    insurance_workflow: patient.insuranceWorkflow || null,
+    medicaid_pipeline: patient.medicaidPipeline || false,
+    is_medicaid: patient.isMedicaid || false,
+    practice_id: managedPracticeId || currentUser.practiceId
+  });
+
+  // One upsert attempt. Returns { ok, error } and never throws.
+  const attemptUpsert = async (row) => {
+    try {
+      const { error } = await supabase.from('patients').upsert(row, { onConflict: 'id' });
+      return { ok: !error, error };
+    } catch (err) {
+      return { ok: false, error: err };
     }
   };
 
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  /**
+   * Write a patient to the cloud, retrying transient network failures.
+   * Returns true if the row is confirmed in Supabase, false if it was queued locally.
+   * Never throws — callers use the return value to decide what to tell the user.
+   */
   const dbUpsert = async (patient) => {
-    if (!supabase || currentUser?.id === 'demo') return;
-    const { error } = await supabase.from('patients').upsert({
-      id: patient.id, name: patient.name, phone: patient.phone || '', age: patient.age || null,
-      npe_date: patient.npeDate, location: patient.location,
-      dp: patient.dp, contract_amount: patient.contractAmount || '', tc: patient.tc || '',
-      br: patient.BR, inv: patient.INV, ph1: patient.PH1, ph2: patient.PH2, ltd: patient.LTD,
-      r_plus: patient['R+'], w_plus: patient['W+'], pif: patient.PIF,
-      st: patient.ST, sch: patient.SCH, pen: patient.PEN, obs: patient.OBS, mp: patient.MP, notx: patient.NOTX, dbrets: patient.DBRETS || false,
-      obstacle: patient.obstacle, notes: patient.notes, obs_appt_date: patient.obsApptDate || null, obs_anticipated_date: patient.obsAnticipatedDate || null,
-      bond_date: patient.bondDate || '',
-      start_date: patient.startDate || '',
-      contact_attempts: patient.contactAttempts,
-      next_touch_date: patient.nextTouchDate,
-      last_contact_date: patient.lastContactDate,
-      contact_log: patient.contact_log || [],
-      from_pending: patient.fromPending || false,
-      insurance_workflow: patient.insuranceWorkflow || null,
-      medicaid_pipeline: patient.medicaidPipeline || false,
-      is_medicaid: patient.isMedicaid || false,
-      practice_id: managedPracticeId || currentUser.practiceId
-    }, { onConflict: 'id' });
-    if (error) {
-      console.error('Supabase upsert error:', error);
+    if (!supabase || currentUser?.id === 'demo') return true;
+    const row = buildPatientRow(patient);
+
+    const backoffs = [400, 1200, 3000];
+    let last = null;
+    for (let attempt = 0; attempt <= backoffs.length; attempt++) {
+      last = await attemptUpsert(row);
+      if (last.ok) {
+        dequeuePending(patient.id);
+        clearSaveFailure(patient.id);
+        return true;
+      }
+      if (!isTransientNetworkError(last.error)) break; // hard rejection — stop retrying
+      if (attempt < backoffs.length) await sleep(backoffs[attempt]);
+    }
+
+    const error = last.error || {};
+    console.error('Supabase upsert error:', error);
+
+    if (isTransientNetworkError(error)) {
+      // Still offline after retries. Hold the full payload — nothing needs re-entry,
+      // the flusher will replay it as soon as the connection is back.
+      enqueuePending(row);
+      setSaveError('📥 ' + patient.name + ' saved on this device — waiting to sync. Do not re-enter.');
+      setTimeout(() => setSaveError(''), 12000);
+    } else {
       setSaveError('⚠️ Cloud save failed for ' + patient.name + ' — ' + (error.message || error.code || 'unknown error') + '. Saved locally only.');
       setTimeout(() => setSaveError(''), 15000);
-      autoReportBug(
-        patient.id,
-        patient.name,
-        `Save failed for patient "${patient.name}" (id: ${patient.id}) on view "${currentView}".\n` +
-        `Error: ${error.message || error.code || JSON.stringify(error)}\n` +
-        `Status: ${JSON.stringify({ ST: patient.ST, SCH: patient.SCH, PEN: patient.PEN, OBS: patient.OBS, MP: patient.MP, NOTX: patient.NOTX, DBRETS: patient.DBRETS })}\n` +
-        `TC: ${patient.tc} | Practice: ${managedPracticeId || currentUser.practiceId}`
-      );
-    } else {
-      // Save succeeded — only update if this patient was actually flagged (avoids re-render on every save)
-      setSaveFailures(prev => {
-        if (!prev.some(f => f.patientId === patient.id)) return prev;
-        const next = prev.filter(f => f.patientId !== patient.id);
-        localStorage.setItem(`cadenceiq-save-failures-${managedPracticeId || currentUser.practiceId}`, JSON.stringify(next));
-        return next;
-      });
+    }
+
+    autoReportBug(
+      patient.id,
+      patient.name,
+      `Save failed for patient "${patient.name}" (id: ${patient.id}) on view "${currentView}".\n` +
+      `Error: ${error.message || error.code || JSON.stringify(error)}\n` +
+      `Status: ${JSON.stringify({ ST: patient.ST, SCH: patient.SCH, PEN: patient.PEN, OBS: patient.OBS, MP: patient.MP, NOTX: patient.NOTX, DBRETS: patient.DBRETS })}\n` +
+      `TC: ${patient.tc} | Practice: ${managedPracticeId || currentUser.practiceId}`
+    );
+    return false;
+  };
+
+  /**
+   * Show the result of a save honestly. `ok` comes from dbUpsert: true means the row is
+   * in the cloud, false means it is queued on this device. Never show a green success
+   * toast for a write that did not land — that is what made failures invisible before.
+   */
+  const saveToastFor = (ok, successMsg, ms = 4000) => {
+    setSaveToast(ok ? successMsg : '📥 Saved on this device — will sync automatically');
+    setTimeout(() => setSaveToast(''), ms);
+  };
+
+  // Replay queued writes. Runs on load, whenever the browser regains connectivity, and
+  // on a slow timer — so a blip heals itself without anyone re-typing a patient.
+  const flushPendingWrites = async () => {
+    if (!supabase || currentUser?.id === 'demo' || !currentUser?.practiceId) return;
+    if (flushingRef.current) return; // never let two passes replay the same rows
+    flushingRef.current = true;
+    try {
+      const rows = readPending();
+      if (rows.length === 0) return;
+      let synced = 0;
+      for (const row of rows) {
+        const { ok, error } = await attemptUpsert(row);
+        if (ok) {
+          dequeuePending(row.id, row); // only if a fresher edit hasn't replaced it
+          clearSaveFailure(row.id);
+          synced++;
+        } else if (isTransientNetworkError(error)) {
+          // Still offline — leave it queued for the next pass and stop here rather
+          // than grinding through the rest against a connection that is down.
+          break;
+        } else {
+          // A hard rejection will never succeed on replay. Drop it from the queue but
+          // leave the patient flagged so it is not silently forgotten.
+          console.error('Dropping unsyncable queued write for', row.id, error);
+          dequeuePending(row.id, row);
+        }
+      }
+      if (synced > 0 && readPending().length === 0) {
+        setSaveToast('✅ All offline changes synced to the cloud');
+        setTimeout(() => setSaveToast(''), 4000);
+      }
+    } finally {
+      flushingRef.current = false;
     }
   };
+
+  // Kick the flusher: on mount, when connectivity returns, and every 60s.
+  useEffect(() => {
+    if (!currentUser?.practiceId || currentUser.id === 'demo') return;
+    setPendingSyncCount(readPending().length);
+    flushPendingWrites();
+    const onOnline = () => flushPendingWrites();
+    window.addEventListener('online', onOnline);
+    const timer = setInterval(flushPendingWrites, 60000);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      clearInterval(timer);
+    };
+  }, [currentUser?.practiceId, managedPracticeId]);
 
   const dbDelete = async (id) => {
     if (!supabase || currentUser?.id === 'demo') return;
@@ -2060,15 +2239,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       return result;
     });
     setPatients(updated);
-    if (updatedPatient) await dbUpsert(updatedPatient);
+    let saveOk = true;
+    if (updatedPatient) saveOk = await dbUpsert(updatedPatient);
     setShowContactLog(null);
     setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', recap: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
     if (updatedPatient) {
       const nextLabel = updatedPatient.nextTouchDate && updatedPatient.nextTouchDate !== '__MAX__'
         ? ` — next follow-up: ${new Date(updatedPatient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}`
         : '';
-      setSaveToast(`✅ ${updatedPatient.name} — contact logged${nextLabel}`);
-      setTimeout(() => setSaveToast(''), 4000);
+      saveToastFor(saveOk, `✅ ${updatedPatient.name} — contact logged${nextLabel}`);
     }
   };
 
@@ -2098,11 +2277,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       return updatedPatient;
     });
     setPatients(updated);
-    if (updatedPatient) await dbUpsert(updatedPatient);
+    let saveOk = true;
+    if (updatedPatient) saveOk = await dbUpsert(updatedPatient);
     setShowContactLog(null);
     setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', recap: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
-    setSaveToast('✅ ' + (updatedPatient?.name || '') + ' moved to No Treatment');
-    setTimeout(() => setSaveToast(''), 3000);
+    saveToastFor(saveOk, '✅ ' + (updatedPatient?.name || '') + ' moved to No Treatment', 3000);
   };
 
   const handlePushDate = async (patientId) => {
@@ -2116,11 +2295,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       return updatedPatient;
     });
     setPatients(updated);
-    if (updatedPatient) await dbUpsert(updatedPatient);
+    let saveOk = true;
+    if (updatedPatient) saveOk = await dbUpsert(updatedPatient);
     setPushDateOpen(prev => ({ ...prev, [patientId]: false }));
     setPushDateValue(prev => ({ ...prev, [patientId]: '' }));
-    setSaveToast(`📅 Follow-up pushed to ${new Date(safeDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`);
-    setTimeout(() => setSaveToast(''), 3000);
+    saveToastFor(saveOk, `📅 Follow-up pushed to ${new Date(safeDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`, 3000);
   };
 
   const handleMarkStarted = (patient) => {
@@ -2190,12 +2369,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contact_log: [...(patient.contact_log || []), startLog]
     };
     setPatients(prev => prev.map(p => p.id === patientId ? updated : p));
-    await dbUpsert(updated);
+    const saveOk = await dbUpsert(updated);
     setShowStartedModal(null);
-    setSaveToast(updated.medicaidPipeline
+    saveToastFor(saveOk, updated.medicaidPipeline
       ? `🎯 ${updated.name} marked as Started — kept in the Medicaid Pipeline for claim tracking.`
       : `🎯 ${updated.name} marked as Started — removed from follow-up queue!`);
-    setTimeout(() => setSaveToast(''), 4000);
   };
 
   const handleMarkScheduled = async (patient) => {
@@ -2232,11 +2410,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contact_log: [...(patient.contact_log || []), logEntry]
     };
     setPatients(prev => prev.map(p => p.id === patient.id ? updatedPatient : p));
-    await dbUpsert(updatedPatient);
+    const saveOk = await dbUpsert(updatedPatient);
     setShowContactLog(null);
     setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', recap: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
-    setSaveToast(`📅 ${patient.name} marked Scheduled — bond check-in set for ${checkDate ? new Date(checkDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : bondDate}`);
-    setTimeout(() => setSaveToast(''), 4000);
+    saveToastFor(saveOk, `📅 ${patient.name} marked Scheduled — bond check-in set for ${checkDate ? new Date(checkDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : bondDate}`);
   };
 
   // Quick action for when a patient calls back to schedule their initial bond,
@@ -2284,11 +2461,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contact_log: [...(patient.contact_log || []), logEntry]
     };
     setPatients(prev => prev.map(p => p.id === patientId ? updatedPatient : p));
-    await dbUpsert(updatedPatient);
+    const saveOk = await dbUpsert(updatedPatient);
     setShowScheduleBondModal(null);
     setScheduleBondForm({ bondDate: '', notes: '' });
-    setSaveToast(`📅 ${updatedPatient.name} scheduled for bond on ${new Date(bondDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`);
-    setTimeout(() => setSaveToast(''), 4000);
+    saveToastFor(saveOk, `📅 ${updatedPatient.name} scheduled for bond on ${new Date(bondDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`);
   };
 
   const handleMissedBond = async (patient, notes = '') => {
@@ -2361,10 +2537,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contact_log: [...(patient.contact_log || []), logEntry]
     };
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
-    await dbUpsert(updatedPatient);
+    const saveOk = await dbUpsert(updatedPatient);
     setObsCheckNotes(prev => ({ ...prev, [patient.id]: '' }));
-    setSaveToast(`♻️ ${patient.name} — re-check scheduled for ${new Date(updatedPatient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`);
-    setTimeout(() => setSaveToast(''), 4000);
+    saveToastFor(saveOk, `♻️ ${patient.name} — re-check scheduled for ${new Date(updatedPatient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`);
   };
 
   // OBS check-in: no-show → clear appt, push back into follow-up queue for reschedule call
@@ -2389,10 +2564,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contact_log: [...(patient.contact_log || []), logEntry]
     };
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
-    await dbUpsert(updatedPatient);
+    const saveOk = await dbUpsert(updatedPatient);
     setObsCheckNotes(prev => ({ ...prev, [patient.id]: '' }));
-    setSaveToast(`⚠️ ${patient.name} — no-show logged, follow-up scheduled for ${new Date(nextDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
-    setTimeout(() => setSaveToast(''), 4000);
+    saveToastFor(saveOk, `⚠️ ${patient.name} — no-show logged, follow-up scheduled for ${new Date(nextDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
   };
 
   // OBS check-in: reschedule the OBS appointment to a new date
@@ -2639,14 +2813,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contact_log: [addRecapEntry]
     };
     setPatients(prev => [...prev, patient]);
-    await dbUpsert(patient);
+    const saveOk = await dbUpsert(patient);
     const nextInfo = patient.nextTouchDate && patient.nextTouchDate !== '__MAX__'
       ? ` — first follow-up: ${new Date(patient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'numeric',day:'numeric'})}`
       : (isSDS(patient) || patient.ST) ? ' — added to Bonus Audit' : patient.DBRETS ? ' — added to Bonus Audit' : '';
     setAddPatientError('');
     setShowAddonSkipPrompt(false);
-    setSaveToast('✅ ' + patient.name + ' saved!' + nextInfo);
-    setTimeout(() => setSaveToast(''), 4000);
+    saveToastFor(saveOk, '✅ ' + patient.name + ' saved!' + nextInfo);
     setNewPatientForm({
       name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: newPatientForm.location || locations[0] || '', dp: '', contractAmount: '',
       tc: newPatientForm.tc || tcNames[0] || '', status: '',
@@ -2787,7 +2960,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           </div>
 
           {/* Save-failure warning chip — sits in the empty header space */}
-          {saveFailures.length > 0 && (
+          {(saveFailures.length > 0 || pendingSyncCount > 0) && (
             <div style={{marginLeft:'auto',position:'relative'}}>
               {/* Click-outside overlay */}
               {showSaveFailurePopover && (
@@ -2802,16 +2975,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               >
                 <span style={{fontSize:'16px',flexShrink:0}}>⚠️</span>
                 <span style={{overflow:'hidden',textOverflow:'ellipsis'}}>
-                  {saveFailures.length === 1
-                    ? `${saveFailures[0].patientName} needs re-entry`
-                    : `${saveFailures.length} patients need re-entry`}
+                  {pendingSyncCount > 0
+                    ? (pendingSyncCount === 1 ? '1 change waiting to sync' : `${pendingSyncCount} changes waiting to sync`)
+                    : saveFailures.length === 1
+                      ? `${saveFailures[0].patientName} — save issue`
+                      : `${saveFailures.length} patients — save issues`}
                 </span>
               </button>
               {showSaveFailurePopover && (
                 <div style={{position:'absolute',top:'calc(100% + 10px)',right:0,backgroundColor:'white',borderRadius:'10px',boxShadow:'0 8px 24px rgba(0,0,0,0.2)',border:'2px solid #fca5a5',minWidth:'300px',zIndex:9999,overflow:'hidden'}}>
                   <div style={{backgroundColor:'#fef2f2',borderBottom:'1px solid #fecaca',padding:'12px 16px'}}>
-                    <div style={{fontWeight:'700',fontSize:'14px',color:'#991b1b'}}>⚠️ These saves did not reach the cloud</div>
-                    <div style={{fontSize:'12px',color:'#b91c1c',marginTop:'4px'}}>Please re-enter each patient's information. This warning clears automatically once each one saves successfully.</div>
+                    <div style={{fontWeight:'700',fontSize:'14px',color:'#991b1b'}}>⚠️ These saves have not reached the cloud yet</div>
+                    <div style={{fontSize:'12px',color:'#b91c1c',marginTop:'4px'}}>
+                      {pendingSyncCount > 0
+                        ? 'Their information is saved on this device and will sync automatically when the connection is back. Do NOT re-enter them — that would create duplicates.'
+                        : 'These could not be saved to the cloud and were not queued. Check with support before re-entering, so you do not create a duplicate.'}
+                    </div>
                   </div>
                   <ul style={{margin:0,padding:'8px 0',listStyle:'none'}}>
                     {saveFailures.map((f, i) => (
@@ -2827,7 +3006,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           )}
 
           {/* Right — User info + sign out */}
-          <div style={{marginLeft: saveFailures.length > 0 ? '16px' : 'auto',display:'flex',alignItems:'center',gap:'16px'}}>
+          <div style={{marginLeft: (saveFailures.length > 0 || pendingSyncCount > 0) ? '16px' : 'auto',display:'flex',alignItems:'center',gap:'16px'}}>
             {currentUser?.id === 'demo' && (
               <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
                 <div style={{padding:'4px 10px',backgroundColor:'#4A90E2',borderRadius:'6px',fontSize:'11px',fontWeight:'800',color:'white',letterSpacing:'0.08em',textTransform:'uppercase'}}>Demo Mode</div>
@@ -12439,11 +12618,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     ? { ...editForm, contactAttempts: 0 }
                     : editForm;
                   setPatients(patients.map(p => p.id === saveForm.id ? saveForm : p));
-                  await dbUpsert(saveForm);
+                  const saveOk = await dbUpsert(saveForm);
                   setShowEditModal(null);
                   setEditForm({});
-                  setSaveToast(`✅ ${saveForm.name} updated`);
-                  setTimeout(() => setSaveToast(''), 3000);
+                  saveToastFor(saveOk, `✅ ${saveForm.name} updated`, 3000);
                 }}
                 style={{flex:1,padding:'12px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer'}}
               >
