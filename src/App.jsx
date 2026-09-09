@@ -4114,22 +4114,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     { key:'cohortConv', label:'Conversion',     color:'#2563EB', tint:'rgba(37,99,235,0.055)' },
                     { key:'conv',       label:'Case Acceptance', color:'#4f46e5', tint:'rgba(79,70,229,0.04)' },
                     { key:'sds',   label:'SDS Rate',    color:'#7c3aed', tint:'rgba(124,58,237,0.04)' },
-                    // Add-on attach, as three rates rather than one. Retainers and Whitening
-                    // overlap (a start taking both is in each), and Both is the intersection —
-                    // so they answer "how often do we sell this product", while the breakdown
-                    // behind them carries the mutually exclusive split. One shared hue family
-                    // marks them as a group; the labels do the separating.
+                    // Add-on attach as ONE column, not three. Retainers and Whitening are the
+                    // inputs; both-on-one-contract is the outcome that actually moves case fee,
+                    // and a practice can post healthy single-product rates while almost never
+                    // landing two together. So the column carries the Both rate and the two
+                    // product rates ride underneath it as a sub-line: the row had grown too wide
+                    // to read across, and three equal columns gave three-way billing to what is
+                    // really one headline with two supporting parts. The mutually exclusive
+                    // split (both / W only / R only / none, per TC and per location) is one
+                    // click away in the breakdown.
                     // Starts only (SDS + ST): this excludes the retainers/whitening sold at a
                     // debond, which the bonus counters do include. A finishing visit is not a
                     // contract.
-                    // Retainers and Whitening are the inputs; Both is the outcome that actually
-                    // moves case fee, and a practice can post healthy single-product rates while
-                    // almost never landing two on one contract. So Both is weighted as the
-                    // anchor of the group — deeper tint, larger number — rather than sitting as
-                    // a third equal column that reads like an afterthought.
-                    { key:'addonR',    label:'Retainers', color:'#155e75', tint:'rgba(21,94,117,0.04)' },
-                    { key:'addonW',    label:'Whitening', color:'#0891b2', tint:'rgba(8,145,178,0.045)' },
-                    { key:'addonBoth', label:'Both',      color:'#0369a1', tint:'rgba(3,105,161,0.10)', emphasis:true },
+                    { key:'addonBoth', label:'Add-Ons', color:'#0369a1', tint:'rgba(3,105,161,0.10)', emphasis:true },
                     // No Observation column. OBS is a patient *state*, not a monthly
                     // performance number, and it already has a tile (with the same drill)
                     // on the Pipeline card — where the whole point is where patients sit.
@@ -4145,16 +4142,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                            }) } : null,
                     conv:  { hint:'↗ breakdown', onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts }) },
                   };
-                  // All three add-on columns open the same breakdown — it explains the mix
-                  // they share, so splitting it three ways would just repeat itself.
+                  // The per-product rates no longer have columns of their own, so this drill
+                  // is the only place the full picture lives — the breakdown already opens on
+                  // "Attach rate by product".
                   if (nm.addons.starts > 0) {
-                    const openAddons = () => setShowAddonBreakdown({
+                    drill.addonBoth = { hint:'↗ R + W', onClick: () => setShowAddonBreakdown({
                       addons: nm.addons, label: kpiPeriodLabel, tcFilter:'All',
                       allStarts: nm.addons.startsList,
-                    });
-                    drill.addonR    = { hint:'↗ why', onClick: openAddons };
-                    drill.addonW    = { hint:'↗ why', onClick: openAddons };
-                    drill.addonBoth = { hint:'↗ why', onClick: openAddons };
+                    }) };
                   }
 
                   // Starts are counted by start date and NPEs by exam date, so a location's
@@ -4218,8 +4213,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     if (col.key === 'prod')  return L.prod > 0 ? fmtMoney(L.prod) : '—';
                     if (col.key === 'sds')   return L.sdsRate === null ? '—' : `${L.sdsRate}%`;
                     if (col.key === 'cohortConv') return L.cohortConv === null ? '—' : `${L.cohortConv}%`;
-                    if (col.key === 'addonR')    return L.rateR    === null ? '—' : `${L.rateR}%`;
-                    if (col.key === 'addonW')    return L.rateW    === null ? '—' : `${L.rateW}%`;
                     if (col.key === 'addonBoth') return L.rateBoth === null ? '—' : `${L.rateBoth}%`;
                     return L.conv === null ? '—' : `${L.conv}%`;
                   };
@@ -4227,7 +4220,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   return (
                     <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
                       <div style={{overflowX:'auto'}}>
-                        <table style={{width:'100%',minWidth:showProduction?'1040px':'900px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
+                        <table style={{width:'100%',minWidth:showProduction?'920px':'790px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
                           <colgroup>
                             <col style={{width:'19%'}} />
                             {KPI_COLS.map(c => <col key={c.key} />)}
@@ -4251,8 +4244,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   : col.key === 'prod' ? (prodTotal > 0 ? fmtMoney(prodTotal) : '—')
                                   : col.key === 'cohortConv' ? `${nmCohort.overallConv}%`
                                   : col.key === 'conv' ? `${nm.overallConv}%`
-                                  : col.key === 'addonR' ? (nm.addons.starts > 0 ? `${nm.addons.rateR}%` : '—')
-                                  : col.key === 'addonW' ? (nm.addons.starts > 0 ? `${nm.addons.rateW}%` : '—')
                                   : col.key === 'addonBoth' ? (nm.addons.starts > 0 ? `${nm.addons.rateBoth}%` : '—')
                                   : (nm.started > 0 ? `${nm.sdsRate}%` : '—');
                                 return (
@@ -4288,14 +4279,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     {col.key === 'sds' && nm.started > 0 && (
                                       <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.sds} of {nm.started} starts</div>
                                     )}
-                                    {col.key === 'addonR' && nm.addons.starts > 0 && (
-                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.addons.withR} of {nm.addons.starts} starts</div>
-                                    )}
-                                    {col.key === 'addonW' && nm.addons.starts > 0 && (
-                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.addons.withW} of {nm.addons.starts} starts</div>
-                                    )}
+                                    {/* The two product rates that used to be columns. They still
+                                        overlap each other and the headline — a start taking both
+                                        is in all three — so they read as parts of this number
+                                        rather than as separate metrics. */}
                                     {col.key === 'addonBoth' && nm.addons.starts > 0 && (
-                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.addons.both} of {nm.addons.starts} · {nm.addons.none} took neither</div>
+                                      <>
+                                        <div style={{fontSize:'11px',fontWeight:'700',color:'#0e7490',marginTop:'8px'}}>R {nm.addons.rateR}% <span style={{color:'#cbd5e1'}}>·</span> W {nm.addons.rateW}%</div>
+                                        <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'3px'}}>Both: {nm.addons.both} of {nm.addons.starts} · {nm.addons.none} took neither</div>
+                                      </>
                                     )}
                                   </td>
                                 );
@@ -4320,6 +4312,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                               <span style={{display:'inline-block',width:'7px',height:'7px',borderRadius:'50%',marginRight:'8px',verticalAlign:'2px',backgroundColor:health}} />
                                             )}
                                             {v}
+                                            {col.key === 'addonBoth' && L.rateBoth !== null && (
+                                              <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'2px'}}>R {L.rateR}% · W {L.rateW}%</div>
+                                            )}
                                           </td>
                                         );
                                       })}
@@ -4338,6 +4333,65 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         {cohortUndecided > 0 && `, and it will still rise: ${cohortUndecided} of them have not decided yet`}.
                         {' '}<strong style={{color:'#6b7280'}}>Case Acceptance</strong> counts starts landing in this period against exams held in it, so a patient who consulted earlier and started now is counted without ever being in the denominator. That is the one that can read over 100%.
                       </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ── Average down payment ──────────────────────────────────────
+                    Deliberately NOT in the KPI row: that row is rates and counts the
+                    practice is steered by, and a dollar average behaves differently —
+                    it swings on one unusual case and has no goal behind it.
+                    Deliberately NOT reusing calculateMetrics' `avgDP` either. That one
+                    silently drops every $0-down start (`filter(v => v > 0)`), which on an
+                    owner's dashboard hides the thing worth knowing: how many started with
+                    nothing down. Its definition is left alone because the Metrics tab and
+                    the benchmark row read it; this card computes its own and reports what
+                    it excluded, the way the Production column does. */}
+                {/* Hidden from TCs, matching the card this replaces: a practice-wide
+                    dollar average is management information, and a TC's own view is
+                    scoped to their patients anyway. */}
+                {currentUser?.role !== 'tc' && (() => {
+                  const dpPeriodLabel = isRangeMode ? customRangeLabel : selMonthLabel;
+                  const dpStarts = selStartPts.filter(p => isSDS(p) || p.ST);
+                  if (dpStarts.length === 0) return null;
+                  const dpPIF     = dpStarts.filter(p => p.PIF);
+                  const dpFinance = dpStarts.filter(p => !p.PIF);
+                  const dpVals    = dpFinance.map(p => parseDP(p.dp)).filter(v => v > 0);
+                  const dpZero    = dpFinance.filter(p => parseDP(p.dp) === 0).length;
+                  const dpAvg     = dpVals.length > 0
+                    ? Math.round(dpVals.reduce((a, b) => a + b, 0) / dpVals.length) : null;
+                  const dpMoney   = v => `$${Math.round(v).toLocaleString()}`;
+                  return (
+                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
+                      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:'14px',gap:'12px',flexWrap:'wrap'}}>
+                        <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>💵 Average Down Payment</div>
+                        <div style={{fontSize:'11px',color:'#9ca3af',fontWeight:'600'}}>
+                          {dpStarts.length} start{dpStarts.length !== 1 ? 's' : ''} · {dpPeriodLabel}
+                        </div>
+                      </div>
+                      {dpAvg === null ? (
+                        <div style={{fontSize:'13px',color:'#6b7280',lineHeight:1.6}}>
+                          No start in this period has a down payment recorded.
+                          {dpPIF.length > 0 && ` ${dpPIF.length} paid in full — those have no down payment to average.`}
+                        </div>
+                      ) : (
+                        <div style={{display:'flex',alignItems:'flex-end',gap:'22px',flexWrap:'wrap'}}>
+                          <div>
+                            <div style={{fontSize:'40px',fontWeight:'800',lineHeight:1,color:'#7c3aed',fontVariantNumeric:'tabular-nums'}}>{dpMoney(dpAvg)}</div>
+                            <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'7px'}}>
+                              across {dpVals.length} of {dpStarts.length} start{dpStarts.length !== 1 ? 's' : ''}
+                            </div>
+                          </div>
+                          {/* What the average leaves out. Both are real starts, and both
+                              would drag the number down if folded in — so they are named
+                              beside it rather than averaged away or quietly dropped. */}
+                          <div style={{fontSize:'12px',color:'#6b7280',lineHeight:1.7}}>
+                            {dpZero > 0 && <div><strong style={{color:'#b45309'}}>{dpZero}</strong> started with $0 down</div>}
+                            {dpPIF.length > 0 && <div><strong style={{color:'#374151'}}>{dpPIF.length}</strong> paid in full — no plan to put money down on</div>}
+                            {dpZero === 0 && dpPIF.length === 0 && <div>Every start in this period put money down.</div>}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
