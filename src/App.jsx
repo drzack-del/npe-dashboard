@@ -865,6 +865,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // When a started/DBRETS patient is saved without whitening or retainers, the TC is
   // prompted (after clicking Add Patient) to note why. This gates that prompt.
   const [showAddonSkipPrompt, setShowAddonSkipPrompt] = useState(false);
+  const [showStartedAddonPrompt, setShowStartedAddonPrompt] = useState(false);
 
   // Greyfinch new-patient pull: NEW_PATIENT-status people fetched from Greyfinch that
   // sit above the Add-NPE form so the TC can one-click prepopulate instead of retyping.
@@ -883,7 +884,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [startedForm, setStartedForm] = useState({
     startDate: new Date().toISOString().split('T')[0],
     dp: '', BR: false, INV: false, PH1: false, PH2: false, LTD: false,
-    'R+': false, 'W+': false, PIF: false, recap: ''
+    'R+': false, 'W+': false, PIF: false, recap: '', addonSkipReason: ''
   });
 
   const [bonusMonthFilter, setBonusMonthFilter] = useState(
@@ -916,6 +917,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [showAIGoals, setShowAIGoals] = useState(false);
   const [showConvBreakdown, setShowConvBreakdown] = useState(null); // { dashPatients, dashStartPatients }
   const [showStartsByLocation, setShowStartsByLocation] = useState(null); // { perLocation, started, label } starts-per-location breakdown
+  const [showAddonBreakdown, setShowAddonBreakdown] = useState(null); // { addons, label, tcFilter, allStarts } add-on attach rate breakdown
   const [showObsList, setShowObsList] = useState(null); // { list, label, tcFilter } name-by-name Observation patients
   const [showProductionDetail, setShowProductionDetail] = useState(null); // { fees, label, perLocation, booksNet } contract-by-contract production
   const [goalAdjust, setGoalAdjust] = useState({ production: 0, npe: 0, starts: 0, conversion: 0, case_fee: 0 });
@@ -1049,7 +1051,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             fromPending: r.from_pending || false,
             insuranceWorkflow: r.insurance_workflow || null,
             medicaidPipeline: r.medicaid_pipeline || false,
-            isMedicaid: r.is_medicaid || false
+            isMedicaid: r.is_medicaid || false,
+            addonSkipReason: r.addon_skip_reason || ''
           })));
         }
       } else {
@@ -1217,6 +1220,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     insurance_workflow: patient.insuranceWorkflow || null,
     medicaid_pipeline: patient.medicaidPipeline || false,
     is_medicaid: patient.isMedicaid || false,
+    addon_skip_reason: patient.addonSkipReason || '',
     practice_id: managedPracticeId || currentUser.practiceId
   });
 
@@ -1881,6 +1885,58 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // SDS rate (% of starts that are same-day)
     const sdsRate = started.length > 0 ? Math.round((sds.length / started.length) * 100) : 0;
 
+    // ── Add-On Attach Rate ────────────────────────────────────────────────
+    // Deliberately NOT reusing `retainers` / `whitening` above: those include DBRETS
+    // patients because the TC earns a bonus on a retainer or whitening sold at a
+    // finishing visit. That is the right population for pay and the wrong one for an
+    // attach rate — a debond is not a contract. This block is starts only (SDS + ST),
+    // on the same start-date window as the Starts KPI, so the two always reconcile.
+    const addonBoth    = started.filter(p => p['R+'] === true && p['W+'] === true);
+    const addonWOnly   = started.filter(p => p['W+'] === true && p['R+'] !== true);
+    const addonROnly   = started.filter(p => p['R+'] === true && p['W+'] !== true);
+    const addonAny     = started.filter(p => p['R+'] === true || p['W+'] === true);
+    const addonNone    = started.filter(p => p['R+'] !== true && p['W+'] !== true);
+    const attachRate   = started.length > 0 ? Math.round((addonAny.length / started.length) * 100) : 0;
+    // Attach depth: add-ons per start on a 0–2 scale. Moves when a TC turns "one" into
+    // "both", which the headline percentage cannot show.
+    const addonsPerStart = started.length > 0
+      ? Math.round((started.reduce((n, p) => n + (p['R+'] ? 1 : 0) + (p['W+'] ? 1 : 0), 0) / started.length) * 100) / 100
+      : 0;
+    // Fee lift. The contract amount INCLUDES the whitening and retainer fees, so a
+    // contract with add-ons should be richer by roughly what those add-ons are worth.
+    // Showing the gap in dollars is the point: a lift far under the add-ons' list value
+    // means they are being bundled in at a discount rather than sold.
+    const avgFeeOf = (arr) => {
+      const vals = arr.map(p => parseDP(p.contractAmount)).filter(v => v > 0);
+      return vals.length > 0 ? { avg: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length), n: vals.length } : { avg: 0, n: 0 };
+    };
+    const feeWithAddons = avgFeeOf(addonAny);
+    const feeNoAddons   = avgFeeOf(addonNone);
+    // Only meaningful when both sides actually have priced contracts behind them.
+    const feeLift = (feeWithAddons.n > 0 && feeNoAddons.n > 0) ? feeWithAddons.avg - feeNoAddons.avg : null;
+    // PH1 patients (young Phase 1 kids) are rarely whitening candidates, so they drag the
+    // ceiling below 100%. Surfaced in the drill rather than removed from the denominator —
+    // one denominator keeps this number reconcilable with Starts.
+    const addonPh1Starts = started.filter(p => p.PH1).length;
+    const addons = {
+      starts: started.length,
+      both: addonBoth.length, wOnly: addonWOnly.length, rOnly: addonROnly.length,
+      any: addonAny.length, none: addonNone.length,
+      withW: addonBoth.length + addonWOnly.length,
+      withR: addonBoth.length + addonROnly.length,
+      attachRate, addonsPerStart,
+      // Product-level rates. These deliberately OVERLAP — a start that took both is
+      // counted in all three — because "how often do we sell retainers" is a question
+      // about retainers, not about what else rode along. The mutually exclusive split
+      // (both / W only / R only / none) lives in the breakdown for reading the mix.
+      rateR:    started.length > 0 ? Math.round(((addonBoth.length + addonROnly.length) / started.length) * 100) : 0,
+      rateW:    started.length > 0 ? Math.round(((addonBoth.length + addonWOnly.length) / started.length) * 100) : 0,
+      rateBoth: started.length > 0 ? Math.round((addonBoth.length / started.length) * 100) : 0,
+      feeWithAddons, feeNoAddons, feeLift,
+      ph1Starts: addonPh1Starts,
+      noneList: addonNone, anyList: addonAny, startsList: started
+    };
+
     const sdsBonus = sds.reduce((s, p) => s + ratesForTC(p.tc).sds, 0);
     const retBonus = retPts.reduce((s, p) => s + ratesForTC(p.tc).ret, 0);
     const whiteBonus = whitePts.reduce((s, p) => s + ratesForTC(p.tc).white, 0);
@@ -1891,7 +1947,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       total, started: started.length, sds: sds.length, pending, scheduled, observation, medicaidPending, noTx, obsPerLocation,
       overallConv, sdsConv, retainers, whitening, pif, sdsBonus, retBonus, whiteBonus, pifBonus, totalBonus,
       perLocation, carTotal, apoTotal, carStarted, apoStarted, carConv, apoConv,
-      avgDP, avgDPAll, brCount, invCount, ph1Count, ph2Count, ltdCount, sdsRate
+      avgDP, avgDPAll, brCount, invCount, ph1Count, ph2Count, ltdCount, sdsRate, addons
     };
   };
 
@@ -2313,11 +2369,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       BR: patient.BR || false, INV: patient.INV || false,
       PH1: patient.PH1 || false, PH2: patient.PH2 || false, LTD: patient.LTD || false,
       'R+': patient['R+'] || false, 'W+': patient['W+'] || false, PIF: patient.PIF || false,
+      addonSkipReason: patient.addonSkipReason || '',
       recap: composeRecapDraft('start', {
         dp: patient.dp, sameDay: patient.SCH ? false : true,
         'R+': patient['R+'], 'W+': patient['W+'], PIF: patient.PIF
       })
     });
+    setShowStartedAddonPrompt(false);
     setShowStartedModal(patient);
   };
 
@@ -2332,6 +2390,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // A start must capture the down payment and contract amount
     if (!(startedForm.dp || '').trim()) { alert('Please enter the Down Payment before marking this patient as started.'); return; }
     if (!(startedForm.contractAmount || '').trim()) { alert('Please enter the Contract Amount before marking this patient as started.'); return; }
+    // Add-ons accountability — same rule the Add Patient form enforces. Without this the
+    // pending/scheduled conversion path could book a start with neither add-on and no
+    // reason, leaving an unexplained hole in the Add-On Attach Rate drill.
+    const startNoAddons = !startedForm['R+'] && !startedForm['W+'];
+    if (startNoAddons && !(startedForm.addonSkipReason || '').trim()) {
+      setShowStartedAddonPrompt(true);
+      alert('No whitening or retainers were added — please note why before saving.');
+      return;
+    }
     const isSameDay = startedForm.startDate === patient.npeDate;
     const todayStr = new Date().toISOString().split('T')[0];
     // Record a metric-neutral start entry so the recap surfaces in the End-of-Day report.
@@ -2344,7 +2411,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       outcome: patient.PEN || patient.MP || patient.SCH || patient.fromPending ? 'Converted — started treatment' : 'Same-day start',
       sentText: false,
       notes: '',
-      recap: startedForm.recap || '',
+      recap: [(startedForm.recap || '').trim(),
+              startNoAddons && (startedForm.addonSkipReason || '').trim()
+                ? `No add-ons — ${(startedForm.addonSkipReason || '').trim()}` : ''
+             ].filter(Boolean).join(' — '),
       dispo: 'start',
       // Capture where this start came from BEFORE the flags below are cleared, so the
       // End-of-Day report can separate scheduled-bond starts from pending conversions.
@@ -2366,11 +2436,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       BR: startedForm.BR, INV: startedForm.INV, PH1: startedForm.PH1,
       PH2: startedForm.PH2, LTD: startedForm.LTD,
       'R+': startedForm['R+'], 'W+': startedForm['W+'], PIF: startedForm.PIF,
+      addonSkipReason: startNoAddons ? (startedForm.addonSkipReason || '').trim() : '',
       contact_log: [...(patient.contact_log || []), startLog]
     };
     setPatients(prev => prev.map(p => p.id === patientId ? updated : p));
     const saveOk = await dbUpsert(updated);
     setShowStartedModal(null);
+    setShowStartedAddonPrompt(false);
     saveToastFor(saveOk, updated.medicaidPipeline
       ? `🎯 ${updated.name} marked as Started — kept in the Medicaid Pipeline for claim tracking.`
       : `🎯 ${updated.name} marked as Started — removed from follow-up queue!`);
@@ -2789,6 +2861,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       BR: newPatientForm.BR, INV: newPatientForm.INV, PH1: newPatientForm.PH1,
       PH2: newPatientForm.PH2, LTD: newPatientForm.LTD,
       'R+': newPatientForm['R+'], 'W+': newPatientForm['W+'], PIF: newPatientForm.PIF,
+      // Kept as a real field (not just recap text) so the Add-On Attach Rate drill can
+      // show why each bare contract attached nothing. Only meaningful when no add-ons
+      // were sold — it is cleared the moment R+ or W+ is checked.
+      addonSkipReason: (addonsEligible && noAddonsSelected) ? newPatientForm.addonSkipReason.trim() : '',
       ST: isST,   // SDS patients have ST:false — isSDS() handles the distinction
       SCH: isSCH,
       PEN: newPatientForm.status === 'PEN',
@@ -3947,6 +4023,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     ] : []),
                     { key:'conv',  label:'Conversion',  color:'#2563EB', tint:'rgba(37,99,235,0.04)' },
                     { key:'sds',   label:'SDS Rate',    color:'#7c3aed', tint:'rgba(124,58,237,0.04)' },
+                    // Add-on attach, as three rates rather than one. Retainers and Whitening
+                    // overlap (a start taking both is in each), and Both is the intersection —
+                    // so they answer "how often do we sell this product", while the breakdown
+                    // behind them carries the mutually exclusive split. One shared hue family
+                    // marks them as a group; the labels do the separating.
+                    // Starts only (SDS + ST): this excludes the retainers/whitening sold at a
+                    // debond, which the bonus counters do include. A finishing visit is not a
+                    // contract.
+                    // Retainers and Whitening are the inputs; Both is the outcome that actually
+                    // moves case fee, and a practice can post healthy single-product rates while
+                    // almost never landing two on one contract. So Both is weighted as the
+                    // anchor of the group — deeper tint, larger number — rather than sitting as
+                    // a third equal column that reads like an afterthought.
+                    { key:'addonR',    label:'Retainers', color:'#155e75', tint:'rgba(21,94,117,0.04)' },
+                    { key:'addonW',    label:'Whitening', color:'#0891b2', tint:'rgba(8,145,178,0.045)' },
+                    { key:'addonBoth', label:'Both',      color:'#0369a1', tint:'rgba(3,105,161,0.10)', emphasis:true },
                     // No Observation column. OBS is a patient *state*, not a monthly
                     // performance number, and it already has a tile (with the same drill)
                     // on the Pipeline card — where the whole point is where patients sit.
@@ -3962,6 +4054,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                            }) } : null,
                     conv:  { hint:'↗ breakdown', onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts }) },
                   };
+                  // All three add-on columns open the same breakdown — it explains the mix
+                  // they share, so splitting it three ways would just repeat itself.
+                  if (nm.addons.starts > 0) {
+                    const openAddons = () => setShowAddonBreakdown({
+                      addons: nm.addons, label: kpiPeriodLabel, tcFilter:'All',
+                      allStarts: nm.addons.startsList,
+                    });
+                    drill.addonR    = { hint:'↗ why', onClick: openAddons };
+                    drill.addonW    = { hint:'↗ why', onClick: openAddons };
+                    drill.addonBoth = { hint:'↗ why', onClick: openAddons };
+                  }
 
                   // Starts are counted by start date and NPEs by exam date, so a location's
                   // starts are not a strict subset of its exams — same convention the rest
@@ -3969,9 +4072,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const locRows = (nm.perLocation || []).map(L => {
                     const sdsCount  = selStartPts.filter(p => p.location === L.loc && isSDS(p)).length;
                     const convDenom = selNPEPts.filter(p => p.location === L.loc && p.OBS !== true).length;
+                    // Same starts-only population the practice row uses, narrowed to this office.
+                    const locStarts = (nm.addons.startsList || []).filter(p => p.location === L.loc);
+                    const locRate = (fn) => locStarts.length > 0
+                      ? Math.round((locStarts.filter(fn).length / locStarts.length) * 100) : null;
                     return { ...L, convDenom, prod: prodByLoc[L.loc] || 0,
                       conv: convDenom > 0 ? Math.round((L.started / convDenom) * 100) : null,
-                      sdsRate: L.started > 0 ? Math.round((sdsCount / L.started) * 100) : null };
+                      sdsRate: L.started > 0 ? Math.round((sdsCount / L.started) * 100) : null,
+                      rateR:    locRate(p => p['R+']),
+                      rateW:    locRate(p => p['W+']),
+                      rateBoth: locRate(p => p['R+'] && p['W+']) };
                   });
 
                   // Below this many exams a conversion rate is too noisy to flag — one start
@@ -4002,19 +4112,25 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     : `${Math.abs(convDelta)} under goal`;
 
                   const cellPad = { padding:'0 15px' };
-                  const metricCell = col => ({ ...cellPad, borderLeft:'1px solid #edeff2', backgroundColor:col.tint, textAlign:'right' });
+                  const metricCell = col => ({ ...cellPad,
+                    borderLeft: col.emphasis ? '1px solid #bae6fd' : '1px solid #edeff2',
+                    borderRight: col.emphasis ? '1px solid #bae6fd' : undefined,
+                    backgroundColor: col.tint, textAlign:'right' });
                   const locValue = (col, L) => {
                     if (col.key === 'npe')   return L.total;
                     if (col.key === 'start') return L.started;
                     if (col.key === 'prod')  return L.prod > 0 ? fmtMoney(L.prod) : '—';
                     if (col.key === 'sds')   return L.sdsRate === null ? '—' : `${L.sdsRate}%`;
+                    if (col.key === 'addonR')    return L.rateR    === null ? '—' : `${L.rateR}%`;
+                    if (col.key === 'addonW')    return L.rateW    === null ? '—' : `${L.rateW}%`;
+                    if (col.key === 'addonBoth') return L.rateBoth === null ? '—' : `${L.rateBoth}%`;
                     return L.conv === null ? '—' : `${L.conv}%`;
                   };
 
                   return (
                     <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
                       <div style={{overflowX:'auto'}}>
-                        <table style={{width:'100%',minWidth:showProduction?'760px':'620px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
+                        <table style={{width:'100%',minWidth:showProduction?'1040px':'900px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
                           <colgroup>
                             <col style={{width:'19%'}} />
                             {KPI_COLS.map(c => <col key={c.key} />)}
@@ -4037,17 +4153,20 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   : col.key === 'start' ? nm.started
                                   : col.key === 'prod' ? (prodTotal > 0 ? fmtMoney(prodTotal) : '—')
                                   : col.key === 'conv' ? `${nm.overallConv}%`
+                                  : col.key === 'addonR' ? (nm.addons.starts > 0 ? `${nm.addons.rateR}%` : '—')
+                                  : col.key === 'addonW' ? (nm.addons.starts > 0 ? `${nm.addons.rateW}%` : '—')
+                                  : col.key === 'addonBoth' ? (nm.addons.starts > 0 ? `${nm.addons.rateBoth}%` : '—')
                                   : (nm.started > 0 ? `${nm.sdsRate}%` : '—');
                                 return (
                                   <td key={col.key}
                                     onClick={d ? d.onClick : undefined}
                                     title={d ? 'Click for the full breakdown' : undefined}
                                     style={{...metricCell(col),verticalAlign:'top',paddingTop:'14px',paddingBottom:'15px',cursor:d?'pointer':'default'}}>
-                                    <div style={{fontSize:'10px',fontWeight:'800',color:col.color,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px',lineHeight:1.3}}>
+                                    <div style={{fontSize:col.emphasis?'11px':'10px',fontWeight:'800',color:col.color,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px',lineHeight:1.3}}>
                                       {col.label}
                                       {d && <span style={{fontSize:'10px',fontWeight:'500',textTransform:'none',letterSpacing:0,marginLeft:'4px',opacity:0.7}}>{d.hint}</span>}
                                     </div>
-                                    <div style={{fontSize:'30px',fontWeight:'800',lineHeight:1.05,color:col.color}}>{value}</div>
+                                    <div style={{fontSize:col.emphasis?'40px':'30px',fontWeight:col.emphasis?'900':'800',lineHeight:1.05,color:col.color,letterSpacing:col.emphasis?'-0.02em':'normal'}}>{value}</div>
                                     {goal !== null && (
                                       <div style={{height:'5px',borderRadius:'3px',overflow:'hidden',marginTop:'8px',backgroundColor:col.track}}>
                                         <div style={{height:'100%',borderRadius:'3px',backgroundColor:col.fill,width:`${Math.min(100,Math.round((actual/goal)*100))}%`}} />
@@ -4071,6 +4190,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     {col.key === 'sds' && nm.started > 0 && (
                                       <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.sds} of {nm.started} starts</div>
                                     )}
+                                    {col.key === 'addonR' && nm.addons.starts > 0 && (
+                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.addons.withR} of {nm.addons.starts} starts</div>
+                                    )}
+                                    {col.key === 'addonW' && nm.addons.starts > 0 && (
+                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.addons.withW} of {nm.addons.starts} starts</div>
+                                    )}
+                                    {col.key === 'addonBoth' && nm.addons.starts > 0 && (
+                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.addons.both} of {nm.addons.starts} · {nm.addons.none} took neither</div>
+                                    )}
                                   </td>
                                 );
                               })}
@@ -4089,7 +4217,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                       {KPI_COLS.map(col => {
                                         const v = locValue(col, L);
                                         return (
-                                          <td key={col.key} style={{...metricCell(col),paddingTop:'10px',paddingBottom:'10px',fontSize:'15px',fontWeight:'700',color:col.color,borderBottom:last?'none':'1px solid #f4f5f7',opacity:v===0?0.33:1}}>
+                                          <td key={col.key} style={{...metricCell(col),paddingTop:'10px',paddingBottom:'10px',fontSize:col.emphasis?'19px':'15px',fontWeight:col.emphasis?'800':'700',color:col.color,borderBottom:last?'none':'1px solid #f4f5f7',opacity:v===0?0.33:1}}>
                                             {col.key === 'conv' && health && (
                                               <span style={{display:'inline-block',width:'7px',height:'7px',borderRadius:'50%',marginRight:'8px',verticalAlign:'2px',backgroundColor:health}} />
                                             )}
@@ -4588,6 +4716,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   onClick={() => setShowConvBreakdown({ dashPatients, dashStartPatients })} />
                 <MetricCard label={currentUser?.role === 'tc' ? 'My Same-Day Starts' : 'Same-Day Starts'} value={dash.sds} color="#3b82f6"
                   sub={dash.started > 0 ? `SDS Rate: ${dash.sdsRate}% of starts` : 'No starts yet'} />
+                <MetricCard label="Add-On Attach Rate" value={dash.addons.starts > 0 ? `${dash.addons.attachRate}%` : '—'} color="#0891b2"
+                  sub={dash.addons.starts > 0
+                    ? `R ${dash.addons.rateR}% · W ${dash.addons.rateW}% · Both ${dash.addons.rateBoth}%`
+                    : 'No starts yet'}
+                  onClick={dash.addons.starts > 0
+                    ? () => setShowAddonBreakdown({
+                        addons: dash.addons,
+                        label: dashTimeframe === 'month' ? monthLabel : 'All Time',
+                        tcFilter: effectiveTCFilter,
+                        allStarts: periodStartsAll
+                      })
+                    : undefined} />
                 {currentUser?.role !== 'tc' && <MetricCard label="Avg Down Payment" value={dash.avgDP > 0 ? `$${dash.avgDP}` : '—'} color="#8b5cf6"
                   sub="Started patients only" />}
                 <MetricCard label="On-Time Follow-Up Rate" value={dashOnTimeRate !== null ? `${dashOnTimeRate}%` : '—'} color={dashOnTimeColor}
@@ -11685,6 +11825,234 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       })()}
 
       {/* Starts Detail Modal — name-by-name list + per-location breakdown */}
+      {showAddonBreakdown && (() => {
+        const { addons: a, label, tcFilter, allStarts } = showAddonBreakdown;
+        const isTC = currentUser?.role === 'tc';
+        const fmtDate = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
+        const pct = (n) => a.starts > 0 ? Math.round((n / a.starts) * 100) : 0;
+
+        // The four buckets are mutually exclusive and sum to every start, so the bars
+        // can be read as one whole rather than four overlapping percentages.
+        const buckets = [
+          { key:'both',  label:'Both whitening + retainers', n:a.both,  color:'#047857', bg:'#ecfdf5' },
+          { key:'wOnly', label:'Whitening only',             n:a.wOnly, color:'#0369a1', bg:'#f0f9ff' },
+          { key:'rOnly', label:'Retainers only',             n:a.rOnly, color:'#6d28d9', bg:'#faf5ff' },
+          { key:'none',  label:'Nothing attached',           n:a.none,  color:'#b91c1c', bg:'#fef2f2' },
+        ];
+
+        // Per-TC attach rate, practice-wide. This is a coaching number — bonus rates are
+        // already per-TC, so this says whether the bonus is changing behaviour.
+        const byTC = (() => {
+          const m = {};
+          (allStarts || []).forEach(p => {
+            const k = p.tc || 'Unassigned';
+            if (!m[k]) m[k] = { tc:k, starts:0, any:0, both:0 };
+            m[k].starts++;
+            if (p['R+'] || p['W+']) m[k].any++;
+            if (p['R+'] && p['W+']) m[k].both++;
+          });
+          return Object.values(m)
+            .map(r => ({ ...r, rate: r.starts > 0 ? Math.round((r.any / r.starts) * 100) : 0 }))
+            .sort((x, y) => y.rate - x.rate);
+        })();
+
+        const byLoc = (() => {
+          const m = {};
+          (a.startsList || []).forEach(p => {
+            const k = p.location || 'Unassigned';
+            if (!m[k]) m[k] = { loc:k, starts:0, any:0 };
+            m[k].starts++;
+            if (p['R+'] || p['W+']) m[k].any++;
+          });
+          return Object.values(m)
+            .map(r => ({ ...r, rate: r.starts > 0 ? Math.round((r.any / r.starts) * 100) : 0 }))
+            .sort((x, y) => y.rate - x.rate);
+        })();
+
+        const missed = [...(a.noneList || [])].sort((x, y) => {
+          const xd = effectiveStartDate(x) || '', yd = effectiveStartDate(y) || '';
+          if (xd !== yd) return xd.localeCompare(yd);
+          return (x.name || '').localeCompare(y.name || '');
+        });
+
+        const rateColor = (r) => r >= 70 ? '#047857' : r >= 45 ? '#b45309' : '#b91c1c';
+        const sectionHead = (t) => (
+          <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>{t}</div>
+        );
+
+        return (
+          <div onClick={() => setShowAddonBreakdown(null)} style={{position:'fixed',top:0,left:0,right:0,bottom:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10000}}>
+            <div onClick={e => e.stopPropagation()} style={{backgroundColor:'white',padding:'28px',borderRadius:'14px',maxWidth:'660px',width:'94%',boxShadow:'0 20px 40px rgba(0,0,0,0.25)',maxHeight:'85vh',overflowY:'auto'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px'}}>
+                <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:0}}>✨ Add-On Attach Rate</h3>
+                <button onClick={() => setShowAddonBreakdown(null)} style={{background:'none',border:'none',fontSize:'20px',cursor:'pointer',color:'#9ca3af',lineHeight:1}}>×</button>
+              </div>
+              <div style={{fontSize:'12px',color:'#9ca3af',marginBottom:'18px'}}>
+                {label}{tcFilter && tcFilter !== 'All' ? ` · ${tcFilter}` : ''} · starts only (SDS + ST), by start date
+              </div>
+
+              <div style={{display:'flex',alignItems:'baseline',gap:'10px',flexWrap:'wrap',marginBottom:'18px'}}>
+                <span style={{fontSize:'40px',fontWeight:'900',color:rateColor(a.attachRate),lineHeight:1}}>{a.attachRate}%</span>
+                <span style={{fontSize:'13px',color:'#6b7280'}}>
+                  <strong>{a.any}</strong> of <strong>{a.starts}</strong> starts took whitening and/or retainers
+                </span>
+                <span style={{marginLeft:'auto',fontSize:'12px',color:'#6b7280',backgroundColor:'#f9fafb',border:'1px solid #f3f4f6',borderRadius:'8px',padding:'6px 10px'}}>
+                  <strong style={{fontSize:'15px',color:'#0891b2'}}>{a.addonsPerStart}</strong> add-ons per start <span style={{color:'#9ca3af'}}>(of 2)</span>
+                </span>
+              </div>
+
+              <div style={{marginBottom:'22px'}}>
+                {sectionHead('Attach rate by product')}
+                <div style={{display:'flex',gap:'12px',flexWrap:'wrap'}}>
+                  {[
+                    { label:'Retainers', rate:a.rateR,    n:a.withR, color:'#155e75' },
+                    { label:'Whitening', rate:a.rateW,    n:a.withW, color:'#0891b2' },
+                    { label:'Both',      rate:a.rateBoth, n:a.both,  color:'#0369a1' },
+                  ].map(r => (
+                    <div key={r.label} style={{flex:'1 1 140px',backgroundColor:'#f9fafb',borderRadius:'10px',padding:'13px 15px',border:'1px solid #f3f4f6'}}>
+                      <div style={{fontSize:'11px',color:'#6b7280',fontWeight:'700',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'5px'}}>{r.label}</div>
+                      <div style={{fontSize:'27px',fontWeight:'800',color:r.color,lineHeight:1.1}}>{r.rate}%</div>
+                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px'}}>{r.n} of {a.starts} start{a.starts !== 1 ? 's' : ''}</div>
+                      <div style={{height:'6px',backgroundColor:'#e5e7eb',borderRadius:'3px',overflow:'hidden',marginTop:'8px'}}>
+                        <div style={{height:'6px',borderRadius:'3px',backgroundColor:r.color,width:`${r.rate}%`,transition:'width 0.4s ease'}}></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'8px',lineHeight:1.5}}>
+                  Retainers and Whitening each count every start that took them, so a start that
+                  took both is in all three. The split below has no overlap.
+                </div>
+              </div>
+
+              <div style={{marginBottom:'24px'}}>
+                {sectionHead('What each start took — no overlap')}
+                <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+                  {buckets.map(b => (
+                    <div key={b.key} style={{backgroundColor:b.bg,borderRadius:'10px',padding:'11px 14px'}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'6px'}}>
+                        <span style={{fontSize:'13px',fontWeight:'700',color:b.color}}>{b.label}</span>
+                        <span style={{fontSize:'12px',color:'#6b7280'}}>
+                          <strong style={{fontSize:'19px',color:b.color}}>{b.n}</strong>
+                          <span style={{marginLeft:'7px',color:'#9ca3af'}}>{pct(b.n)}%</span>
+                        </span>
+                      </div>
+                      <div style={{height:'7px',backgroundColor:'rgba(0,0,0,0.06)',borderRadius:'4px',overflow:'hidden'}}>
+                        <div style={{height:'7px',borderRadius:'4px',backgroundColor:b.color,width:`${pct(b.n)}%`,transition:'width 0.4s ease'}}></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {a.ph1Starts > 0 && (
+                  <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'8px'}}>
+                    {a.ph1Starts} of these starts {a.ph1Starts === 1 ? 'is' : 'are'} Phase 1, who are rarely whitening candidates.
+                  </div>
+                )}
+              </div>
+
+              {a.feeLift !== null && (
+                <div style={{marginBottom:'24px'}}>
+                  {sectionHead('Is the add-on being sold, or given away?')}
+                  <div style={{display:'flex',gap:'12px',flexWrap:'wrap'}}>
+                    <div style={{flex:'1 1 150px',backgroundColor:'#f9fafb',borderRadius:'10px',padding:'13px 15px',border:'1px solid #f3f4f6'}}>
+                      <div style={{fontSize:'11px',color:'#6b7280',fontWeight:'600',textTransform:'uppercase',letterSpacing:'0.04em'}}>Avg contract — with add-ons</div>
+                      <div style={{fontSize:'25px',fontWeight:'800',color:'#047857',lineHeight:1.2}}>${a.feeWithAddons.avg.toLocaleString()}</div>
+                      <div style={{fontSize:'11px',color:'#9ca3af'}}>{a.feeWithAddons.n} priced contract{a.feeWithAddons.n !== 1 ? 's' : ''}</div>
+                    </div>
+                    <div style={{flex:'1 1 150px',backgroundColor:'#f9fafb',borderRadius:'10px',padding:'13px 15px',border:'1px solid #f3f4f6'}}>
+                      <div style={{fontSize:'11px',color:'#6b7280',fontWeight:'600',textTransform:'uppercase',letterSpacing:'0.04em'}}>Avg contract — without</div>
+                      <div style={{fontSize:'25px',fontWeight:'800',color:'#6b7280',lineHeight:1.2}}>${a.feeNoAddons.avg.toLocaleString()}</div>
+                      <div style={{fontSize:'11px',color:'#9ca3af'}}>{a.feeNoAddons.n} priced contract{a.feeNoAddons.n !== 1 ? 's' : ''}</div>
+                    </div>
+                    <div style={{flex:'1 1 150px',backgroundColor: a.feeLift > 0 ? '#ecfdf5' : '#fef2f2',borderRadius:'10px',padding:'13px 15px',border:`1px solid ${a.feeLift > 0 ? '#a7f3d0' : '#fecaca'}`}}>
+                      <div style={{fontSize:'11px',color: a.feeLift > 0 ? '#047857' : '#b91c1c',fontWeight:'600',textTransform:'uppercase',letterSpacing:'0.04em'}}>Fee lift</div>
+                      <div style={{fontSize:'25px',fontWeight:'800',color: a.feeLift > 0 ? '#047857' : '#b91c1c',lineHeight:1.2}}>{a.feeLift >= 0 ? '+' : '−'}${Math.abs(a.feeLift).toLocaleString()}</div>
+                      <div style={{fontSize:'11px',color:'#9ca3af'}}>per start with add-ons</div>
+                    </div>
+                  </div>
+                  <div style={{fontSize:'11px',color:'#6b7280',marginTop:'8px',lineHeight:1.5}}>
+                    The contract amount already includes whitening and retainers, so a contract that
+                    attached them should be richer by about what they are worth. Compare the lift to
+                    your own list price: well under it means the add-ons are going in at a discount
+                    rather than being sold.
+                  </div>
+                </div>
+              )}
+
+              {!isTC && byTC.length > 0 && (
+                <div style={{marginBottom:'24px'}}>
+                  {sectionHead('By treatment coordinator — whole practice')}
+                  <div style={{border:'1px solid #f3f4f6',borderRadius:'10px',overflow:'hidden'}}>
+                    {byTC.map((r, idx) => (
+                      <div key={r.tc} style={{display:'flex',alignItems:'center',gap:'12px',padding:'10px 14px',borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6',backgroundColor: idx % 2 ? '#fafafa' : 'white'}}>
+                        <span style={{fontSize:'13px',fontWeight:'700',color:'#374151',flex:'0 0 120px'}}>{r.tc}</span>
+                        <div style={{flex:1,height:'8px',backgroundColor:'#e5e7eb',borderRadius:'4px',overflow:'hidden'}}>
+                          <div style={{height:'8px',borderRadius:'4px',backgroundColor:rateColor(r.rate),width:`${r.rate}%`,transition:'width 0.4s ease'}}></div>
+                        </div>
+                        <span style={{fontSize:'13px',fontWeight:'800',color:rateColor(r.rate),flex:'0 0 42px',textAlign:'right'}}>{r.rate}%</span>
+                        <span style={{fontSize:'11px',color:'#9ca3af',flex:'0 0 108px',textAlign:'right'}}>{r.any}/{r.starts} · {r.both} both</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {byLoc.length > 1 && (
+                <div style={{marginBottom:'24px'}}>
+                  {sectionHead('By location')}
+                  <div style={{border:'1px solid #f3f4f6',borderRadius:'10px',overflow:'hidden'}}>
+                    {byLoc.map((r, idx) => (
+                      <div key={r.loc} style={{display:'flex',alignItems:'center',gap:'12px',padding:'10px 14px',borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6',backgroundColor: idx % 2 ? '#fafafa' : 'white'}}>
+                        <span style={{fontSize:'13px',fontWeight:'700',color:'#374151',flex:'0 0 120px'}}>{r.loc}</span>
+                        <div style={{flex:1,height:'8px',backgroundColor:'#e5e7eb',borderRadius:'4px',overflow:'hidden'}}>
+                          <div style={{height:'8px',borderRadius:'4px',backgroundColor:rateColor(r.rate),width:`${r.rate}%`,transition:'width 0.4s ease'}}></div>
+                        </div>
+                        <span style={{fontSize:'13px',fontWeight:'800',color:rateColor(r.rate),flex:'0 0 42px',textAlign:'right'}}>{r.rate}%</span>
+                        <span style={{fontSize:'11px',color:'#9ca3af',flex:'0 0 60px',textAlign:'right'}}>{r.any}/{r.starts}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                {sectionHead(`Nothing attached (${missed.length}) — and why`)}
+                {missed.length === 0 ? (
+                  <div style={{fontSize:'14px',color:'#047857',textAlign:'center',padding:'20px 0',backgroundColor:'#ecfdf5',borderRadius:'10px'}}>
+                    Every start in this period attached at least one add-on.
+                  </div>
+                ) : (
+                  <div style={{border:'1px solid #f3f4f6',borderRadius:'10px',overflow:'hidden'}}>
+                    {missed.map((p, idx) => (
+                      <div key={p.id || `${p.name}-${idx}`} style={{padding:'10px 14px',borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6',backgroundColor: idx % 2 ? '#fafafa' : 'white'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                          <span style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>{p.name}</span>
+                          <span style={{fontSize:'11px',color:'#9ca3af'}}>
+                            {fmtDate(effectiveStartDate(p))}
+                            {p.location ? ` · ${p.location}` : ''}
+                            {(!tcFilter || tcFilter === 'All') && p.tc ? ` · ${p.tc}` : ''}
+                            {p.PH1 ? ' · Phase 1' : ''}
+                          </span>
+                        </div>
+                        <div style={{fontSize:'12px',color: p.addonSkipReason ? '#374151' : '#9ca3af',marginTop:'3px',fontStyle: p.addonSkipReason ? 'normal' : 'italic'}}>
+                          {p.addonSkipReason || 'No reason recorded — this start predates the add-on prompt.'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'8px',lineHeight:1.5}}>
+                  Read these together over a quarter: they separate “declined” from “not a candidate”
+                  from “never offered”, which is the part you can actually coach.
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+
+
       {showStartsByLocation && (() => {
         const { perLocation, label, tcFilter, list: scopedList, allList } = showStartsByLocation;
         // A TC's dashboard is locked to their own numbers, so the list opens on their
@@ -12157,6 +12525,25 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
             </div>
 
+
+            {/* Add-ons accountability — mirrors the Add Patient form so a pending/scheduled
+                conversion can't become a start with nothing attached and nothing said.
+                Hides itself the moment an add-on is checked. */}
+            {showStartedAddonPrompt && !startedForm['R+'] && !startedForm['W+'] && (
+              <div style={{marginBottom:'16px',padding:'14px',backgroundColor:'#fffbeb',borderRadius:'8px',border:'1px solid #fde68a'}}>
+                <label style={{display:'block',fontSize:'14px',fontWeight:'600',marginBottom:'6px',color:'#92400e'}}>
+                  ⚠️ No whitening or retainers were added — why not? *
+                </label>
+                <textarea placeholder="e.g. Patient declined whitening; retainers included in a bundle elsewhere; not a candidate…"
+                  value={startedForm.addonSkipReason || ''}
+                  onChange={e => setStartedForm({...startedForm, addonSkipReason: e.target.value})}
+                  autoFocus
+                  style={{width:'100%',padding:'8px',border:'1px solid #fcd34d',borderRadius:'4px',fontSize:'14px'}} rows={2} />
+                <div style={{fontSize:'12px',color:'#92400e',marginTop:'4px'}}>This note shows in the Add-On Attach Rate breakdown and on the End-of-Day report.</div>
+              </div>
+            )}
+
+
             {renderRecapField(
               startedForm.recap,
               (val) => setStartedForm({...startedForm, recap: val}),
@@ -12614,9 +13001,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const original = patients.find(p => p.id === editForm.id);
                   const wasOBS = original?.OBS;
                   const isNowPendingNotOBS = (editForm.PEN || editForm.MP) && !editForm.OBS;
-                  const saveForm = (wasOBS && isNowPendingNotOBS)
+                  const saveForm0 = (wasOBS && isNowPendingNotOBS)
                     ? { ...editForm, contactAttempts: 0 }
                     : editForm;
+                  // A skip reason only describes a start that attached nothing. If this edit
+                  // added whitening or retainers, drop the stale note so it can't resurface.
+                  const saveForm = (saveForm0['R+'] || saveForm0['W+'])
+                    ? { ...saveForm0, addonSkipReason: '' }
+                    : saveForm0;
                   setPatients(patients.map(p => p.id === saveForm.id ? saveForm : p));
                   const saveOk = await dbUpsert(saveForm);
                   setShowEditModal(null);
