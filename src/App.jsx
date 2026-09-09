@@ -862,6 +862,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', addonSkipReason: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false, isMedicaid: ''
   });
   const [addPatientError, setAddPatientError] = useState('');
+  // Latest patients, readable from a timer callback that would otherwise close over a
+  // stale render's copy.
+  const patientsRef = useRef(patients);
+  useEffect(() => { patientsRef.current = patients; }, [patients]);
   // When a started/DBRETS patient is saved without whitening or retainers, the TC is
   // prompted (after clicking Add Patient) to note why. This gates that prompt.
   const [showAddonSkipPrompt, setShowAddonSkipPrompt] = useState(false);
@@ -926,6 +930,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [termsMonthFilter, setTermsMonthFilter] = useState('All');
   const [termsShowDone, setTermsShowDone] = useState(false);
   const termsFocusRef = useRef(null); // value a term input held on focus, so blur only saves real edits
+  // Rows the TC has touched this visit. A row that completes mid-edit would otherwise be
+  // filtered straight out of the worklist, unmounting the input before blur fires — the
+  // cloud write would never happen and the number would live only in memory.
+  const termsTouchedRef = useRef(new Set());
+  const termsTimersRef = useRef({}); // per-row debounce, so a save lands even without a blur
   const [showProductionDetail, setShowProductionDetail] = useState(null); // { fees, label, perLocation, booksNet } contract-by-contract production
   const [goalAdjust, setGoalAdjust] = useState({ production: 0, npe: 0, starts: 0, conversion: 0, case_fee: 0 });
   const [metricsSaveMsg, setMetricsSaveMsg] = useState('');
@@ -1745,6 +1754,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (fm === 0) return false;
     return fm === null || termMonths(p.treatmentMonths) === null;
   };
+  // Mirrors the CHECK constraints in 20260909_contract_terms.sql. Without this a typo
+  // like a treatment length of 0 passes the "is it filled in" test, then fails at the
+  // database — surfacing as a save failure instead of a message about the number.
+  const termRangeError = (financed, treatment) => {
+    const fm = termMonths(financed), tm = termMonths(treatment);
+    if (fm !== null && (fm < 0 || fm > 120)) return 'Financed Months must be between 0 and 120.';
+    if (tm !== null && (tm < 1 || tm > 120)) return 'Treatment Months must be between 1 and 120 — enter the estimated treatment length.';
+    return '';
+  };
   // Everything before this is deliberately unmeasured — see docs/contract-terms-plan.md.
   const TERMS_BACKFILL_FROM = '2026-01-01';
 
@@ -2432,6 +2450,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // '0' is a real answer here (paid in full), so test for empty rather than falsy.
     if ((startedForm.financedMonths ?? '').toString().trim() === '') { alert('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
     if ((startedForm.treatmentMonths ?? '').toString().trim() === '') { alert('Please enter the estimated treatment length in months.'); return; }
+    const startTermErr = termRangeError(startedForm.financedMonths, startedForm.treatmentMonths);
+    if (startTermErr) { alert(startTermErr); return; }
     // Add-ons accountability — same rule the Add Patient form enforces. Without this the
     // pending/scheduled conversion path could book a start with neither add-on and no
     // reason, leaving an unexplained hole in the Add-On Attach Rate drill.
@@ -2830,6 +2850,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // as "missing", or block it, depending on which shortcut you reach for.
     if (needsPayment && newPatientForm.financedMonths.trim() === '') { setAddPatientError('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
     if (needsPayment && newPatientForm.treatmentMonths.trim() === '') { setAddPatientError('Please enter the estimated treatment length in months.'); return; }
+    if (needsPayment) {
+      const rangeErr = termRangeError(newPatientForm.financedMonths, newPatientForm.treatmentMonths);
+      if (rangeErr) { setAddPatientError(rangeErr); return; }
+    }
     // Add-ons accountability: if this is a start/DBRETS with neither whitening nor retainers,
     // the TC must say why before saving. First click surfaces the prompt; save proceeds once
     // a reason is entered. The reason rides along to the End-of-Day report (see combinedRecap).
@@ -8608,7 +8632,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
           const startMonths = [...new Set(backfillStarts.map(p => (effectiveStartDate(p) || '').slice(0, 7)))].filter(Boolean).sort().reverse();
 
-          let list = termsShowDone ? backfillStarts : outstanding;
+          // Keep a row on screen once it has been touched, even after it is complete, so
+          // it turns green in place instead of vanishing under the cursor mid-keystroke.
+          let list = termsShowDone
+            ? backfillStarts
+            : backfillStarts.filter(p => termNeedsEntry(p) || termsTouchedRef.current.has(p.id));
           if (termsTCFilter  !== 'All') list = list.filter(p => p.tc === termsTCFilter);
           if (termsLocFilter !== 'All') list = list.filter(p => p.location === termsLocFilter);
           if (termsMonthFilter !== 'All') list = list.filter(p => (effectiveStartDate(p) || '').slice(0, 7) === termsMonthFilter);
@@ -8619,15 +8647,28 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           // Local edit, cloud write on blur. Every save goes through dbUpsert so it
           // inherits the retry and the offline outbox.
           const setField = (patient, field, value) => {
+            termsTouchedRef.current.add(patient.id);
             setPatients(prev => prev.map(x => x.id === patient.id ? { ...x, [field]: value } : x));
+            queueSave(patient.id);
+          };
+          // Blur is not guaranteed — the row can complete, or the TC can leave the tab,
+          // before it fires. The debounce is what actually gets the number to the cloud;
+          // blur just makes it immediate.
+          const queueSave = (id) => {
+            clearTimeout(termsTimersRef.current[id]);
+            termsTimersRef.current[id] = setTimeout(() => saveRow(id), 800);
           };
           const saveRow = async (id) => {
-            const fresh = patients.find(x => x.id === id);
+            clearTimeout(termsTimersRef.current[id]);
+            const fresh = patientsRef.current.find(x => x.id === id);
             if (!fresh) return;
+            const rangeErr = termRangeError(fresh.financedMonths, fresh.treatmentMonths);
+            if (rangeErr) { alert(rangeErr); return; }
             const ok = await dbUpsert(fresh);
             saveToastFor(ok, `✅ ${fresh.name} saved`, 1600);
           };
           const markPIF = async (patient) => {
+            termsTouchedRef.current.add(patient.id); // keep the row on screen, now green
             const updated = { ...patient, PIF: true, financedMonths: '0' };
             setPatients(prev => prev.map(x => x.id === patient.id ? updated : x));
             const ok = await dbUpsert(updated);
@@ -13468,6 +13509,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   // No status selected at all — nothing checked and not SDS (treatment-implied)
                   const hasStatus = editForm.ST||editForm.SCH||editForm.PEN||editForm.OBS||editForm.MP||editForm.NOTX||editForm.DBRETS||isSDS(editForm);
                   if (!hasStatus) { alert('Please select a status for this patient.'); return; }
+                  const editTermErr = termRangeError(editForm.financedMonths, editForm.treatmentMonths);
+                  if (editTermErr) { alert(editTermErr); return; }
 
                   const original = patients.find(p => p.id === editForm.id);
                   const wasOBS = original?.OBS;
