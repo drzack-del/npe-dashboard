@@ -920,6 +920,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [showStartsByLocation, setShowStartsByLocation] = useState(null); // { perLocation, started, label } starts-per-location breakdown
   const [showAddonBreakdown, setShowAddonBreakdown] = useState(null); // { addons, label, tcFilter, allStarts } add-on attach rate breakdown
   const [showObsList, setShowObsList] = useState(null); // { list, label, tcFilter } name-by-name Observation patients
+  const [showTermDetail, setShowTermDetail] = useState(null); // { rows, label } financed-term vs treatment-length breakdown
+  const [termsTCFilter, setTermsTCFilter] = useState('All');
+  const [termsLocFilter, setTermsLocFilter] = useState('All');
+  const [termsMonthFilter, setTermsMonthFilter] = useState('All');
+  const [termsShowDone, setTermsShowDone] = useState(false);
+  const termsFocusRef = useRef(null); // value a term input held on focus, so blur only saves real edits
   const [showProductionDetail, setShowProductionDetail] = useState(null); // { fees, label, perLocation, booksNet } contract-by-contract production
   const [goalAdjust, setGoalAdjust] = useState({ production: 0, npe: 0, starts: 0, conversion: 0, case_fee: 0 });
   const [metricsSaveMsg, setMetricsSaveMsg] = useState('');
@@ -1724,6 +1730,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // Returns the effective start date for a patient — uses startDate if set, falls back to npeDate for old SDS/DBRETS records
   const effectiveStartDate = (p) => (p.startDate && p.startDate !== '') ? p.startDate : ((isSDS(p) || p.ST || p.DBRETS) ? p.npeDate : '');
+
+  // ── Contract term (financed months vs treatment length) ───────────────
+  // null means "nobody recorded it". 0 is a real answer — paid in full, no plan —
+  // and every reader below has to keep those apart, so parsing happens in one place.
+  const termMonths = (v) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : null;
+  };
+  // Backfill and the dashboard stat both start here: a start with a payment plan.
+  // fm === 0 (paid in full) is answered, not missing, and has no term to compare.
+  const termNeedsEntry = (p) => {
+    const fm = termMonths(p.financedMonths);
+    if (fm === 0) return false;
+    return fm === null || termMonths(p.treatmentMonths) === null;
+  };
+  // Everything before this is deliberately unmeasured — see docs/contract-terms-plan.md.
+  const TERMS_BACKFILL_FROM = '2026-01-01';
 
   // Calculate how much a patient earns under a popup bonus campaign (0 = doesn't qualify)
   // Per-user bonus rates from tc_users.bonus_rates (jsonb). Rates are strictly
@@ -3141,10 +3164,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             // their own password. Everything else is practice-wide or data entry.
             ? ['dashboard', 'patients', 'settings']
             : currentUser?.role === 'tc'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'terms', 'ontime', 'today', 'settings']
             : currentUser?.role === 'manager'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
-            : ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'ontime', 'today', 'metrics', 'settings',
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'terms', 'ontime', 'today', 'settings']
+            : ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'terms', 'ontime', 'today', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
             <button
@@ -3174,6 +3197,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {view === 'medicaid' && '🏥 Medicaid Pipeline'}
               {view === 'monthly' && '📊 Monthly Reports'}
               {view === 'bonus' && '💰 Bonus Audit'}
+              {view === 'terms' && '📆 Contract Terms'}
               {view === 'ontime' && '⏱️ On-Time Audit'}
               {view === 'metrics' && 'Practice Metrics'}
               {view === 'settings' && '⚙️ Settings'}
@@ -4259,6 +4283,92 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             )}
                           </tbody>
                         </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Financed beyond treatment. Cohort is financed starts only: a paid-in-full
+                    case has no term to compare, so counting it as compliant would let a
+                    cash-heavy month score well while every financed plan ran past debond.
+                    Those starts are reported as a count beside the number, never inside it.
+                    No thresholds or colour bands — the number is left to speak for itself. */}
+                {showProduction && (() => {
+                  // kpiPeriodLabel lives inside the KPI table's own IIFE above, so this
+                  // card derives the same label from the outer-scope pieces it is built from.
+                  const kpiPeriodLabel = isRangeMode ? customRangeLabel : selMonthLabel;
+                  const termStarts = selStartPts.filter(p => isSDS(p) || p.ST);
+                  if (termStarts.length === 0) return null;
+                  const rows = termStarts.map(p => ({
+                    p, fm: termMonths(p.financedMonths), tm: termMonths(p.treatmentMonths),
+                  }));
+                  const pifCount  = rows.filter(r => r.fm === 0).length;
+                  const financed  = rows.filter(r => r.fm !== null && r.fm > 0);
+                  const complete  = financed.filter(r => r.tm !== null && r.tm > 0);
+                  const avg = a => a.length ? a.reduce((x, v) => x + v, 0) / a.length : null;
+                  const avgGap = avg(complete.map(r => r.fm - r.tm));
+                  const avgFm  = avg(complete.map(r => r.fm));
+                  const avgTm  = avg(complete.map(r => r.tm));
+                  const money  = v => parseFloat((v || '').toString().replace(/[^0-9.]/g, '')) || 0;
+                  const owedAfter = complete.reduce((sum, r) => {
+                    const gap = r.fm - r.tm;
+                    if (gap <= 0) return sum;
+                    const financedAmt = Math.max(money(r.p.contractAmount) - money(r.p.dp), 0);
+                    return sum + (financedAmt / r.fm) * gap;
+                  }, 0);
+                  const paidOff = complete.filter(r => r.fm - r.tm <= 0).length;
+                  const missing = financed.length - complete.length;
+                  const cardShell = (body) => (
+                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
+                      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:'14px',gap:'12px',flexWrap:'wrap'}}>
+                        <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>📆 Financed Beyond Treatment</div>
+                        <div style={{fontSize:'11px',color:'#9ca3af',fontWeight:'600'}}>
+                          {complete.length} financed start{complete.length !== 1 ? 's' : ''} · {kpiPeriodLabel}
+                        </div>
+                      </div>
+                      {body}
+                    </div>
+                  );
+                  // Nothing to average yet. Say what is missing and where to fix it rather
+                  // than rendering a confident-looking dash.
+                  if (complete.length === 0) return cardShell(
+                    <div style={{fontSize:'13px',color:'#6b7280',lineHeight:1.6}}>
+                      No financed start in this period has both numbers recorded yet.
+                      {financed.length > 0 && ` ${financed.length} financed start${financed.length !== 1 ? 's are' : ' is'} waiting on them.`}
+                      {pifCount > 0 && ` ${pifCount} paid in full — those have no term to compare.`}
+                      <button onClick={() => setCurrentView('terms')}
+                        style={{marginLeft:'8px',padding:'4px 10px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'12px',fontWeight:'600',color:'#374151',cursor:'pointer'}}>
+                        Fill these in →
+                      </button>
+                    </div>
+                  );
+                  return cardShell(
+                    <div>
+                      <div onClick={() => setShowTermDetail({ rows: complete, label: kpiPeriodLabel })}
+                        style={{cursor:'pointer',display:'flex',alignItems:'flex-end',gap:'20px',flexWrap:'wrap'}}>
+                        <div>
+                          <div style={{fontSize:'40px',fontWeight:'800',lineHeight:1,color:'#202020',fontVariantNumeric:'tabular-nums'}}>
+                            {avgGap > 0 ? '+' : ''}{avgGap.toFixed(1)}
+                          </div>
+                          <div style={{fontSize:'12px',color:'#6b7280',fontWeight:'600',marginTop:'5px'}}>months on average</div>
+                        </div>
+                        <div style={{fontSize:'13px',color:'#4b5563',lineHeight:1.7,paddingBottom:'2px'}}>
+                          <div><strong>{avgFm.toFixed(1)} mo</strong> financed · <strong>{avgTm.toFixed(1)} mo</strong> treatment</div>
+                          <div>{paidOff} of {complete.length} paid off by debond{owedAfter > 0 ? ` · $${Math.round(owedAfter).toLocaleString()} still owed after debond` : ''}</div>
+                        </div>
+                        <div style={{fontSize:'11px',color:'#9ca3af',fontWeight:'700',paddingBottom:'4px'}}>↗ patients</div>
+                      </div>
+                      {/* Coverage and the paid-in-full count are what stop this number
+                          from reading as complete while the backfill is still running. */}
+                      <div style={{marginTop:'14px',paddingTop:'12px',borderTop:'1px solid #f3f4f6',fontSize:'11px',color:'#9ca3af',display:'flex',gap:'14px',flexWrap:'wrap'}}>
+                        <span>Coverage: {complete.length} of {financed.length} financed {financed.length !== 1 ? 'starts have' : 'start has'} both numbers</span>
+                        {pifCount > 0 && <span>{pifCount} paid in full — not counted</span>}
+                        {missing > 0 && (
+                          <button onClick={() => setCurrentView('terms')}
+                            style={{padding:0,background:'none',border:'none',color:'#2563EB',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
+                            Fill in {missing} missing →
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -8482,6 +8592,159 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         })()}
 
         {/* ON-TIME AUDIT */}
+        {/* Contract Terms — the backfill worklist. One job: get to zero.
+            Paid-in-full starts never appear: the migration answered them from the PIF
+            flag they already carried, so there is nothing to type. A start that paid in
+            full but never got PIF ticked does appear, and ticking it here clears the row. */}
+        {currentView === 'terms' && !currentUser?.locationScope && (() => {
+          const backfillStarts = patients.filter(p => {
+            if (!(isSDS(p) || p.ST)) return false;
+            const sd = effectiveStartDate(p);
+            return sd && sd >= TERMS_BACKFILL_FROM;
+          });
+          const outstanding = backfillStarts.filter(termNeedsEntry);
+          const doneCount = backfillStarts.length - outstanding.length;
+          const pct = backfillStarts.length > 0 ? Math.round((doneCount / backfillStarts.length) * 100) : 100;
+
+          const startMonths = [...new Set(backfillStarts.map(p => (effectiveStartDate(p) || '').slice(0, 7)))].filter(Boolean).sort().reverse();
+
+          let list = termsShowDone ? backfillStarts : outstanding;
+          if (termsTCFilter  !== 'All') list = list.filter(p => p.tc === termsTCFilter);
+          if (termsLocFilter !== 'All') list = list.filter(p => p.location === termsLocFilter);
+          if (termsMonthFilter !== 'All') list = list.filter(p => (effectiveStartDate(p) || '').slice(0, 7) === termsMonthFilter);
+          // Newest first: recent cases are the ones a TC can still answer from memory
+          // instead of opening Greyfinch.
+          list = [...list].sort((a, b) => (effectiveStartDate(b) || '').localeCompare(effectiveStartDate(a) || ''));
+
+          // Local edit, cloud write on blur. Every save goes through dbUpsert so it
+          // inherits the retry and the offline outbox.
+          const setField = (patient, field, value) => {
+            setPatients(prev => prev.map(x => x.id === patient.id ? { ...x, [field]: value } : x));
+          };
+          const saveRow = async (id) => {
+            const fresh = patients.find(x => x.id === id);
+            if (!fresh) return;
+            const ok = await dbUpsert(fresh);
+            saveToastFor(ok, `✅ ${fresh.name} saved`, 1600);
+          };
+          const markPIF = async (patient) => {
+            const updated = { ...patient, PIF: true, financedMonths: '0' };
+            setPatients(prev => prev.map(x => x.id === patient.id ? updated : x));
+            const ok = await dbUpsert(updated);
+            saveToastFor(ok, `✅ ${updated.name} — paid in full`, 1600);
+          };
+
+          const selectSty = {padding:'7px 10px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'13px',backgroundColor:'white'};
+          const numSty = (v) => ({width:'70px',padding:'7px 8px',borderRadius:'6px',fontSize:'14px',textAlign:'center',
+            border:`1px solid ${termMonths(v) === null ? '#f87171' : '#d1d5db'}`,
+            backgroundColor: termMonths(v) === null ? '#fff7f7' : 'white'});
+
+          return (
+            <div style={{display:'flex',flexDirection:'column',gap:'16px'}}>
+              <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
+                <div style={{fontSize:'17px',fontWeight:'800',color:'#202020',marginBottom:'6px'}}>📆 Contract Terms</div>
+                <div style={{fontSize:'13px',color:'#6b7280',lineHeight:1.6,marginBottom:'16px'}}>
+                  How many months each plan is financed for, against how long treatment runs.
+                  Starts from {new Date(TERMS_BACKFILL_FROM + 'T12:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'})} onward.
+                  Paid-in-full starts are already answered and never appear here.
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'8px'}}>
+                  <div style={{flex:1,height:'10px',backgroundColor:'#f3f4f6',borderRadius:'99px',overflow:'hidden'}}>
+                    <div style={{width:`${pct}%`,height:'100%',backgroundColor:'#10b981',borderRadius:'99px',transition:'width 0.3s'}} />
+                  </div>
+                  <div style={{fontSize:'13px',fontWeight:'700',color:'#202020',whiteSpace:'nowrap'}}>
+                    {doneCount} of {backfillStarts.length} done
+                  </div>
+                </div>
+                {outstanding.length === 0 && backfillStarts.length > 0 && (
+                  <div style={{fontSize:'13px',color:'#166534',fontWeight:'600',marginTop:'8px'}}>✅ Nothing left to fill in.</div>
+                )}
+              </div>
+
+              <div style={{backgroundColor:'white',borderRadius:'12px',padding:'16px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6',display:'flex',gap:'10px',flexWrap:'wrap',alignItems:'center'}}>
+                <select value={termsMonthFilter} onChange={e => setTermsMonthFilter(e.target.value)} style={selectSty}>
+                  <option value="All">All months</option>
+                  {startMonths.map(m => <option key={m} value={m}>{new Date(m + '-15T12:00:00').toLocaleDateString('en-US',{month:'short',year:'numeric'})}</option>)}
+                </select>
+                <select value={termsTCFilter} onChange={e => setTermsTCFilter(e.target.value)} style={selectSty}>
+                  <option value="All">All TCs</option>
+                  {tcNames.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <select value={termsLocFilter} onChange={e => setTermsLocFilter(e.target.value)} style={selectSty}>
+                  <option value="All">All locations</option>
+                  {locations.map(l => <option key={l} value={l}>{l}</option>)}
+                </select>
+                <label style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'13px',color:'#374151',cursor:'pointer'}}>
+                  <input type="checkbox" checked={termsShowDone} onChange={e => setTermsShowDone(e.target.checked)} />
+                  Show completed
+                </label>
+                <div style={{marginLeft:'auto',fontSize:'12px',color:'#9ca3af',fontWeight:'600'}}>{list.length} shown</div>
+              </div>
+
+              <div style={{backgroundColor:'white',borderRadius:'12px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6',overflow:'hidden'}}>
+                {list.length === 0 ? (
+                  <div style={{padding:'40px 24px',textAlign:'center',color:'#9ca3af',fontSize:'14px'}}>
+                    {backfillStarts.length === 0 ? 'No starts in range yet.' : 'Nothing matches these filters.'}
+                  </div>
+                ) : (
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{width:'100%',minWidth:'820px',borderCollapse:'collapse',fontSize:'13px'}}>
+                      <thead>
+                        <tr style={{backgroundColor:'#fafbfc'}}>
+                          {['Patient','Started','TC','Contract','Down','Financed mo','Treatment mo',''].map((h, i) => (
+                            <th key={h + i} style={{padding:'11px 13px',textAlign: i > 4 ? 'center' : 'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap',borderBottom:'1px solid #edeff2'}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {list.map((p, i) => {
+                          const settled = !termNeedsEntry(p);
+                          return (
+                            <tr key={p.id} style={{borderBottom: i === list.length - 1 ? 'none' : '1px solid #f4f5f7', backgroundColor: settled ? '#fafffb' : 'white'}}>
+                              <td style={{padding:'10px 13px',fontWeight:'600',color:'#202020',whiteSpace:'nowrap'}}>
+                                {p.name}{p.PIF && <span style={{marginLeft:'6px',fontSize:'10px',fontWeight:'700',color:'#166534',backgroundColor:'#dcfce7',padding:'2px 6px',borderRadius:'4px'}}>PIF</span>}
+                              </td>
+                              <td style={{padding:'10px 13px',color:'#6b7280',whiteSpace:'nowrap'}}>{(effectiveStartDate(p) || '—').replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$2/$3/$1')}</td>
+                              <td style={{padding:'10px 13px',color:'#6b7280',whiteSpace:'nowrap'}}>{p.tc || '—'}</td>
+                              <td style={{padding:'10px 13px',color:'#4b5563',whiteSpace:'nowrap'}}>{p.contractAmount || '—'}</td>
+                              <td style={{padding:'10px 13px',color:'#4b5563',whiteSpace:'nowrap'}}>{p.dp || '—'}</td>
+                              <td style={{padding:'8px 13px',textAlign:'center'}}>
+                                <input type="number" min="0" max="120" step="1"
+                                  value={p.financedMonths ?? ''}
+                                  disabled={p.PIF}
+                                  onFocus={e => { termsFocusRef.current = e.target.value; }}
+                                  onChange={e => setField(p, 'financedMonths', e.target.value)}
+                                  onBlur={e => { if (e.target.value !== termsFocusRef.current) saveRow(p.id); }}
+                                  style={{...numSty(p.financedMonths), backgroundColor: p.PIF ? '#f3f4f6' : numSty(p.financedMonths).backgroundColor}} />
+                              </td>
+                              <td style={{padding:'8px 13px',textAlign:'center'}}>
+                                <input type="number" min="1" max="120" step="1"
+                                  value={p.treatmentMonths ?? ''}
+                                  onFocus={e => { termsFocusRef.current = e.target.value; }}
+                                  onChange={e => setField(p, 'treatmentMonths', e.target.value)}
+                                  onBlur={e => { if (e.target.value !== termsFocusRef.current) saveRow(p.id); }}
+                                  style={numSty(p.treatmentMonths)} />
+                              </td>
+                              <td style={{padding:'8px 13px',textAlign:'center',whiteSpace:'nowrap'}}>
+                                {!p.PIF && (
+                                  <button onClick={() => markPIF(p)}
+                                    style={{padding:'5px 10px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'11px',fontWeight:'700',color:'#374151',cursor:'pointer'}}>
+                                    Paid in full
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
         {currentView === 'ontime' && (() => {
           const isTC = currentUser?.role === 'tc';
           const tcName = currentUser?.name;
@@ -12386,6 +12649,67 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       })()}
 
       {/* Production detail — the contracts behind the dashboard's production figure */}
+      {/* Financed-beyond-treatment breakdown. Worst first — the point is which
+          contracts are still collecting after the braces come off. */}
+      {showTermDetail && (() => {
+        const money = v => parseFloat((v || '').toString().replace(/[^0-9.]/g, '')) || 0;
+        const rows = [...showTermDetail.rows]
+          .map(r => {
+            const gap = r.fm - r.tm;
+            const financedAmt = Math.max(money(r.p.contractAmount) - money(r.p.dp), 0);
+            const perMo = r.fm > 0 ? financedAmt / r.fm : 0;
+            return { ...r, gap, perMo, owed: gap > 0 ? perMo * gap : 0 };
+          })
+          .sort((a, b) => b.gap - a.gap);
+        const totalOwed = rows.reduce((s, r) => s + r.owed, 0);
+        return (
+          <div onClick={() => setShowTermDetail(null)}
+            style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:'20px'}}>
+            <div onClick={e => e.stopPropagation()}
+              style={{backgroundColor:'white',borderRadius:'12px',padding:'24px',maxWidth:'860px',width:'100%',maxHeight:'85vh',overflowY:'auto'}}>
+              <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:'4px',gap:'12px'}}>
+                <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:0}}>Financed Beyond Treatment — {showTermDetail.label}</h3>
+                <button onClick={() => setShowTermDetail(null)}
+                  style={{padding:'6px 12px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'12px',fontWeight:'600',color:'#374151',cursor:'pointer'}}>Close</button>
+              </div>
+              <div style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>
+                {rows.length} financed start{rows.length !== 1 ? 's' : ''} with both numbers recorded.
+                Paid-in-full starts are not listed — they have no term to compare.
+                {totalOwed > 0 && ` $${Math.round(totalOwed).toLocaleString()} still owed after debond across these contracts.`}
+              </div>
+              <div style={{overflowX:'auto'}}>
+                <table style={{width:'100%',minWidth:'660px',borderCollapse:'collapse',fontSize:'13px'}}>
+                  <thead>
+                    <tr style={{backgroundColor:'#fafbfc'}}>
+                      {['Patient','Started','Contract','Financed','Treatment','Beyond','Owed after debond'].map((h, i) => (
+                        <th key={h} style={{padding:'10px 12px',textAlign: i > 1 ? 'right' : 'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap',borderBottom:'1px solid #edeff2'}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, i) => (
+                      <tr key={r.p.id} style={{borderBottom: i === rows.length - 1 ? 'none' : '1px solid #f4f5f7'}}>
+                        <td style={{padding:'9px 12px',fontWeight:'600',color:'#202020',whiteSpace:'nowrap'}}>{r.p.name}</td>
+                        <td style={{padding:'9px 12px',color:'#6b7280',whiteSpace:'nowrap'}}>{(effectiveStartDate(r.p) || '—').replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$2/$3/$1')}</td>
+                        <td style={{padding:'9px 12px',textAlign:'right',color:'#4b5563',whiteSpace:'nowrap'}}>{r.p.contractAmount || '—'}</td>
+                        <td style={{padding:'9px 12px',textAlign:'right',color:'#4b5563'}}>{r.fm} mo</td>
+                        <td style={{padding:'9px 12px',textAlign:'right',color:'#4b5563'}}>{r.tm} mo</td>
+                        <td style={{padding:'9px 12px',textAlign:'right',fontWeight:'700',color: r.gap > 0 ? '#202020' : '#9ca3af'}}>
+                          {r.gap > 0 ? `+${r.gap}` : r.gap} mo
+                        </td>
+                        <td style={{padding:'9px 12px',textAlign:'right',color: r.owed > 0 ? '#202020' : '#9ca3af'}}>
+                          {r.owed > 0 ? `$${Math.round(r.owed).toLocaleString()}` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {showProductionDetail && (() => {
         const { fees = [], label, total = 0, booksNet = 0, goal = 0, perLocation = [] } = showProductionDetail;
         const money = v => `$${Math.round(v).toLocaleString()}`;

@@ -247,10 +247,20 @@ patient, read back in the Edit modal. `0` passes validation while blank is rejec
 (the falsy trap — `!'0'` is `false` in JS), and PIF zeroes and disables Financed
 Months in both the Add form and the Started modal.
 
-**Not started:**
+**Done — backfill tab and dashboard card (2026-09-09):**
 
-4. Contract Terms backfill tab (§4).
-5. Dashboard card + drill-down (§5).
+4. ✅ Contract Terms tab (§4) — worklist, progress bar, per-row save on blur,
+   PIF button, month/TC/location filters. Completed rows drop out of the list.
+5. ✅ Dashboard card + drill-down (§5) — average months financed beyond treatment,
+   over financed starts only, with coverage and the paid-in-full count beside it.
+
+Verified against demo data: filling a row advanced the progress bar and removed the
+row; the card read `+8.0 months on average` from terms of 24/30/36 against 22, and
+the money line computed $442 on a $5,800 contract with $500 down financed 24 months
+against 22 months of treatment ($220.83/mo × 2).
+
+**Remaining:** the migration has not been applied to Supabase. Until it is, the two
+columns do not exist and saves drop both values silently.
 
 Steps 1–3 stop the hole getting deeper and ship on their own. Optional before step
 4: the Greyfinch check in §4 — it cannot change scope, only the amount of typing.
