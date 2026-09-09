@@ -3805,6 +3805,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               ? (customRangeValid ? patients.filter(p => { const sd=effectiveStartDate(p); return sd && sd >= dashCustomFrom && sd <= dashCustomTo; }) : [])
               : patients.filter(p => { const sd=effectiveStartDate(p); if(!sd) return false; const d=new Date(sd+'T12:00:00'); return d.getMonth()===dashMonth && d.getFullYear()===dashYear; });
             const nm = calculateMetrics(selNPEPts, selStartPts);
+            // Same period, both halves the same people. calculateMetrics with one argument
+            // draws starts from the exam cohort itself, so this can never exceed 100% the
+            // way nm.overallConv can — that one divides starts-by-start-date by
+            // exams-by-exam-date, and a patient who consulted in July and started in
+            // September lands in September's numerator having never been in its denominator.
+            const nmCohort = calculateMetrics(selNPEPts);
+            // This month's exams that have not decided yet. Conversion below is a maturing
+            // number — these patients can still convert — and the card says so rather than
+            // letting a young month read as a bad one.
+            const cohortUndecided = selNPEPts.filter(p => p.OBS !== true && !isSDS(p) && !p.ST && !p.NOTX).length;
             const nmGoal = goals.monthly[dashMonth] || {};
             const nmNPEGoal     = goals.overallMode ? (nmGoal.totalNPE||0) : (nmGoal.carNPE||0)+(nmGoal.apoNPE||0);
             const nmStartedGoal = goals.overallMode ? (nmGoal.totalStarted||0) : (nmGoal.carStarted||0)+(nmGoal.apoStarted||0);
@@ -4096,7 +4106,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     ...(showProduction ? [
                     { key:'prod',  label:'Production',  color:'#0f766e', tint:'rgba(15,118,110,0.045)', track:'rgba(15,118,110,0.16)', fill:'#0d9488' },
                     ] : []),
-                    { key:'conv',  label:'Conversion',  color:'#2563EB', tint:'rgba(37,99,235,0.04)' },
+                    // Two different questions, and until now both were called Conversion.
+                    // Conversion follows this period's exams and asks how many started —
+                    // same people top and bottom. Case Acceptance is the older number:
+                    // starts landing this period over exams held this period, which mixes
+                    // cohorts and is why it could read over 100%.
+                    { key:'cohortConv', label:'Conversion',     color:'#2563EB', tint:'rgba(37,99,235,0.055)' },
+                    { key:'conv',       label:'Case Acceptance', color:'#4f46e5', tint:'rgba(79,70,229,0.04)' },
                     { key:'sds',   label:'SDS Rate',    color:'#7c3aed', tint:'rgba(124,58,237,0.04)' },
                     // Add-on attach, as three rates rather than one. Retainers and Whitening
                     // overlap (a start taking both is in each), and Both is the intersection —
@@ -4151,7 +4167,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const locStarts = (nm.addons.startsList || []).filter(p => p.location === L.loc);
                     const locRate = (fn) => locStarts.length > 0
                       ? Math.round((locStarts.filter(fn).length / locStarts.length) * 100) : null;
+                    // Cohort conversion for this office: of its own exams, how many of
+                    // those same patients started. Denominator and numerator are one list.
+                    const locCohort = selNPEPts.filter(p => p.location === L.loc && p.OBS !== true);
+                    const locCohortStarted = locCohort.filter(p => isSDS(p) || p.ST).length;
                     return { ...L, convDenom, prod: prodByLoc[L.loc] || 0,
+                      cohortConv: locCohort.length > 0 ? Math.round((locCohortStarted / locCohort.length) * 100) : null,
                       conv: convDenom > 0 ? Math.round((L.started / convDenom) * 100) : null,
                       sdsRate: L.started > 0 ? Math.round((sdsCount / L.started) * 100) : null,
                       rateR:    locRate(p => p['R+']),
@@ -4196,6 +4217,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     if (col.key === 'start') return L.started;
                     if (col.key === 'prod')  return L.prod > 0 ? fmtMoney(L.prod) : '—';
                     if (col.key === 'sds')   return L.sdsRate === null ? '—' : `${L.sdsRate}%`;
+                    if (col.key === 'cohortConv') return L.cohortConv === null ? '—' : `${L.cohortConv}%`;
                     if (col.key === 'addonR')    return L.rateR    === null ? '—' : `${L.rateR}%`;
                     if (col.key === 'addonW')    return L.rateW    === null ? '—' : `${L.rateW}%`;
                     if (col.key === 'addonBoth') return L.rateBoth === null ? '—' : `${L.rateBoth}%`;
@@ -4227,6 +4249,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 const value = col.key === 'npe' ? nm.total
                                   : col.key === 'start' ? nm.started
                                   : col.key === 'prod' ? (prodTotal > 0 ? fmtMoney(prodTotal) : '—')
+                                  : col.key === 'cohortConv' ? `${nmCohort.overallConv}%`
                                   : col.key === 'conv' ? `${nm.overallConv}%`
                                   : col.key === 'addonR' ? (nm.addons.starts > 0 ? `${nm.addons.rateR}%` : '—')
                                   : col.key === 'addonW' ? (nm.addons.starts > 0 ? `${nm.addons.rateW}%` : '—')
@@ -4307,6 +4330,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             )}
                           </tbody>
                         </table>
+                      </div>
+                      {/* Conversion follows a cohort, so it is not final until that cohort
+                          decides. Without this line a young month reads as a bad month. */}
+                      <div style={{marginTop:'12px',paddingTop:'11px',borderTop:'1px solid #f1f3f5',fontSize:'11px',color:'#9ca3af',lineHeight:1.6}}>
+                        <strong style={{color:'#6b7280'}}>Conversion</strong> follows the {practiceDenom} exam{practiceDenom !== 1 ? 's' : ''} held in this period and asks how many of those same patients started — it cannot pass 100%
+                        {cohortUndecided > 0 && `, and it will still rise: ${cohortUndecided} of them have not decided yet`}.
+                        {' '}<strong style={{color:'#6b7280'}}>Case Acceptance</strong> counts starts landing in this period against exams held in it, so a patient who consulted earlier and started now is counted without ever being in the denominator. That is the one that can read over 100%.
                       </div>
                     </div>
                   );
@@ -4534,15 +4564,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                       ))}
                     </div>
-                    {/* Cohort conversion is NOT the Conversion in the KPI row and is named
-                        so it can't be mistaken for it. Here both halves of the fraction are
-                        the same patients, so it can never exceed 100%; the KPI version
-                        divides starts-by-start-date by exams-by-exam-date, which can. */}
+                    {/* Same measure as the KPI row's Conversion — this one just runs over
+                        the pipeline's own lookback rather than the selected period. It used
+                        to be called "Cohort conversion" to keep it away from a KPI named
+                        Conversion that meant something else; that KPI is now Case
+                        Acceptance, so the two can finally share a name. */}
                     <div style={{marginTop:'12px',paddingTop:'11px',borderTop:'1px solid #f1f3f5',fontSize:'12px',color:'#6b7280'}}>
-                      <span style={{fontWeight:'700',color:'#374151'}}>Cohort conversion {pm.overallConv}%</span>
+                      <span style={{fontWeight:'700',color:'#374151'}}>Conversion {pm.overallConv}%</span>
                       {' — '}{pm.started} of these {pm.total - pm.observation} exam{pm.total - pm.observation !== 1 ? 's' : ''} started
                       {pm.observation > 0 && `, Observation excluded`}
-                      {'. '}Counts each exam by its own outcome, so it won't match the monthly Conversion above.
+                      {'. '}Same measure as Conversion above, over this card's wider window rather than the selected period.
                     </div>
                   </div>
                 )}
@@ -4856,7 +4887,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             <div>
               <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'10px',display:'flex',alignItems:'center',gap:'4px'}}>
                 {dashTimeframe === 'month' ? `📅 ${monthLabel}${effectiveTCFilter !== 'All' ? ` · ${effectiveTCFilter}` : ''} — Performance vs. Goal` : `📊 All-Time Performance${effectiveTCFilter !== 'All' ? ` · ${effectiveTCFilter}` : ''}`}
-                <HelpTip id="dash-metrics" tip={"NPE = New Patient Exam (anyone who comes in for a consultation).\n\nStarted = Patients who started treatment this month (SDS + ST).\n\nConversion Rate = Started ÷ (NPEs − Observation). OBS patients attended but are not yet treatment candidates, so they are excluded from the denominator. Industry average is 55-65%. Aim for 60%+.\n\nSame-Day Start (SDS) = Patient bonded the same day as their exam. These earn the highest TC bonus.\n\nOn-Time Rate = % of your scheduled follow-up calls made on or before the due date."} />
+                <HelpTip id="dash-metrics" tip={"NPE = New Patient Exam (anyone who comes in for a consultation).\n\nStarted = Patients who started treatment this month (SDS + ST).\n\nConversion = of the exams held this period, how many of those same patients started. Both halves are the same people, so it can never pass 100% — but it keeps rising while they are still deciding.\n\nCase Acceptance = starts landing this period ÷ (NPEs − Observation). The two halves are different people: someone who consulted in July and started in September counts here without ever being in the denominator, which is why this one can read over 100%. Industry average is 55-65%.\n\nSame-Day Start (SDS) = Patient bonded the same day as their exam. These earn the highest TC bonus.\n\nOn-Time Rate = % of your scheduled follow-up calls made on or before the due date."} />
               </div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(160px, 1fr))',gap:'14px'}}>
                 <MetricCard label={currentUser?.role === 'tc' ? 'My NPEs' : 'Total NPE'} value={dash.total}
@@ -4867,7 +4898,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   goalLabel={dashTimeframe === 'month' && totalStartedGoal > 0 && dash.started < totalStartedGoal ? `· ${totalStartedGoal - dash.started} to go` : null}
                   sub={currentUser?.role === 'tc' && trends ? trendLabel(trends.starts) : null}
                   onClick={() => setShowStartsByLocation({ perLocation: dash.perLocation || [], started: dash.started, label: dashTimeframe === 'month' ? monthLabel : 'All Time', tcFilter: effectiveTCFilter, list: periodStartsMine, allList: periodStartsAll })} />
-                <MetricCard label="Conversion Rate" value={`${dash.overallConv}%`} color="#2563EB"
+                <MetricCard label="Case Acceptance" value={`${dash.overallConv}%`} color="#2563EB"
                   goal={dashTimeframe === 'month' && convGoal > 0 ? `${convGoal}%` : null}
                   goalLabel={trends && trends.conv !== null
                     ? trendLabel(trends.conv)
@@ -5262,7 +5293,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       {[
                         {label:'NPEs', val:locData.total, goal: locGoals.npe>0 ? locGoals.npe : null, color:'#202020'},
                         {label:'Started', val:locData.started, goal: locGoals.started>0 ? locGoals.started : null, color:'#10b981'},
-                        {label:'Conversion', val:`${locData.conv}%`, color:'#2563EB'},
+                        {label:'Case Acceptance', val:`${locData.conv}%`, color:'#2563EB'},
                       ].map(row => (
                         <div key={row.label} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:'1px solid #F5F5F5',fontSize:'14px'}}>
                           <span style={{color:'#6b7280'}}>{row.label}</span>
@@ -7550,7 +7581,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(140px, 1fr))',gap:'20px',marginTop:'12px'}}>
                     <div><div style={{fontSize:'12px',color:'#6b7280',marginBottom:'4px'}}>NPE</div><div style={{fontSize:'32px',fontWeight:'bold',color:'#202020'}}>{m.total}</div></div>
                     <div><div style={{fontSize:'12px',color:'#6b7280',marginBottom:'4px'}}>Started</div><div style={{fontSize:'32px',fontWeight:'bold',color:'#10b981'}}>{m.started}</div></div>
-                    <div><div style={{fontSize:'12px',color:'#6b7280',marginBottom:'4px'}}>Conversion</div><div style={{fontSize:'32px',fontWeight:'bold',color:'#2563EB'}}>{m.overallConv}%</div></div>
+                    <div><div style={{fontSize:'12px',color:'#6b7280',marginBottom:'4px'}}>Case Acceptance</div><div style={{fontSize:'32px',fontWeight:'bold',color:'#2563EB'}}>{m.overallConv}%</div></div>
                     <div><div style={{fontSize:'12px',color:'#6b7280',marginBottom:'4px'}}>Avg Down Payment</div><div style={{fontSize:'32px',fontWeight:'bold',color:'#8b5cf6'}}>{m.avgDP > 0 ? `$${m.avgDP}` : '-'}</div></div>
                     <div><div style={{fontSize:'12px',color:'#6b7280',marginBottom:'4px'}}>SDS Rate</div><div style={{fontSize:'32px',fontWeight:'bold',color:'#06b6d4'}}>{m.started > 0 ? `${m.sdsRate}%` : '-'}</div></div>
                     <div><div style={{fontSize:'12px',color:'#6b7280',marginBottom:'4px'}}>TC Bonus</div><div style={{fontSize:'32px',fontWeight:'bold',color:'#10b981'}}>${m.totalBonus}</div></div>
@@ -7590,7 +7621,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           );
                         })}
                         <div style={{display:'flex',justifyContent:'space-between',paddingTop:'8px',borderTop:'1px solid #e5e7eb'}}>
-                          <span style={{fontSize:'12px',color:'#6b7280'}}>Conversion</span>
+                          <span style={{fontSize:'12px',color:'#6b7280'}}>Case Acceptance</span>
                           <strong style={{fontSize:'13px',color:'#2563EB'}}>{office.rows[0].actual > 0 && office.rows[1].actual > 0 ? `${Math.round((office.rows[1].actual/office.rows[0].actual)*100)}%` : office.rows[0].actual > 0 ? '0%' : '-'}</strong>
                         </div>
                       </div>
@@ -7604,7 +7635,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const diffColor = diff >= 0 ? '#10b981' : '#ef4444';
                     return (
                       <div style={{marginTop:'16px',padding:'16px',backgroundColor:'#fff7ed',borderRadius:'8px',border:'1px solid #fed7aa',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                        <span style={{fontWeight:'600',color:'#2563EB',fontSize:'15px'}}>🎯 Overall Conversion Goal</span>
+                        <span style={{fontWeight:'600',color:'#2563EB',fontSize:'15px'}}>🎯 Overall Case Acceptance Goal</span>
                         <div style={{display:'flex',alignItems:'baseline',gap:'16px'}}>
                           <div style={{textAlign:'center'}}>
                             <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'2px'}}>Actual</div>
@@ -9707,7 +9738,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           {showDetailedMetricsCols && <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Obs</th>}
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Show Rate<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target 70%+</div></th>
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Starts</th>
-                          <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Conversion<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target 50%+</div></th>
+                          <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Case Acceptance<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target 50%+</div></th>
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Avg Case Fee<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target $5,800</div></th>
                           <th style={{padding:'11px 13px'}}></th>
                         </tr>
@@ -10354,7 +10385,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <div style={{backgroundColor:'#f9fafb',borderRadius:'8px',padding:'14px',marginBottom:'16px',display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'12px'}}>
                         {[
                           {label:'Show Up Rate', val:showUpCalc?`${showUpCalc}%`:'—', color:showUpCalc>=70?'#10b981':showUpCalc>=50?'#f59e0b':showUpCalc?'#ef4444':'#9ca3af'},
-                          {label:'Conversion',   val:convCalc?`${convCalc}%`:'—',    color:convCalc>=50?'#10b981':convCalc>=35?'#f59e0b':convCalc?'#ef4444':'#9ca3af'},
+                          {label:'Case Acceptance', val:convCalc?`${convCalc}%`:'—',  color:convCalc>=50?'#10b981':convCalc>=35?'#f59e0b':convCalc?'#ef4444':'#9ca3af'},
                           {label:'Avg Case Fee', val:feeCalc?`$${feeCalc.toLocaleString()}`:'—', color:feeCalc>=5800?'#10b981':feeCalc?'#f59e0b':'#9ca3af'},
                         ].map(c => (
                           <div key={c.label} style={{textAlign:'center'}}>
@@ -11954,7 +11985,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   </div>
                 </div>
                 <div style={{fontSize:'12px',color:'#9ca3af',marginBottom:'20px'}}>Based on {total} practices using CadenceIQ across the network</div>
-                <BenchRow label="Overall Conversion Rate" yours={convRate||54} avg={networkAvgConv} top={64} unit="%" />
+                <BenchRow label="Overall Case Acceptance" yours={convRate||54} avg={networkAvgConv} top={64} unit="%" />
                 <BenchRow label="Same-Day Start Rate" yours={sdsRate||69} avg={networkAvgSDS} top={78} unit="%" />
                 <BenchRow label="On-Time Follow-Up Rate" yours={onTimeRate} avg={networkAvgOnTime} top={88} unit="%" />
                 <BenchRow label="Average Down Payment" yours={avgDP||475} avg={networkAvgDP} top={510} unit="$" />
