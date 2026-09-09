@@ -857,7 +857,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const flushingRef = useRef(false); // guards against overlapping outbox flushes
 
   const [newPatientForm, setNewPatientForm] = useState({
-    name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: '', dp: '', contractAmount: '', tc: '', status: '',
+    name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: '', dp: '', contractAmount: '', financedMonths: '', treatmentMonths: '', tc: '', status: '',
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
     'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', addonSkipReason: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false, isMedicaid: ''
   });
@@ -883,7 +883,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   const [startedForm, setStartedForm] = useState({
     startDate: new Date().toISOString().split('T')[0],
-    dp: '', BR: false, INV: false, PH1: false, PH2: false, LTD: false,
+    dp: '', financedMonths: '', treatmentMonths: '',
+    BR: false, INV: false, PH1: false, PH2: false, LTD: false,
     'R+': false, 'W+': false, PIF: false, recap: '', addonSkipReason: ''
   });
 
@@ -1038,6 +1039,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             id: r.id, name: r.name, phone: r.phone || '', age: r.age || null,
             npeDate: r.npe_date, location: r.location,
             dp: r.dp, contractAmount: r.contract_amount || '', tc: r.tc || '',
+            // '' means "not recorded". 0 is a real answer (paid in full) and has to
+            // survive the round trip as 0, not collapse into '' — hence ?? not ||.
+            financedMonths: r.financed_months ?? '', treatmentMonths: r.treatment_months ?? '',
             BR: r.br, INV: r.inv, PH1: r.ph1, PH2: r.ph2, LTD: r.ltd,
             'R+': r.r_plus, 'W+': r.w_plus, PIF: r.pif,
             ST: r.st, SCH: r.sch, PEN: r.pen, OBS: r.obs, MP: r.mp, NOTX: r.notx, DBRETS: r.dbrets || false,
@@ -1200,12 +1204,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     });
   };
 
+  // Contract-term fields are plain integers typed into text inputs. '' means "not
+  // recorded" and must reach the database as NULL; 0 is a real answer (paid in full)
+  // and must never be confused with it — which rules out every falsy-based shortcut.
+  const monthsToInt = (v) => {
+    const str = (v ?? '').toString().trim();
+    if (str === '') return null;
+    const n = parseInt(str, 10);
+    return Number.isFinite(n) ? n : null;
+  };
+
   // The exact row shape written to Supabase. Extracted so the offline outbox can store
   // and replay a byte-identical payload later.
   const buildPatientRow = (patient) => ({
     id: patient.id, name: patient.name, phone: patient.phone || '', age: patient.age || null,
     npe_date: patient.npeDate, location: patient.location,
     dp: patient.dp, contract_amount: patient.contractAmount || '', tc: patient.tc || '',
+    financed_months: monthsToInt(patient.financedMonths), treatment_months: monthsToInt(patient.treatmentMonths),
     br: patient.BR, inv: patient.INV, ph1: patient.PH1, ph2: patient.PH2, ltd: patient.LTD,
     r_plus: patient['R+'], w_plus: patient['W+'], pif: patient.PIF,
     st: patient.ST, sch: patient.SCH, pen: patient.PEN, obs: patient.OBS, mp: patient.MP, notx: patient.NOTX, dbrets: patient.DBRETS || false,
@@ -2366,6 +2381,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       startDate: patient.SCH ? (patient.bondDate || new Date().toISOString().split('T')[0]) : patient.npeDate,
       dp: patient.dp || '',
       contractAmount: patient.contractAmount || '',
+      financedMonths: patient.financedMonths ?? '', treatmentMonths: patient.treatmentMonths ?? '',
       BR: patient.BR || false, INV: patient.INV || false,
       PH1: patient.PH1 || false, PH2: patient.PH2 || false, LTD: patient.LTD || false,
       'R+': patient['R+'] || false, 'W+': patient['W+'] || false, PIF: patient.PIF || false,
@@ -2390,6 +2406,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // A start must capture the down payment and contract amount
     if (!(startedForm.dp || '').trim()) { alert('Please enter the Down Payment before marking this patient as started.'); return; }
     if (!(startedForm.contractAmount || '').trim()) { alert('Please enter the Contract Amount before marking this patient as started.'); return; }
+    // '0' is a real answer here (paid in full), so test for empty rather than falsy.
+    if ((startedForm.financedMonths ?? '').toString().trim() === '') { alert('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
+    if ((startedForm.treatmentMonths ?? '').toString().trim() === '') { alert('Please enter the estimated treatment length in months.'); return; }
     // Add-ons accountability — same rule the Add Patient form enforces. Without this the
     // pending/scheduled conversion path could book a start with neither add-on and no
     // reason, leaving an unexplained hole in the Add-On Attach Rate drill.
@@ -2433,6 +2452,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       startDate: startedForm.startDate,
       dp: startedForm.dp || patient.dp,
       contractAmount: startedForm.contractAmount || patient.contractAmount || '',
+      financedMonths: startedForm.financedMonths, treatmentMonths: startedForm.treatmentMonths,
       BR: startedForm.BR, INV: startedForm.INV, PH1: startedForm.PH1,
       PH2: startedForm.PH2, LTD: startedForm.LTD,
       'R+': startedForm['R+'], 'W+': startedForm['W+'], PIF: startedForm.PIF,
@@ -2782,6 +2802,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const needsPayment = !['OBS','DBRETS','NOTX'].includes(newPatientForm.status);
     if (needsPayment && !newPatientForm.dp.trim()) { setAddPatientError('Please enter the Down Payment amount.'); return; }
     if (needsPayment && !newPatientForm.contractAmount.trim()) { setAddPatientError('Please enter the Contract Amount.'); return; }
+    // Contract term. '0' is a legitimate answer (paid in full) so these test for an
+    // empty string, not for falsiness — !'0' is false in JS and would let 0 through
+    // as "missing", or block it, depending on which shortcut you reach for.
+    if (needsPayment && newPatientForm.financedMonths.trim() === '') { setAddPatientError('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
+    if (needsPayment && newPatientForm.treatmentMonths.trim() === '') { setAddPatientError('Please enter the estimated treatment length in months.'); return; }
     // Add-ons accountability: if this is a start/DBRETS with neither whitening nor retainers,
     // the TC must say why before saving. First click surfaces the prompt; save proceeds once
     // a reason is entered. The reason rides along to the End-of-Day report (see combinedRecap).
@@ -2857,6 +2882,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       location: newPatientForm.location,
       dp: newPatientForm.dp || '$0',
       contractAmount: newPatientForm.contractAmount || '',
+      financedMonths: newPatientForm.financedMonths, treatmentMonths: newPatientForm.treatmentMonths,
       tc: newPatientForm.tc || '',
       BR: newPatientForm.BR, INV: newPatientForm.INV, PH1: newPatientForm.PH1,
       PH2: newPatientForm.PH2, LTD: newPatientForm.LTD,
@@ -2898,6 +2924,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     saveToastFor(saveOk, '✅ ' + patient.name + ' saved!' + nextInfo);
     setNewPatientForm({
       name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: newPatientForm.location || locations[0] || '', dp: '', contractAmount: '',
+      financedMonths: '', treatmentMonths: '',
       tc: newPatientForm.tc || tcNames[0] || '', status: '',
       BR: false, INV: false, PH1: false, PH2: false, LTD: false,
       'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', addonSkipReason: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false, isMedicaid: ''
@@ -6643,7 +6670,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         if (newPatientForm.isMedicaid === o.v) return; // don't wipe progress on re-click
                         // Switching the answer changes which statuses are valid — reset everything below.
                         setNewPatientForm({...newPatientForm, isMedicaid: o.v,
-                          status:'', obstacle:'', dp:'', contractAmount:'', bondDate:'',
+                          status:'', obstacle:'', dp:'', contractAmount:'', financedMonths:'', treatmentMonths:'', bondDate:'',
                           BR:false, INV:false, PH1:false, PH2:false, LTD:false,
                           'R+':false, 'W+':false, PIF:false,
                           medicaidPipeline:false, nextTouchOverride:'', obsApptDate:'', obsAnticipatedDate:'', recap:''});
@@ -6701,25 +6728,83 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               </div>
 
-              {/* Down Payment + Contract Amount — appear once a status is chosen; required for every status except OBS / DB-RETS / No TX */}
+              {/* Down Payment + Contract Amount + contract term — appear once a status is chosen; required for every status except OBS / DB-RETS / No TX */}
               {newPatientForm.status && !['OBS','DBRETS','NOTX'].includes(newPatientForm.status) && (
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'16px'}}>
-                  <div>
-                    <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Down Payment *</label>
-                    <input type="text"
-                      placeholder={newPatientForm.status === 'MP' ? '$0' : '$500'}
-                      value={newPatientForm.dp}
-                      onChange={e => setNewPatientForm({...newPatientForm, dp: e.target.value})}
-                      style={{width:'100%',padding:'8px',border:`1px solid ${!newPatientForm.dp.trim() ? '#f87171' : '#d1d5db'}`,borderRadius:'4px'}} />
+                <div style={{marginBottom:'16px'}}>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'12px'}}>
+                    <div>
+                      <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Down Payment *</label>
+                      <input type="text"
+                        placeholder={newPatientForm.status === 'MP' ? '$0' : '$500'}
+                        value={newPatientForm.dp}
+                        onChange={e => setNewPatientForm({...newPatientForm, dp: e.target.value})}
+                        style={{width:'100%',padding:'8px',border:`1px solid ${!newPatientForm.dp.trim() ? '#f87171' : '#d1d5db'}`,borderRadius:'4px'}} />
+                    </div>
+                    <div>
+                      <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Contract Amount *</label>
+                      <input type="text"
+                        placeholder="$5,800"
+                        value={newPatientForm.contractAmount}
+                        onChange={e => setNewPatientForm({...newPatientForm, contractAmount: e.target.value})}
+                        style={{width:'100%',padding:'8px',border:`1px solid ${!newPatientForm.contractAmount.trim() ? '#f87171' : '#d1d5db'}`,borderRadius:'4px'}} />
+                    </div>
                   </div>
-                  <div>
-                    <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Contract Amount *</label>
-                    <input type="text"
-                      placeholder="$5,800"
-                      value={newPatientForm.contractAmount}
-                      onChange={e => setNewPatientForm({...newPatientForm, contractAmount: e.target.value})}
-                      style={{width:'100%',padding:'8px',border:`1px solid ${!newPatientForm.contractAmount.trim() ? '#f87171' : '#d1d5db'}`,borderRadius:'4px'}} />
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px'}}>
+                    <div>
+                      <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Financed Months *</label>
+                      <input type="number" min="0" max="120" step="1"
+                        placeholder="24"
+                        disabled={newPatientForm.PIF}
+                        value={newPatientForm.financedMonths}
+                        onChange={e => setNewPatientForm({...newPatientForm, financedMonths: e.target.value})}
+                        style={{width:'100%',padding:'8px',borderRadius:'4px',
+                          border:`1px solid ${newPatientForm.financedMonths.trim() === '' ? '#f87171' : '#d1d5db'}`,
+                          backgroundColor: newPatientForm.PIF ? '#f3f4f6' : 'white',
+                          color: newPatientForm.PIF ? '#6b7280' : 'inherit'}} />
+                      <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>
+                        {newPatientForm.PIF ? 'Paid in full — no payment plan' : 'How many monthly payments. Tick PIF below if paid in full.'}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Months *</label>
+                      <input type="number" min="1" max="120" step="1"
+                        placeholder="22"
+                        value={newPatientForm.treatmentMonths}
+                        onChange={e => setNewPatientForm({...newPatientForm, treatmentMonths: e.target.value})}
+                        style={{width:'100%',padding:'8px',borderRadius:'4px',
+                          border:`1px solid ${newPatientForm.treatmentMonths.trim() === '' ? '#f87171' : '#d1d5db'}`}} />
+                      <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>Estimated treatment length from the treatment plan.</div>
+                    </div>
                   </div>
+                  {/* Live read-back of what was just typed. The point of the field is the
+                      gap between the two numbers, so show it while she can still fix it. */}
+                  {(() => {
+                    const money = v => parseFloat((v || '').toString().replace(/[^0-9.]/g, '')) || 0;
+                    const fm = parseInt(newPatientForm.financedMonths, 10);
+                    const tm = parseInt(newPatientForm.treatmentMonths, 10);
+                    if (!Number.isFinite(fm)) return null;
+                    if (fm === 0) return (
+                      <div style={{marginTop:'10px',padding:'8px 12px',backgroundColor:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:'6px',fontSize:'12px',color:'#166534'}}>
+                        No payment plan — nothing owed after debond.
+                      </div>
+                    );
+                    const owed  = Math.max(money(newPatientForm.contractAmount) - money(newPatientForm.dp), 0);
+                    const perMo = Math.round(owed / fm);
+                    const over  = Number.isFinite(tm) ? fm - tm : null;
+                    const bad   = over !== null && over > 0;
+                    return (
+                      <div style={{marginTop:'10px',padding:'8px 12px',borderRadius:'6px',fontSize:'12px',
+                        backgroundColor: bad ? '#fffbeb' : '#f0fdf4',
+                        border:`1px solid ${bad ? '#fde68a' : '#bbf7d0'}`,
+                        color: bad ? '#92400e' : '#166534'}}>
+                        ${owed.toLocaleString()} over {fm} month{fm !== 1 ? 's' : ''} = <strong>${perMo.toLocaleString()}/mo</strong>
+                        {over === null ? ' · enter treatment length to see the comparison'
+                          : over > 0 ? ` · treatment is ${tm} mo → ${over} month${over !== 1 ? 's' : ''} of payments after debond (~$${(perMo * over).toLocaleString()})`
+                          : over === 0 ? ` · treatment is ${tm} mo → paid off right at debond`
+                          : ` · treatment is ${tm} mo → paid off ${Math.abs(over)} month${Math.abs(over) !== 1 ? 's' : ''} before debond`}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -6968,7 +7053,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <label key={key} style={{display:'flex',alignItems:'center',cursor:'pointer',padding:'8px 12px',border:`2px solid ${newPatientForm[key] ? '#86efac' : '#d1d5db'}`,borderRadius:'6px',backgroundColor: newPatientForm[key] ? '#dcfce7' : 'white'}}>
                         <input type="checkbox"
                           checked={newPatientForm[key]}
-                          onChange={e => setNewPatientForm({...newPatientForm, [key]: e.target.checked})}
+                          onChange={e => {
+                            const checked = e.target.checked;
+                            const next = {...newPatientForm, [key]: checked};
+                            // PIF means there is no payment plan, so the two can never be
+                            // allowed to disagree. Ticking it overwrites whatever is in the
+                            // box with 0; unticking clears only that 0 back to blank, so
+                            // the field returns to "not recorded" and stays required.
+                            if (key === 'PIF') {
+                              if (checked) next.financedMonths = '0';
+                              else if (newPatientForm.financedMonths === '0') next.financedMonths = '';
+                            }
+                            setNewPatientForm(next);
+                          }}
                           style={{marginRight:'6px'}} />
                         <span style={{fontWeight:'500',fontSize:'13px'}}>{key} ({label})</span>
                       </label>
@@ -12051,8 +12148,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         );
       })()}
 
-
-
       {showStartsByLocation && (() => {
         const { perLocation, label, tcFilter, list: scopedList, allList } = showStartsByLocation;
         // A TC's dashboard is locked to their own numbers, so the list opens on their
@@ -12487,6 +12582,29 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   onChange={e => setStartedForm({...startedForm, contractAmount: e.target.value})}
                   style={{width:'100%',padding:'8px',border:`1px solid ${!(startedForm.contractAmount||'').trim() ? '#f87171' : '#d1d5db'}`,borderRadius:'4px'}} />
               </div>
+              <div>
+                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Financed Months *</label>
+                <input type="number" min="0" max="120" step="1" placeholder="24"
+                  disabled={startedForm.PIF}
+                  value={startedForm.financedMonths ?? ''}
+                  onChange={e => setStartedForm({...startedForm, financedMonths: e.target.value})}
+                  style={{width:'100%',padding:'8px',borderRadius:'4px',
+                    border:`1px solid ${(startedForm.financedMonths ?? '').toString().trim() === '' ? '#f87171' : '#d1d5db'}`,
+                    backgroundColor: startedForm.PIF ? '#f3f4f6' : 'white',
+                    color: startedForm.PIF ? '#6b7280' : 'inherit'}} />
+                <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>
+                  {startedForm.PIF ? 'Paid in full — no payment plan' : '0 if paid in full'}
+                </div>
+              </div>
+              <div>
+                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Months *</label>
+                <input type="number" min="1" max="120" step="1" placeholder="22"
+                  value={startedForm.treatmentMonths ?? ''}
+                  onChange={e => setStartedForm({...startedForm, treatmentMonths: e.target.value})}
+                  style={{width:'100%',padding:'8px',borderRadius:'4px',
+                    border:`1px solid ${(startedForm.treatmentMonths ?? '').toString().trim() === '' ? '#f87171' : '#d1d5db'}`}} />
+                <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>Estimated treatment length</div>
+              </div>
             </div>
 
             <div style={{marginBottom:'16px'}}>
@@ -12517,14 +12635,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     borderRadius:'6px'}}>
                     <input type="checkbox"
                       checked={startedForm[key]}
-                      onChange={e => setStartedForm({...startedForm, [key]: e.target.checked})}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        const next = {...startedForm, [key]: checked};
+                        // Same rule as the Add Patient form: PIF means no payment plan.
+                        // Tick overwrites with 0; untick clears that 0 back to blank.
+                        if (key === 'PIF') {
+                          if (checked) next.financedMonths = '0';
+                          else if ((startedForm.financedMonths ?? '').toString() === '0') next.financedMonths = '';
+                        }
+                        setStartedForm(next);
+                      }}
                       style={{marginRight:'6px'}} />
                     {label}
                   </label>
                 ))}
               </div>
             </div>
-
 
             {/* Add-ons accountability — mirrors the Add Patient form so a pending/scheduled
                 conversion can't become a start with nothing attached and nothing said.
@@ -12542,7 +12669,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{fontSize:'12px',color:'#92400e',marginTop:'4px'}}>This note shows in the Add-On Attach Rate breakdown and on the End-of-Day report.</div>
               </div>
             )}
-
 
             {renderRecapField(
               startedForm.recap,
@@ -12756,6 +12882,27 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   value={editForm.contractAmount || ''}
                   onChange={(e) => setEditForm({...editForm, contractAmount: e.target.value})}
                   placeholder="$5000"
+                  style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
+                />
+              </div>
+              <div>
+                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Financed Months</label>
+                <input
+                  type="number" min="0" max="120" step="1"
+                  value={editForm.financedMonths ?? ''}
+                  onChange={(e) => setEditForm({...editForm, financedMonths: e.target.value})}
+                  placeholder="24"
+                  style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
+                />
+                <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>0 = paid in full · blank = not recorded</div>
+              </div>
+              <div>
+                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Months</label>
+                <input
+                  type="number" min="1" max="120" step="1"
+                  value={editForm.treatmentMonths ?? ''}
+                  onChange={(e) => setEditForm({...editForm, treatmentMonths: e.target.value})}
+                  placeholder="22"
                   style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
                 />
               </div>
