@@ -857,7 +857,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const flushingRef = useRef(false); // guards against overlapping outbox flushes
 
   const [newPatientForm, setNewPatientForm] = useState({
-    name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: '', dp: '', contractAmount: '', financedMonths: '', treatmentMonths: '', tc: '', status: '',
+    name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: '', dp: '', contractAmount: '', financedMonths: '', treatmentMonths: '', thirdPartyFinancing: false, tc: '', status: '',
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
     'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', addonSkipReason: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false, isMedicaid: ''
   });
@@ -887,7 +887,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   const [startedForm, setStartedForm] = useState({
     startDate: new Date().toISOString().split('T')[0],
-    dp: '', financedMonths: '', treatmentMonths: '',
+    dp: '', financedMonths: '', treatmentMonths: '', thirdPartyFinancing: false,
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
     'R+': false, 'W+': false, PIF: false, recap: '', addonSkipReason: ''
   });
@@ -1057,6 +1057,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             // '' means "not recorded". 0 is a real answer (paid in full) and has to
             // survive the round trip as 0, not collapse into '' — hence ?? not ||.
             financedMonths: r.financed_months ?? '', treatmentMonths: r.treatment_months ?? '',
+            thirdPartyFinancing: r.third_party_financing || false,
             BR: r.br, INV: r.inv, PH1: r.ph1, PH2: r.ph2, LTD: r.ltd,
             'R+': r.r_plus, 'W+': r.w_plus, PIF: r.pif,
             ST: r.st, SCH: r.sch, PEN: r.pen, OBS: r.obs, MP: r.mp, NOTX: r.notx, DBRETS: r.dbrets || false,
@@ -1236,6 +1237,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     npe_date: patient.npeDate, location: patient.location,
     dp: patient.dp, contract_amount: patient.contractAmount || '', tc: patient.tc || '',
     financed_months: monthsToInt(patient.financedMonths), treatment_months: monthsToInt(patient.treatmentMonths),
+    third_party_financing: patient.thirdPartyFinancing || false,
     br: patient.BR, inv: patient.INV, ph1: patient.PH1, ph2: patient.PH2, ltd: patient.LTD,
     r_plus: patient['R+'], w_plus: patient['W+'], pif: patient.PIF,
     st: patient.ST, sch: patient.SCH, pen: patient.PEN, obs: patient.OBS, mp: patient.MP, notx: patient.NOTX, dbrets: patient.DBRETS || false,
@@ -1783,11 +1785,21 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // Backfill and the dashboard stat both start here: a start with a payment plan.
   // fm === 0 (paid in full) is answered, not missing, and has no term to compare.
+  // Third-party financing is the same story from the other side: the lender holds
+  // the plan on its own terms, so there is no in-house term to record or compare.
   const termNeedsEntry = (p) => {
+    if (p.thirdPartyFinancing) return false;
     const fm = termMonths(p.financedMonths);
     if (fm === 0) return false;
     return fm === null || termMonths(p.treatmentMonths) === null;
   };
+  // One rule for every form's Third-party financing checkbox. Ticking it empties the
+  // Financed Months box — a number there would describe a plan the practice does not
+  // hold — unless PIF is also on, in which case the 0 that PIF wrote stays put.
+  const withThirdParty = (form, checked) => ({
+    ...form, thirdPartyFinancing: checked,
+    financedMonths: checked ? (form.PIF ? '0' : '') : form.financedMonths,
+  });
   // Mirrors the CHECK constraints in 20260909_contract_terms.sql. Without this a typo
   // like a treatment length of 0 passes the "is it filled in" test, then fails at the
   // database — surfacing as a save failure instead of a message about the number.
@@ -2491,6 +2503,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       dp: patient.dp || '',
       contractAmount: patient.contractAmount || '',
       financedMonths: patient.financedMonths ?? '', treatmentMonths: patient.treatmentMonths ?? '',
+      thirdPartyFinancing: patient.thirdPartyFinancing || false,
       BR: patient.BR || false, INV: patient.INV || false,
       PH1: patient.PH1 || false, PH2: patient.PH2 || false, LTD: patient.LTD || false,
       'R+': patient['R+'] || false, 'W+': patient['W+'] || false, PIF: patient.PIF || false,
@@ -2516,7 +2529,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (!(startedForm.dp || '').trim()) { alert('Please enter the Down Payment before marking this patient as started.'); return; }
     if (!(startedForm.contractAmount || '').trim()) { alert('Please enter the Contract Amount before marking this patient as started.'); return; }
     // '0' is a real answer here (paid in full), so test for empty rather than falsy.
-    if ((startedForm.financedMonths ?? '').toString().trim() === '') { alert('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
+    // Third-party financing has no in-house term to record, so the months box is skipped.
+    if (!startedForm.thirdPartyFinancing && (startedForm.financedMonths ?? '').toString().trim() === '') { alert('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
     if ((startedForm.treatmentMonths ?? '').toString().trim() === '') { alert('Please select the treatment length bracket.'); return; }
     const startTermErr = termRangeError(startedForm.financedMonths, startedForm.treatmentMonths);
     if (startTermErr) { alert(startTermErr); return; }
@@ -2564,6 +2578,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       dp: startedForm.dp || patient.dp,
       contractAmount: startedForm.contractAmount || patient.contractAmount || '',
       financedMonths: startedForm.financedMonths, treatmentMonths: startedForm.treatmentMonths,
+      thirdPartyFinancing: startedForm.thirdPartyFinancing || false,
       BR: startedForm.BR, INV: startedForm.INV, PH1: startedForm.PH1,
       PH2: startedForm.PH2, LTD: startedForm.LTD,
       'R+': startedForm['R+'], 'W+': startedForm['W+'], PIF: startedForm.PIF,
@@ -2916,7 +2931,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // Contract term. '0' is a legitimate answer (paid in full) so these test for an
     // empty string, not for falsiness — !'0' is false in JS and would let 0 through
     // as "missing", or block it, depending on which shortcut you reach for.
-    if (needsPayment && newPatientForm.financedMonths.trim() === '') { setAddPatientError('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
+    // Third-party financing has no in-house term to record, so the months box is skipped.
+    if (needsPayment && !newPatientForm.thirdPartyFinancing && newPatientForm.financedMonths.trim() === '') { setAddPatientError('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
     if (needsPayment && newPatientForm.treatmentMonths.trim() === '') { setAddPatientError('Please select the treatment length bracket.'); return; }
     if (needsPayment) {
       const rangeErr = termRangeError(newPatientForm.financedMonths, newPatientForm.treatmentMonths);
@@ -2998,6 +3014,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       dp: newPatientForm.dp || '$0',
       contractAmount: newPatientForm.contractAmount || '',
       financedMonths: newPatientForm.financedMonths, treatmentMonths: newPatientForm.treatmentMonths,
+      thirdPartyFinancing: newPatientForm.thirdPartyFinancing || false,
       tc: newPatientForm.tc || '',
       BR: newPatientForm.BR, INV: newPatientForm.INV, PH1: newPatientForm.PH1,
       PH2: newPatientForm.PH2, LTD: newPatientForm.LTD,
@@ -3039,7 +3056,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     saveToastFor(saveOk, '✅ ' + patient.name + ' saved!' + nextInfo);
     setNewPatientForm({
       name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: newPatientForm.location || locations[0] || '', dp: '', contractAmount: '',
-      financedMonths: '', treatmentMonths: '',
+      financedMonths: '', treatmentMonths: '', thirdPartyFinancing: false,
       tc: newPatientForm.tc || tcNames[0] || '', status: '',
       BR: false, INV: false, PH1: false, PH2: false, LTD: false,
       'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', addonSkipReason: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false, isMedicaid: ''
@@ -4565,11 +4582,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   );
                 })()}
 
-                {/* Financed beyond treatment. Cohort is financed starts only: a paid-in-full
-                    case has no term to compare, so counting it as compliant would let a
-                    cash-heavy month score well while every financed plan ran past debond.
-                    Those starts are reported as a count beside the number, never inside it.
-                    No thresholds or colour bands — the number is left to speak for itself. */}
+                {/* Financed beyond treatment. Cohort is in-house financed starts only: a
+                    paid-in-full case has no term to compare, so counting it as compliant would
+                    let a cash-heavy month score well while every financed plan ran past debond.
+                    A third-party-financed case (CareCredit etc.) is on the lender's terms, not
+                    ours, and is out for the same reason. Both are reported as counts beside
+                    the number, never inside it. No thresholds or colour bands — the number is
+                    left to speak for itself. */}
                 {showProduction && (() => {
                   // kpiPeriodLabel lives inside the KPI table's own IIFE above, so this
                   // card derives the same label from the outer-scope pieces it is built from.
@@ -4577,10 +4596,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const termStarts = selStartPts.filter(p => isSDS(p) || p.ST);
                   if (termStarts.length === 0) return null;
                   const rows = termStarts.map(p => ({
-                    p, fm: termMonths(p.financedMonths), tm: termMonths(p.treatmentMonths),
+                    p, fm: termMonths(p.financedMonths), tm: termMonths(p.treatmentMonths), tp: !!p.thirdPartyFinancing,
                   }));
-                  const pifCount  = rows.filter(r => r.fm === 0).length;
-                  const financed  = rows.filter(r => r.fm !== null && r.fm > 0);
+                  const thirdParty = rows.filter(r => r.tp).length;
+                  const pifCount  = rows.filter(r => !r.tp && r.fm === 0).length;
+                  const financed  = rows.filter(r => !r.tp && r.fm !== null && r.fm > 0);
                   const complete  = financed.filter(r => r.tm !== null && r.tm > 0);
                   const avg = a => a.length ? a.reduce((x, v) => x + v, 0) / a.length : null;
                   const avgGap = avg(complete.map(r => r.fm - r.tm));
@@ -4613,6 +4633,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       No financed start in this period has both numbers recorded yet.
                       {financed.length > 0 && ` ${financed.length} financed start${financed.length !== 1 ? 's are' : ' is'} waiting on them.`}
                       {pifCount > 0 && ` ${pifCount} paid in full — those have no term to compare.`}
+                      {thirdParty > 0 && ` ${thirdParty} third-party financed — on the lender's terms, not ours.`}
                       <button onClick={() => setCurrentView('terms')}
                         style={{marginLeft:'8px',padding:'4px 10px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'12px',fontWeight:'600',color:'#374151',cursor:'pointer'}}>
                         Fill these in →
@@ -4640,6 +4661,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <div style={{marginTop:'14px',paddingTop:'12px',borderTop:'1px solid #f3f4f6',fontSize:'11px',color:'#9ca3af',display:'flex',gap:'14px',flexWrap:'wrap'}}>
                         <span>Coverage: {complete.length} of {financed.length} financed {financed.length !== 1 ? 'starts have' : 'start has'} both numbers</span>
                         {pifCount > 0 && <span>{pifCount} paid in full — not counted</span>}
+                        {thirdParty > 0 && <span>{thirdParty} third-party financed — not counted</span>}
                         {missing > 0 && (
                           <button onClick={() => setCurrentView('terms')}
                             style={{padding:0,background:'none',border:'none',color:'#2563EB',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
@@ -7078,7 +7100,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         if (newPatientForm.isMedicaid === o.v) return; // don't wipe progress on re-click
                         // Switching the answer changes which statuses are valid — reset everything below.
                         setNewPatientForm({...newPatientForm, isMedicaid: o.v,
-                          status:'', obstacle:'', dp:'', contractAmount:'', financedMonths:'', treatmentMonths:'', bondDate:'',
+                          status:'', obstacle:'', dp:'', contractAmount:'', financedMonths:'', treatmentMonths:'', thirdPartyFinancing:false, bondDate:'',
                           BR:false, INV:false, PH1:false, PH2:false, LTD:false,
                           'R+':false, 'W+':false, PIF:false,
                           medicaidPipeline:false, nextTouchOverride:'', obsApptDate:'', obsAnticipatedDate:'', recap:''});
@@ -7162,15 +7184,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Financed Months *</label>
                       <input type="number" min="0" max="120" step="1"
                         placeholder="24"
-                        disabled={newPatientForm.PIF}
+                        disabled={newPatientForm.PIF || newPatientForm.thirdPartyFinancing}
                         value={newPatientForm.financedMonths}
                         onChange={e => setNewPatientForm({...newPatientForm, financedMonths: e.target.value})}
                         style={{width:'100%',padding:'8px',borderRadius:'4px',
-                          border:`1px solid ${newPatientForm.financedMonths.trim() === '' ? '#f87171' : '#d1d5db'}`,
-                          backgroundColor: newPatientForm.PIF ? '#f3f4f6' : 'white',
-                          color: newPatientForm.PIF ? '#6b7280' : 'inherit'}} />
+                          border:`1px solid ${newPatientForm.financedMonths.trim() === '' && !newPatientForm.thirdPartyFinancing ? '#f87171' : '#d1d5db'}`,
+                          backgroundColor: (newPatientForm.PIF || newPatientForm.thirdPartyFinancing) ? '#f3f4f6' : 'white',
+                          color: (newPatientForm.PIF || newPatientForm.thirdPartyFinancing) ? '#6b7280' : 'inherit'}} />
                       <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>
-                        {newPatientForm.PIF ? 'Paid in full — no payment plan' : 'How many monthly payments. Tick PIF below if paid in full.'}
+                        {newPatientForm.PIF ? 'Paid in full — no payment plan'
+                          : newPatientForm.thirdPartyFinancing ? 'Third-party financing — the lender sets the term'
+                          : 'How many monthly payments. Tick PIF below if paid in full.'}
                       </div>
                     </div>
                     <div>
@@ -7183,6 +7207,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         {treatmentOptions(newPatientForm.treatmentMonths)}
                       </select>
                       <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>Quoted bracket from the treatment plan — the plan is built to the top of the bracket.</div>
+                      <label style={{display:'flex',alignItems:'center',gap:'6px',marginTop:'8px',fontSize:'13px',color:'#374151',cursor:'pointer'}}>
+                        <input type="checkbox"
+                          checked={!!newPatientForm.thirdPartyFinancing}
+                          onChange={e => setNewPatientForm(withThirdParty(newPatientForm, e.target.checked))} />
+                        Third-party financing
+                      </label>
                     </div>
                   </div>
                   {/* Live read-back of what was just typed. The point of the field is the
@@ -7191,6 +7221,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const money = v => parseFloat((v || '').toString().replace(/[^0-9.]/g, '')) || 0;
                     const fm = parseInt(newPatientForm.financedMonths, 10);
                     const tm = parseInt(newPatientForm.treatmentMonths, 10);
+                    if (newPatientForm.thirdPartyFinancing) return (
+                      <div style={{marginTop:'10px',padding:'8px 12px',backgroundColor:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:'6px',fontSize:'12px',color:'#5b21b6'}}>
+                        Third-party financing — the patient's plan is with the lender, so it won't count toward financed vs. treatment length.
+                      </div>
+                    );
                     if (!Number.isFinite(fm)) return null;
                     if (fm === 0) return (
                       <div style={{marginTop:'10px',padding:'8px 12px',backgroundColor:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:'6px',fontSize:'12px',color:'#166534'}}>
@@ -8949,6 +8984,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const ok = await dbUpsert(updated);
             saveToastFor(ok, `✅ ${updated.name} — paid in full`, 1600);
           };
+          // A checkbox, not a typed number, so it saves on the click rather than the debounce.
+          const setThirdParty = async (patient, checked) => {
+            clearTimeout(termsTimersRef.current[patient.id]);
+            termsTouchedRef.current.add(patient.id);
+            const updated = withThirdParty(patient, checked);
+            setPatients(prev => prev.map(x => x.id === patient.id ? updated : x));
+            const ok = await dbUpsert(updated);
+            saveToastFor(ok, `✅ ${updated.name} — ${checked ? 'third-party financing' : 'saved'}`, 1600);
+          };
 
           const selectSty = {padding:'7px 10px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'13px',backgroundColor:'white'};
           const numSty = (v) => ({width:'70px',padding:'7px 8px',borderRadius:'6px',fontSize:'14px',textAlign:'center',
@@ -8962,7 +9006,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{fontSize:'13px',color:'#6b7280',lineHeight:1.6,marginBottom:'16px'}}>
                   How many months each plan is financed for, against how long treatment runs.
                   Starts from {new Date(TERMS_BACKFILL_FROM + 'T12:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'})} onward.
-                  Paid-in-full starts are already answered and never appear here.
+                  Paid-in-full and third-party-financed starts are already answered and never appear here.
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'8px'}}>
                   <div style={{flex:1,height:'10px',backgroundColor:'#f3f4f6',borderRadius:'99px',overflow:'hidden'}}>
@@ -9019,6 +9063,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             <tr key={p.id} style={{borderBottom: i === list.length - 1 ? 'none' : '1px solid #f4f5f7', backgroundColor: settled ? '#fafffb' : 'white'}}>
                               <td style={{padding:'10px 13px',fontWeight:'600',color:'#202020',whiteSpace:'nowrap'}}>
                                 {p.name}{p.PIF && <span style={{marginLeft:'6px',fontSize:'10px',fontWeight:'700',color:'#166534',backgroundColor:'#dcfce7',padding:'2px 6px',borderRadius:'4px'}}>PIF</span>}
+                                {p.thirdPartyFinancing && <span style={{marginLeft:'6px',fontSize:'10px',fontWeight:'700',color:'#5b21b6',backgroundColor:'#ede9fe',padding:'2px 6px',borderRadius:'4px'}}>3RD PARTY</span>}
                               </td>
                               <td style={{padding:'10px 13px',color:'#6b7280',whiteSpace:'nowrap'}}>{(effectiveStartDate(p) || '—').replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$2/$3/$1')}</td>
                               <td style={{padding:'10px 13px',color:'#6b7280',whiteSpace:'nowrap'}}>{p.tc || '—'}</td>
@@ -9027,11 +9072,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               <td style={{padding:'8px 13px',textAlign:'center'}}>
                                 <input type="number" min="0" max="120" step="1"
                                   value={p.financedMonths ?? ''}
-                                  disabled={p.PIF}
+                                  disabled={p.PIF || p.thirdPartyFinancing}
                                   onFocus={e => { termsFocusRef.current = e.target.value; }}
                                   onChange={e => setField(p, 'financedMonths', e.target.value)}
                                   onBlur={e => { if (e.target.value !== termsFocusRef.current) saveRow(p.id); }}
-                                  style={{...numSty(p.financedMonths), backgroundColor: p.PIF ? '#f3f4f6' : numSty(p.financedMonths).backgroundColor}} />
+                                  style={p.thirdPartyFinancing
+                                    ? {...numSty('0'), backgroundColor:'#f3f4f6'}
+                                    : {...numSty(p.financedMonths), backgroundColor: p.PIF ? '#f3f4f6' : numSty(p.financedMonths).backgroundColor}} />
                               </td>
                               <td style={{padding:'8px 13px',textAlign:'center'}}>
                                 <select
@@ -9042,6 +9089,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   style={{...numSty(p.treatmentMonths), width:'118px', textAlign:'left'}}>
                                   {treatmentOptions(p.treatmentMonths)}
                                 </select>
+                                <label style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'5px',marginTop:'6px',fontSize:'11px',color:'#4b5563',cursor:'pointer',whiteSpace:'nowrap'}}>
+                                  <input type="checkbox"
+                                    checked={!!p.thirdPartyFinancing}
+                                    onChange={e => setThirdParty(p, e.target.checked)} />
+                                  Third-party financing
+                                </label>
                               </td>
                               <td style={{padding:'8px 13px',textAlign:'center',whiteSpace:'nowrap'}}>
                                 {!p.PIF && (
@@ -12992,7 +13045,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
               <div style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>
                 {rows.length} financed start{rows.length !== 1 ? 's' : ''} with both numbers recorded.
-                Paid-in-full starts are not listed — they have no term to compare.
+                Paid-in-full and third-party-financed starts are not listed — they have no in-house term to compare.
                 {totalOwed > 0 && ` $${Math.round(totalOwed).toLocaleString()} still owed after debond across these contracts.`}
               </div>
               <div style={{overflowX:'auto'}}>
@@ -13227,15 +13280,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <div>
                 <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Financed Months *</label>
                 <input type="number" min="0" max="120" step="1" placeholder="24"
-                  disabled={startedForm.PIF}
+                  disabled={startedForm.PIF || startedForm.thirdPartyFinancing}
                   value={startedForm.financedMonths ?? ''}
                   onChange={e => setStartedForm({...startedForm, financedMonths: e.target.value})}
                   style={{width:'100%',padding:'8px',borderRadius:'4px',
-                    border:`1px solid ${(startedForm.financedMonths ?? '').toString().trim() === '' ? '#f87171' : '#d1d5db'}`,
-                    backgroundColor: startedForm.PIF ? '#f3f4f6' : 'white',
-                    color: startedForm.PIF ? '#6b7280' : 'inherit'}} />
+                    border:`1px solid ${(startedForm.financedMonths ?? '').toString().trim() === '' && !startedForm.thirdPartyFinancing ? '#f87171' : '#d1d5db'}`,
+                    backgroundColor: (startedForm.PIF || startedForm.thirdPartyFinancing) ? '#f3f4f6' : 'white',
+                    color: (startedForm.PIF || startedForm.thirdPartyFinancing) ? '#6b7280' : 'inherit'}} />
                 <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>
-                  {startedForm.PIF ? 'Paid in full — no payment plan' : '0 if paid in full'}
+                  {startedForm.PIF ? 'Paid in full — no payment plan'
+                    : startedForm.thirdPartyFinancing ? 'Third-party financing — the lender sets the term'
+                    : '0 if paid in full'}
                 </div>
               </div>
               <div>
@@ -13248,6 +13303,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   {treatmentOptions(startedForm.treatmentMonths)}
                 </select>
                 <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>Quoted bracket — planned to the top of the bracket</div>
+                <label style={{display:'flex',alignItems:'center',gap:'6px',marginTop:'8px',fontSize:'13px',color:'#374151',cursor:'pointer'}}>
+                  <input type="checkbox"
+                    checked={!!startedForm.thirdPartyFinancing}
+                    onChange={e => setStartedForm(withThirdParty(startedForm, e.target.checked))} />
+                  Third-party financing
+                </label>
               </div>
             </div>
 
@@ -13533,12 +13594,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Financed Months</label>
                 <input
                   type="number" min="0" max="120" step="1"
+                  disabled={!!editForm.thirdPartyFinancing}
                   value={editForm.financedMonths ?? ''}
                   onChange={(e) => setEditForm({...editForm, financedMonths: e.target.value})}
                   placeholder="24"
-                  style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
+                  style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',
+                    backgroundColor: editForm.thirdPartyFinancing ? '#f3f4f6' : 'white',
+                    color: editForm.thirdPartyFinancing ? '#6b7280' : 'inherit'}}
                 />
-                <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>0 = paid in full · blank = not recorded</div>
+                <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>
+                  {editForm.thirdPartyFinancing ? 'Third-party financing — the lender sets the term' : '0 = paid in full · blank = not recorded'}
+                </div>
               </div>
               <div>
                 <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Length</label>
@@ -13549,6 +13615,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 >
                   {treatmentOptions(editForm.treatmentMonths)}
                 </select>
+                <label style={{display:'flex',alignItems:'center',gap:'6px',marginTop:'8px',fontSize:'13px',color:'#374151',cursor:'pointer'}}>
+                  <input type="checkbox"
+                    checked={!!editForm.thirdPartyFinancing}
+                    onChange={(e) => setEditForm(withThirdParty(editForm, e.target.checked))} />
+                  Third-party financing
+                </label>
               </div>
             </div>
 

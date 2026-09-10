@@ -55,6 +55,12 @@ supporting line under the headline pair.
   them as a context count, never as a compliant case.
 - **Medicaid.** No patient-financed plan in the usual sense. Recorded as `0` and
   handled exactly like paid in full: known, and outside the comparison.
+- **Third-party financing** (added 2026-09-10). CareCredit and the like — the patient
+  finances on the lender's terms, and the practice never holds the plan. A
+  `third_party_financing` flag (`thirdPartyFinancing` in the app) sits under
+  Treatment Length on every form. Ticking it blanks and disables Financed Months, drops
+  the patient from the backfill list, and keeps them out of the cohort. The card reports
+  them as a context count, same as PIF.
 - **Why not count them as compliant.** A month where half the starts paid cash would
   score near-perfect while every financed case ran a year past debond. The question
   is *when we finance, how long do we finance for* — so cash cases have no vote.
@@ -188,7 +194,9 @@ instead of typing. If not, nothing is lost and the manual plan proceeds unchange
 One card, in the admin/owner column next to Production (`src/App.jsx:3807`).
 
 **Cohort: financed starts in the selected period** — starts with
-`financedMonths > 0`. PIF patients are excluded; there is no term to compare.
+`financedMonths > 0` and no `thirdPartyFinancing` flag. PIF patients are excluded;
+there is no term to compare. Third-party-financed patients are excluded for the same
+reason — the term is the lender's, not ours.
 
 **The number: average months financed beyond treatment time.**
 
