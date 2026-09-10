@@ -3,3 +3,9 @@ dist/
 .env
 .DS_Store
 *.local
+greyfinch-schema/
+
+# Greyfinch report exports and any other raw patient data. These carry PHI (names,
+# dates of birth, appointment dates) and must never reach the repo. Put every export
+# here rather than in the project root, where nothing would catch it.
+data/
