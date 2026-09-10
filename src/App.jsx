@@ -4496,6 +4496,75 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   );
                 })()}
 
+                {/* ── Case Length Mix ──────────────────────────────────────────
+                    Fee is priced off treatment LENGTH, not treatment type — braces and
+                    Invisalign cost the same for the same length — so this, not a treatment
+                    type breakdown, is the cut that explains the average case fee.
+                    Same start cohort and period label as the cards either side of it, so
+                    the three always reconcile. Contract amount is missing on some older
+                    starts, so only priced ones are averaged and the tooltip says how many
+                    stood behind each average. */}
+                {currentUser?.role !== 'tc' && (() => {
+                  const clPeriodLabel = isRangeMode ? customRangeLabel : selMonthLabel;
+                  const clStarts = selStartPts.filter(p => isSDS(p) || p.ST);
+                  if (clStarts.length === 0) return null;
+                  const palette = {
+                    '0–6 mo':   { color:'#b45309', bg:'#fffbeb', border:'#fde68a' },
+                    '6–12 mo':  { color:'#0e7490', bg:'#ecfeff', border:'#a5f3fc' },
+                    '12–18 mo': { color:'#3b82f6', bg:'#eff6ff', border:'#bfdbfe' },
+                    '18–24 mo': { color:'#0f766e', bg:'#f0fdfa', border:'#99f6e4' },
+                  };
+                  // Upper-inclusive, matching how the fee schedule reads: a 12-month case
+                  // is a 6–12 case, not a 12–18 one.
+                  const buckets = TREATMENT_BRACKETS.map(b => {
+                    const inB = clStarts.filter(p => {
+                      const tm = termMonths(p.treatmentMonths);
+                      if (tm === null) return false;
+                      return b.min === 0 ? tm <= b.top : (tm > b.min && tm <= b.top);
+                    });
+                    const fees = inB.map(p => parseDP(p.contractAmount)).filter(v => v > 0);
+                    return { ...b, count: inB.length, feeN: fees.length,
+                      avgFee: fees.length ? Math.round(fees.reduce((a, c) => a + c, 0) / fees.length) : null };
+                  });
+                  // Both of these are real starts that no bracket can hold. Named beside the
+                  // tiles rather than dropped, so the counts still add back up to Starts.
+                  const overCount  = clStarts.filter(p => { const tm = termMonths(p.treatmentMonths); return tm !== null && tm > 24; }).length;
+                  const unrecorded = clStarts.filter(p => termMonths(p.treatmentMonths) === null).length;
+                  return (
+                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
+                      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:'14px',gap:'12px',flexWrap:'wrap'}}>
+                        <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>📆 Case Length Mix</div>
+                        <div style={{fontSize:'11px',color:'#9ca3af',fontWeight:'600'}}>
+                          {clStarts.length} start{clStarts.length !== 1 ? 's' : ''} · {clPeriodLabel}
+                        </div>
+                      </div>
+                      <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
+                        {buckets.map(b => {
+                          const c = palette[b.label];
+                          return (
+                            <div key={b.label}
+                              title={`${b.count} start${b.count === 1 ? '' : 's'}${b.feeN < b.count ? ` · average from the ${b.feeN} with a contract amount recorded` : ''}`}
+                              style={{borderRadius:'8px',padding:'12px 16px',textAlign:'center',minWidth:'96px',backgroundColor:c.bg,border:`1px solid ${c.border}`}}>
+                              <div style={{fontSize:'26px',fontWeight:'800',color:c.color,lineHeight:1}}>{b.count}</div>
+                              <div style={{fontSize:'11px',color:c.color,opacity:0.8,marginTop:'3px'}}>{b.label}</div>
+                              <div style={{fontSize:'13px',fontWeight:'700',color:c.color,marginTop:'7px',paddingTop:'6px',borderTop:`1px solid ${c.border}`}}>
+                                {b.avgFee !== null ? `$${b.avgFee.toLocaleString()}` : '—'}
+                              </div>
+                              <div style={{fontSize:'9px',color:c.color,opacity:0.65,marginTop:'1px'}}>avg fee</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {(overCount > 0 || unrecorded > 0) && (
+                        <div style={{fontSize:'12px',color:'#6b7280',lineHeight:1.7,marginTop:'12px'}}>
+                          {overCount > 0 && <div><strong style={{color:'#b45309'}}>{overCount}</strong> longer than 24 months — off the fee schedule</div>}
+                          {unrecorded > 0 && <div><strong style={{color:'#b45309'}}>{unrecorded}</strong> with no treatment length recorded — backfill in 📆 Contract Terms</div>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Financed beyond treatment. Cohort is financed starts only: a paid-in-full
                     case has no term to compare, so counting it as compliant would let a
                     cash-heavy month score well while every financed plan ran past debond.
