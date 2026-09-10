@@ -1004,11 +1004,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       carNPE: i === 1 ? 40 : 35, carStarted: i === 1 ? 20 : 18,
       apoNPE: i === 1 ? 15 : 12, apoStarted: i === 1 ? 8 : 6,
       totalNPE: i === 1 ? 55 : 47, totalStarted: i === 1 ? 28 : 24,
-      convGoal: 50,
+      convGoal: 70,
     })),
     quarterly: [
-      { npe: 150, started: 75, conv: 50 }, { npe: 165, started: 85, conv: 50 },
-      { npe: 180, started: 90, conv: 50 }, { npe: 200, started: 100, conv: 50 },
+      { npe: 150, started: 75, conv: 70 }, { npe: 165, started: 85, conv: 70 },
+      { npe: 180, started: 90, conv: 70 }, { npe: 200, started: 100, conv: 70 },
     ]
   };
   const [goals, setGoals] = useState(defaultGoalsData);
@@ -1747,6 +1747,40 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const n = parseInt(v, 10);
     return Number.isFinite(n) ? n : null;
   };
+  // ── Treatment length brackets ─────────────────────────────────────────
+  // The fee schedule is bracketed and a quoted bracket IS the commitment — an 18–24
+  // case is planned to 24 — so the stored treatment length is the TOP of the bracket,
+  // not a midpoint or a guess. Kept as a plain integer in treatment_months so every
+  // downstream reader (the financing comparison, termRangeError, the DB column and its
+  // CHECK constraints) is untouched by the move from a free-text box to a picker.
+  const TREATMENT_BRACKETS = [
+    { label: '0–6 mo',   min: 0,  top: 6  },
+    { label: '6–12 mo',  min: 6,  top: 12 },
+    { label: '12–18 mo', min: 12, top: 18 },
+    { label: '18–24 mo', min: 18, top: 24 },
+  ];
+  // Snaps an already-stored month count onto its bracket top, so a value typed before
+  // the picker existed (a 14) selects 12–18 instead of rendering as a blank dropdown.
+  // A value off the schedule entirely keeps itself rather than being silently rounded.
+  const bracketTopFor = (v) => {
+    const n = termMonths(v);
+    if (n === null) return '';
+    const b = TREATMENT_BRACKETS.find(b => (b.min === 0 ? n <= b.top : n > b.min && n <= b.top));
+    return b ? String(b.top) : String(n);
+  };
+  // Shared option list for all four places treatment length is entered.
+  const treatmentOptions = (current) => {
+    const cur = bracketTopFor(current);
+    const onSchedule = TREATMENT_BRACKETS.some(b => String(b.top) === cur);
+    return (
+      <>
+        <option value="">Select…</option>
+        {TREATMENT_BRACKETS.map(b => <option key={b.top} value={b.top}>{b.label}</option>)}
+        {cur !== '' && !onSchedule && <option value={cur}>{cur} mo (off schedule)</option>}
+      </>
+    );
+  };
+
   // Backfill and the dashboard stat both start here: a start with a payment plan.
   // fm === 0 (paid in full) is answered, not missing, and has no term to compare.
   const termNeedsEntry = (p) => {
@@ -1760,7 +1794,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const termRangeError = (financed, treatment) => {
     const fm = termMonths(financed), tm = termMonths(treatment);
     if (fm !== null && (fm < 0 || fm > 120)) return 'Financed Months must be between 0 and 120.';
-    if (tm !== null && (tm < 1 || tm > 120)) return 'Treatment Months must be between 1 and 120 — enter the estimated treatment length.';
+    if (tm !== null && (tm < 1 || tm > 120)) return 'Treatment length must be between 1 and 120 months — pick a bracket from the list.';
     return '';
   };
   // Everything before this is deliberately unmeasured — see docs/contract-terms-plan.md.
@@ -1938,6 +1972,39 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const ph2Count = started.filter(p => p.PH2).length;
     const ltdCount = started.filter(p => p.LTD).length;
 
+    // ── Case length brackets ──────────────────────────────────────────────
+    // Fee is priced off treatment LENGTH, not treatment type — braces and Invisalign
+    // cost the same for the same length — so this, not the treatment mix, is the
+    // breakdown that explains the average case fee. Starts only, on the same window as
+    // the Starts KPI, so the two reconcile.
+    //
+    // Boundaries are upper-inclusive to match how the fee schedule reads: a 12-month
+    // case is a "6–12" case, not a "12–18" one. Anything past 24 gets its own bucket
+    // instead of being folded into the top bracket, and starts with no length recorded
+    // are counted separately — the brackets must always add back up to Starts.
+    const LENGTH_BRACKETS = [
+      ...TREATMENT_BRACKETS.map(b => ({ label: b.label, min: b.min, max: b.top })),
+      // Off-schedule legacy rows still need somewhere to land, or they vanish from the tile.
+      { label: '24+ mo', min: 24, max: Infinity },
+    ];
+    const lengthBrackets = LENGTH_BRACKETS.map(b => {
+      const inB = started.filter(p => {
+        const tm = termMonths(p.treatmentMonths);
+        if (tm === null) return false;
+        return b.min === 0 ? tm <= b.max : (tm > b.min && tm <= b.max);
+      });
+      // Contract amount is missing on some older starts; averaging only the priced ones
+      // keeps the number honest, and feeN carries how many stood behind it.
+      const fees = inB.map(p => parseDP(p.contractAmount)).filter(v => v > 0);
+      return {
+        label: b.label,
+        count: inB.length,
+        avgFee: fees.length > 0 ? Math.round(fees.reduce((a, c) => a + c, 0) / fees.length) : null,
+        feeN: fees.length,
+      };
+    });
+    const lengthUnrecorded = started.filter(p => termMonths(p.treatmentMonths) === null).length;
+
     // SDS rate (% of starts that are same-day)
     const sdsRate = started.length > 0 ? Math.round((sds.length / started.length) * 100) : 0;
 
@@ -2003,7 +2070,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       total, started: started.length, sds: sds.length, pending, scheduled, observation, medicaidPending, noTx, obsPerLocation,
       overallConv, sdsConv, retainers, whitening, pif, sdsBonus, retBonus, whiteBonus, pifBonus, totalBonus,
       perLocation, carTotal, apoTotal, carStarted, apoStarted, carConv, apoConv,
-      avgDP, avgDPAll, brCount, invCount, ph1Count, ph2Count, ltdCount, sdsRate, addons
+      avgDP, avgDPAll, brCount, invCount, ph1Count, ph2Count, ltdCount, sdsRate, addons,
+      lengthBrackets, lengthUnrecorded
     };
   };
 
@@ -2449,7 +2517,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (!(startedForm.contractAmount || '').trim()) { alert('Please enter the Contract Amount before marking this patient as started.'); return; }
     // '0' is a real answer here (paid in full), so test for empty rather than falsy.
     if ((startedForm.financedMonths ?? '').toString().trim() === '') { alert('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
-    if ((startedForm.treatmentMonths ?? '').toString().trim() === '') { alert('Please enter the estimated treatment length in months.'); return; }
+    if ((startedForm.treatmentMonths ?? '').toString().trim() === '') { alert('Please select the treatment length bracket.'); return; }
     const startTermErr = termRangeError(startedForm.financedMonths, startedForm.treatmentMonths);
     if (startTermErr) { alert(startTermErr); return; }
     // Add-ons accountability — same rule the Add Patient form enforces. Without this the
@@ -2849,7 +2917,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // empty string, not for falsiness — !'0' is false in JS and would let 0 through
     // as "missing", or block it, depending on which shortcut you reach for.
     if (needsPayment && newPatientForm.financedMonths.trim() === '') { setAddPatientError('Please enter how many months the plan is financed for (0 if paid in full).'); return; }
-    if (needsPayment && newPatientForm.treatmentMonths.trim() === '') { setAddPatientError('Please enter the estimated treatment length in months.'); return; }
+    if (needsPayment && newPatientForm.treatmentMonths.trim() === '') { setAddPatientError('Please select the treatment length bracket.'); return; }
     if (needsPayment) {
       const rangeErr = termRangeError(newPatientForm.financedMonths, newPatientForm.treatmentMonths);
       if (rangeErr) { setAddPatientError(rangeErr); return; }
@@ -3323,7 +3391,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const carStartedGoal = mGoal.carStarted || 0;
           const apoNPEGoal = mGoal.apoNPE || 0;
           const apoStartedGoal = mGoal.apoStarted || 0;
-          const convGoal = mGoal.convGoal || 50;
+          const convGoal = mGoal.convGoal || 70;
           const totalNPEGoal = goals.overallMode ? (mGoal.totalNPE || 0) : (carNPEGoal + apoNPEGoal);
           const totalStartedGoal = goals.overallMode ? (mGoal.totalStarted || 0) : (carStartedGoal + apoStartedGoal);
 
@@ -3818,7 +3886,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const nmGoal = goals.monthly[dashMonth] || {};
             const nmNPEGoal     = goals.overallMode ? (nmGoal.totalNPE||0) : (nmGoal.carNPE||0)+(nmGoal.apoNPE||0);
             const nmStartedGoal = goals.overallMode ? (nmGoal.totalStarted||0) : (nmGoal.carStarted||0)+(nmGoal.apoStarted||0);
-            const nmConvGoal    = nmGoal.convGoal || 50;
+            const nmConvGoal    = nmGoal.convGoal || 70;
 
             // Per-TC data
             const perTCNew = tcNames.map(tcName => {
@@ -4126,7 +4194,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     // Starts only (SDS + ST): this excludes the retainers/whitening sold at a
                     // debond, which the bonus counters do include. A finishing visit is not a
                     // contract.
-                    { key:'addonBoth', label:'Add-Ons', color:'#0369a1', tint:'rgba(3,105,161,0.10)', emphasis:true },
+                    { key:'addonBoth', label:'Add-Ons', color:'#0369a1', tint:'rgba(3,105,161,0.06)', emphasis:true },
                     // No Observation column. OBS is a patient *state*, not a monthly
                     // performance number, and it already has a tile (with the same drill)
                     // on the Pipeline card — where the whole point is where patients sit.
@@ -4203,6 +4271,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     : `${Math.abs(convDelta)} under goal`;
 
                   const cellPad = { padding:'0 15px' };
+                  // Every line beneath a number is the same size, weight and grey, so the
+                  // footnotes read as one band across the row rather than as seven
+                  // independently styled captions.
+                  const kpiFoot = { fontSize:'11px', fontWeight:'600', color:'#9ca3af', lineHeight:1.35 };
                   const metricCell = col => ({ ...cellPad,
                     borderLeft: col.emphasis ? '1px solid #bae6fd' : '1px solid #edeff2',
                     borderRight: col.emphasis ? '1px solid #bae6fd' : undefined,
@@ -4220,9 +4292,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   return (
                     <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 22px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
                       <div style={{overflowX:'auto'}}>
-                        <table style={{width:'100%',minWidth:showProduction?'920px':'790px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
+                        {/* Wide enough that every column can hold its own label. Under this the
+                            fixed layout hands each metric a column narrower than the word in it,
+                            and "PRODUCTION" / "ACCEPTANCE" spill left into the neighbouring
+                            column instead of wrapping. Scrolling is the honest fallback. */}
+                        <table style={{width:'100%',minWidth:showProduction?'1080px':'940px',borderCollapse:'collapse',tableLayout:'fixed',fontVariantNumeric:'tabular-nums'}}>
                           <colgroup>
-                            <col style={{width:'19%'}} />
+                            <col style={{width:'15%'}} />
                             {KPI_COLS.map(c => <col key={c.key} />)}
                           </colgroup>
                           <tbody>
@@ -4251,33 +4327,50 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     onClick={d ? d.onClick : undefined}
                                     title={d ? 'Click for the full breakdown' : undefined}
                                     style={{...metricCell(col),verticalAlign:'top',paddingTop:'14px',paddingBottom:'15px',cursor:d?'pointer':'default'}}>
-                                    <div style={{fontSize:col.emphasis?'11px':'10px',fontWeight:'800',color:col.color,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'8px',lineHeight:1.3}}>
-                                      {col.label}
-                                      {d && <span style={{fontSize:'10px',fontWeight:'500',textTransform:'none',letterSpacing:0,marginLeft:'4px',opacity:0.7}}>{d.hint}</span>}
+                                    {/* The label and the number each get a reserved band that
+                                        bottom-aligns its contents. Labels are different lengths
+                                        (Case Acceptance wraps, NPEs doesn't) and the numbers are
+                                        different sizes, so without the bands every column started
+                                        its number at a different height and the row read ragged.
+                                        Bottom-aligning both puts all seven numbers on one line. */}
+                                    <div style={{minHeight:'27px',display:'flex',alignItems:'flex-end',justifyContent:'flex-end',fontSize:col.emphasis?'11px':'10px',fontWeight:'800',color:col.color,textTransform:'uppercase',letterSpacing:'0.07em',lineHeight:1.3}}>
+                                      {/* The {' '} is load-bearing: JSX drops the whitespace
+                                          between two expressions on separate lines, and without a
+                                          real space the label and its hint are one unbreakable run
+                                          that spills into the column to the left. */}
+                                      <span style={{minWidth:0}}>{col.label}{' '}
+                                        {d && <span style={{fontSize:'10px',fontWeight:'500',textTransform:'none',letterSpacing:0,opacity:0.65,whiteSpace:'nowrap'}}>{d.hint}</span>}
+                                      </span>
                                     </div>
-                                    <div style={{fontSize:col.emphasis?'40px':'30px',fontWeight:col.emphasis?'900':'800',lineHeight:1.05,color:col.color,letterSpacing:col.emphasis?'-0.02em':'normal'}}>{value}</div>
+                                    <div style={{height:'44px',marginTop:'4px',display:'flex',alignItems:'flex-end',justifyContent:'flex-end',fontSize:col.emphasis?'38px':'31px',fontWeight:col.emphasis?'900':'800',lineHeight:1,color:col.color,letterSpacing:'-0.02em'}}>{value}</div>
                                     {goal !== null && (
-                                      <div style={{height:'5px',borderRadius:'3px',overflow:'hidden',marginTop:'8px',backgroundColor:col.track}}>
+                                      <div style={{height:'5px',borderRadius:'3px',overflow:'hidden',marginTop:'11px',backgroundColor:col.track}}>
                                         <div style={{height:'100%',borderRadius:'3px',backgroundColor:col.fill,width:`${Math.min(100,Math.round((actual/goal)*100))}%`}} />
                                       </div>
                                     )}
-                                    {goal !== null && <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>Goal: {goalLabel}</div>}
+                                    {goal !== null && <div style={{...kpiFoot,marginTop:'7px'}}>Goal: {goalLabel}</div>}
                                     {/* Production carries two footnotes the other columns don't
                                         need: how much of the period actually has a contract
                                         amount behind it, and what the books say for the month.
                                         Contracted and net production are different numbers, so
                                         the second is shown beside the first, never merged in. */}
                                     {col.key === 'prod' && prodMissingFee > 0 && (
-                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#b45309',marginTop:'6px'}}>{prodWithFee} of {prodFees.length} starts have a fee</div>
+                                      <div style={{...kpiFoot,color:'#b45309',marginTop:'7px'}}>{prodWithFee} of {prodFees.length} starts have a fee</div>
                                     )}
                                     {col.key === 'prod' && prodBooksNet > 0 && (
-                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>Books: {fmtMoneyFull(prodBooksNet)} net</div>
+                                      <div style={{...kpiFoot,marginTop:'7px'}}>Books: {fmtMoneyFull(prodBooksNet)} net</div>
                                     )}
                                     {col.key === 'conv' && chipTone && (
-                                      <div><span style={{display:'inline-block',fontSize:'11px',fontWeight:'700',padding:'3px 9px',borderRadius:'20px',marginTop:'8px',backgroundColor:chipTone.bg,color:chipTone.fg}}>{chipText}</span></div>
+                                      <div><span style={{display:'inline-block',fontSize:'11px',fontWeight:'700',padding:'3px 9px',borderRadius:'20px',marginTop:'9px',backgroundColor:chipTone.bg,color:chipTone.fg}}>{chipText}</span></div>
+                                    )}
+                                    {col.key === 'cohortConv' && practiceDenom > 0 && (
+                                      <>
+                                        <div style={{...kpiFoot,marginTop:'11px'}}>{nmCohort.started} of {practiceDenom} exams</div>
+                                        {cohortUndecided > 0 && <div style={{...kpiFoot,marginTop:'3px',color:'#b6bcc6'}}>{cohortUndecided} still deciding</div>}
+                                      </>
                                     )}
                                     {col.key === 'sds' && nm.started > 0 && (
-                                      <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'6px'}}>{nm.sds} of {nm.started} starts</div>
+                                      <div style={{...kpiFoot,marginTop:'11px'}}>{nm.sds} of {nm.started} starts</div>
                                     )}
                                     {/* The two product rates that used to be columns. They still
                                         overlap each other and the headline — a start taking both
@@ -4285,8 +4378,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                         rather than as separate metrics. */}
                                     {col.key === 'addonBoth' && nm.addons.starts > 0 && (
                                       <>
-                                        <div style={{fontSize:'11px',fontWeight:'700',color:'#0e7490',marginTop:'8px'}}>R {nm.addons.rateR}% <span style={{color:'#cbd5e1'}}>·</span> W {nm.addons.rateW}%</div>
-                                        <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'3px'}}>Both: {nm.addons.both} of {nm.addons.starts} · {nm.addons.none} took neither</div>
+                                        <div style={{fontSize:'11px',fontWeight:'700',color:'#0e7490',marginTop:'11px'}}>R {nm.addons.rateR}% <span style={{color:'#cbd5e1'}}>·</span> W {nm.addons.rateW}%</div>
+                                        <div style={{...kpiFoot,marginTop:'3px'}}>Both {nm.addons.both} of {nm.addons.starts}</div>
+                                        {nm.addons.none > 0 && <div style={{...kpiFoot,marginTop:'2px'}}>{nm.addons.none} took neither</div>}
                                       </>
                                     )}
                                   </td>
@@ -4307,13 +4401,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                       {KPI_COLS.map(col => {
                                         const v = locValue(col, L);
                                         return (
-                                          <td key={col.key} style={{...metricCell(col),paddingTop:'10px',paddingBottom:'10px',fontSize:col.emphasis?'19px':'15px',fontWeight:col.emphasis?'800':'700',color:col.color,borderBottom:last?'none':'1px solid #f4f5f7',opacity:v===0?0.33:1}}>
-                                            {col.key === 'conv' && health && (
-                                              <span style={{display:'inline-block',width:'7px',height:'7px',borderRadius:'50%',marginRight:'8px',verticalAlign:'2px',backgroundColor:health}} />
-                                            )}
-                                            {v}
+                                          <td key={col.key} style={{...metricCell(col),paddingTop:'10px',paddingBottom:'10px',color:col.color,borderBottom:last?'none':'1px solid #f4f5f7',opacity:v===0?0.33:1}}>
+                                            {/* Same reserved band as the practice row above: the
+                                                emphasised column is a bigger number, and only a
+                                                shared bottom edge keeps a location's figures on
+                                                one line instead of stepping up at Add-Ons. */}
+                                            <div style={{height:'21px',display:'flex',alignItems:'flex-end',justifyContent:'flex-end',lineHeight:1,fontSize:col.emphasis?'19px':'15px',fontWeight:col.emphasis?'800':'700'}}>
+                                              {col.key === 'conv' && health && (
+                                                <span style={{width:'7px',height:'7px',flex:'none',borderRadius:'50%',marginRight:'8px',marginBottom:'4px',alignSelf:'flex-end',backgroundColor:health}} />
+                                              )}
+                                              <span>{v}</span>
+                                            </div>
                                             {col.key === 'addonBoth' && L.rateBoth !== null && (
-                                              <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'2px'}}>R {L.rateR}% · W {L.rateW}%</div>
+                                              <div style={{...kpiFoot,marginTop:'3px'}}>R {L.rateR}% · W {L.rateW}%</div>
                                             )}
                                           </td>
                                         );
@@ -5368,27 +5468,47 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
             )}
 
-            {/* ── Treatment Mix ── */}
+            {/* ── Case Length Mix ── */}
+            {/* Replaced the old Treatment Mix tile. Braces and Invisalign are priced the
+                same for the same length, so treatment type never explained the case fee
+                average — length bracket does. The BR/INV/PH1/PH2/LTD flags are untouched
+                and still recorded on every start. */}
             {currentUser?.role !== 'tc' && dash.started > 0 && (
               <div style={{backgroundColor:'white',borderRadius:'10px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)'}}>
                 <h4 style={{fontSize:'15px',fontWeight:'700',color:'#374151',marginBottom:'14px'}}>
-                  🦷 Treatment Mix
+                  📆 Case Length Mix
                   <span style={{fontSize:'12px',color:'#9ca3af',fontWeight:'400',marginLeft:'8px'}}>Started patients · {dashTimeframe==='month'?monthLabel:'All Time'}</span>
                 </h4>
                 <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
                   {[
-                    {label:'Braces',     count:dash.brCount,  color:'#3b82f6', bg:'#eff6ff', border:'#bfdbfe'},
-                    {label:'Invisalign', count:dash.invCount, color:'#8b5cf6', bg:'#f5f3ff', border:'#ddd6fe'},
-                    {label:'Phase 1',    count:dash.ph1Count, color:'#0e7490', bg:'#ecfeff', border:'#a5f3fc'},
-                    {label:'Phase 2',    count:dash.ph2Count, color:'#0f766e', bg:'#f0fdfa', border:'#99f6e4'},
-                    {label:'Limited',    count:dash.ltdCount, color:'#b45309', bg:'#fffbeb', border:'#fde68a'},
-                  ].map(t => (
-                    <div key={t.label} style={{borderRadius:'8px',padding:'12px 16px',textAlign:'center',minWidth:'80px',backgroundColor:t.bg,border:`1px solid ${t.border}`}}>
-                      <div style={{fontSize:'26px',fontWeight:'800',color:t.color,lineHeight:1}}>{t.count}</div>
-                      <div style={{fontSize:'11px',color:t.color,opacity:0.8,marginTop:'3px'}}>{t.label}</div>
-                    </div>
-                  ))}
+                    {label:'0–6 mo',   color:'#b45309', bg:'#fffbeb', border:'#fde68a'},
+                    {label:'6–12 mo',  color:'#0e7490', bg:'#ecfeff', border:'#a5f3fc'},
+                    {label:'12–18 mo', color:'#3b82f6', bg:'#eff6ff', border:'#bfdbfe'},
+                    {label:'18–24 mo', color:'#0f766e', bg:'#f0fdfa', border:'#99f6e4'},
+                    {label:'24+ mo',   color:'#8b5cf6', bg:'#f5f3ff', border:'#ddd6fe'},
+                  ].map(t => {
+                    const b = (dash.lengthBrackets || []).find(x => x.label === t.label) || { count:0, avgFee:null, feeN:0 };
+                    // The 24+ bucket is off the fee schedule — only show it when it has cases.
+                    if (t.label === '24+ mo' && b.count === 0) return null;
+                    return (
+                      <div key={t.label}
+                        title={`${b.count} start${b.count === 1 ? '' : 's'}${b.feeN < b.count ? ` · avg fee from the ${b.feeN} with a contract amount recorded` : ''}`}
+                        style={{borderRadius:'8px',padding:'12px 16px',textAlign:'center',minWidth:'96px',backgroundColor:t.bg,border:`1px solid ${t.border}`}}>
+                        <div style={{fontSize:'26px',fontWeight:'800',color:t.color,lineHeight:1}}>{b.count}</div>
+                        <div style={{fontSize:'11px',color:t.color,opacity:0.8,marginTop:'3px'}}>{t.label}</div>
+                        <div style={{fontSize:'13px',fontWeight:'700',color:t.color,marginTop:'7px',paddingTop:'6px',borderTop:`1px solid ${t.border}`}}>
+                          {b.avgFee !== null ? `$${b.avgFee.toLocaleString()}` : '—'}
+                        </div>
+                        <div style={{fontSize:'9px',color:t.color,opacity:0.65,marginTop:'1px'}}>avg fee</div>
+                      </div>
+                    );
+                  })}
                 </div>
+                {dash.lengthUnrecorded > 0 && (
+                  <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'10px'}}>
+                    {dash.lengthUnrecorded} start{dash.lengthUnrecorded === 1 ? '' : 's'} with no treatment length recorded — not counted above. Backfill them in 📆 Contract Terms.
+                  </div>
+                )}
               </div>
             )}
 
@@ -5446,7 +5566,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const mGoal = goals.monthly[curM] || {};
           const totalNPEGoal = goals.overallMode ? (mGoal.totalNPE || 0) : (mGoal.carNPE || 0) + (mGoal.apoNPE || 0);
           const totalStartedGoal = goals.overallMode ? (mGoal.totalStarted || 0) : (mGoal.carStarted || 0) + (mGoal.apoStarted || 0);
-          const convGoal = mGoal.convGoal || 50;
+          const convGoal = mGoal.convGoal || 70;
 
           // Practice-wide on-time rate (current month, all patients)
           let otCount = 0, otTotal = 0;
@@ -6985,14 +7105,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </div>
                     </div>
                     <div>
-                      <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Months *</label>
-                      <input type="number" min="1" max="120" step="1"
-                        placeholder="22"
-                        value={newPatientForm.treatmentMonths}
+                      <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Length *</label>
+                      <select
+                        value={bracketTopFor(newPatientForm.treatmentMonths)}
                         onChange={e => setNewPatientForm({...newPatientForm, treatmentMonths: e.target.value})}
-                        style={{width:'100%',padding:'8px',borderRadius:'4px',
-                          border:`1px solid ${newPatientForm.treatmentMonths.trim() === '' ? '#f87171' : '#d1d5db'}`}} />
-                      <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>Estimated treatment length from the treatment plan.</div>
+                        style={{width:'100%',padding:'8px',borderRadius:'4px',backgroundColor:'white',
+                          border:`1px solid ${newPatientForm.treatmentMonths.trim() === '' ? '#f87171' : '#d1d5db'}`}}>
+                        {treatmentOptions(newPatientForm.treatmentMonths)}
+                      </select>
+                      <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>Quoted bracket from the treatment plan — the plan is built to the top of the bracket.</div>
                     </div>
                   </div>
                   {/* Live read-back of what was just typed. The point of the field is the
@@ -7683,7 +7804,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   </div>
                   {/* Overall conversion goal */}
                   {(() => {
-                    const convGoal = monthGoals.convGoal || 50;
+                    const convGoal = monthGoals.convGoal || 70;
                     const convActual = m.overallConv;
                     const diff = convActual - convGoal;
                     const diffColor = diff >= 0 ? '#10b981' : '#ef4444';
@@ -8817,7 +8938,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <table style={{width:'100%',minWidth:'820px',borderCollapse:'collapse',fontSize:'13px'}}>
                       <thead>
                         <tr style={{backgroundColor:'#fafbfc'}}>
-                          {['Patient','Started','TC','Contract','Down','Financed mo','Treatment mo',''].map((h, i) => (
+                          {['Patient','Started','TC','Contract','Down','Financed mo','Treatment length',''].map((h, i) => (
                             <th key={h + i} style={{padding:'11px 13px',textAlign: i > 4 ? 'center' : 'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap',borderBottom:'1px solid #edeff2'}}>{h}</th>
                           ))}
                         </tr>
@@ -8844,12 +8965,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   style={{...numSty(p.financedMonths), backgroundColor: p.PIF ? '#f3f4f6' : numSty(p.financedMonths).backgroundColor}} />
                               </td>
                               <td style={{padding:'8px 13px',textAlign:'center'}}>
-                                <input type="number" min="1" max="120" step="1"
-                                  value={p.treatmentMonths ?? ''}
+                                <select
+                                  value={bracketTopFor(p.treatmentMonths)}
                                   onFocus={e => { termsFocusRef.current = e.target.value; }}
                                   onChange={e => setField(p, 'treatmentMonths', e.target.value)}
                                   onBlur={e => { if (e.target.value !== termsFocusRef.current) saveRow(p.id); }}
-                                  style={numSty(p.treatmentMonths)} />
+                                  style={{...numSty(p.treatmentMonths), width:'118px', textAlign:'left'}}>
+                                  {treatmentOptions(p.treatmentMonths)}
+                                </select>
                               </td>
                               <td style={{padding:'8px 13px',textAlign:'center',whiteSpace:'nowrap'}}>
                                 {!p.PIF && (
@@ -9792,7 +9915,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           {showDetailedMetricsCols && <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Obs</th>}
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Show Rate<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target 70%+</div></th>
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Starts</th>
-                          <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Case Acceptance<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target 50%+</div></th>
+                          <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Case Acceptance<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target 70%+</div></th>
                           <th style={{padding:'11px 13px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>Avg Case Fee<div style={{fontSize:'9px',fontWeight:'400',color:'#c4c9d4',textTransform:'none',letterSpacing:0}}>Target $5,800</div></th>
                           <th style={{padding:'11px 13px'}}></th>
                         </tr>
@@ -10439,7 +10562,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <div style={{backgroundColor:'#f9fafb',borderRadius:'8px',padding:'14px',marginBottom:'16px',display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'12px'}}>
                         {[
                           {label:'Show Up Rate', val:showUpCalc?`${showUpCalc}%`:'—', color:showUpCalc>=70?'#10b981':showUpCalc>=50?'#f59e0b':showUpCalc?'#ef4444':'#9ca3af'},
-                          {label:'Case Acceptance', val:convCalc?`${convCalc}%`:'—',  color:convCalc>=50?'#10b981':convCalc>=35?'#f59e0b':convCalc?'#ef4444':'#9ca3af'},
+                          {label:'Case Acceptance', val:convCalc?`${convCalc}%`:'—',  color:convCalc>=70?'#10b981':convCalc>=50?'#f59e0b':convCalc?'#ef4444':'#9ca3af'},
                           {label:'Avg Case Fee', val:feeCalc?`$${feeCalc.toLocaleString()}`:'—', color:feeCalc>=5800?'#10b981':feeCalc?'#f59e0b':'#9ca3af'},
                         ].map(c => (
                           <div key={c.label} style={{textAlign:'center'}}>
@@ -11765,7 +11888,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   </React.Fragment>
                                 ))}
                                 <td style={{padding:'8px',textAlign:'center'}}>
-                                  <input type="number" value={goals.monthly[i].convGoal || 50} readOnly={isPast}
+                                  <input type="number" value={goals.monthly[i].convGoal || 70} readOnly={isPast}
                                     onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, convGoal: Number(e.target.value)} : m)})}
                                     style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #fed7aa',borderRadius:'4px',textAlign:'center',color: isPast ? '#9ca3af' : '#2563EB',fontWeight:'600',backgroundColor: isPast ? '#f3f4f6' : 'white',cursor: isPast ? 'not-allowed' : 'auto'}} />
                                 </td>
@@ -13047,13 +13170,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               </div>
               <div>
-                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Months *</label>
-                <input type="number" min="1" max="120" step="1" placeholder="22"
-                  value={startedForm.treatmentMonths ?? ''}
+                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Length *</label>
+                <select
+                  value={bracketTopFor(startedForm.treatmentMonths)}
                   onChange={e => setStartedForm({...startedForm, treatmentMonths: e.target.value})}
-                  style={{width:'100%',padding:'8px',borderRadius:'4px',
-                    border:`1px solid ${(startedForm.treatmentMonths ?? '').toString().trim() === '' ? '#f87171' : '#d1d5db'}`}} />
-                <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>Estimated treatment length</div>
+                  style={{width:'100%',padding:'8px',borderRadius:'4px',backgroundColor:'white',
+                    border:`1px solid ${(startedForm.treatmentMonths ?? '').toString().trim() === '' ? '#f87171' : '#d1d5db'}`}}>
+                  {treatmentOptions(startedForm.treatmentMonths)}
+                </select>
+                <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>Quoted bracket — planned to the top of the bracket</div>
               </div>
             </div>
 
@@ -13347,14 +13472,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px'}}>0 = paid in full · blank = not recorded</div>
               </div>
               <div>
-                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Months</label>
-                <input
-                  type="number" min="1" max="120" step="1"
-                  value={editForm.treatmentMonths ?? ''}
+                <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Treatment Length</label>
+                <select
+                  value={bracketTopFor(editForm.treatmentMonths)}
                   onChange={(e) => setEditForm({...editForm, treatmentMonths: e.target.value})}
-                  placeholder="22"
-                  style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
-                />
+                  style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',backgroundColor:'white'}}
+                >
+                  {treatmentOptions(editForm.treatmentMonths)}
+                </select>
               </div>
             </div>
 
@@ -13634,7 +13759,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         const hasLocations = locations.length > 0;
         const hasTeam    = tcUsers.filter(u => u.email !== currentUser?.email).length > 0;
         // Goals count as set only if user has explicitly saved them (different from defaults)
-        const defaultMonthly = Array.from({length:12},(_,i)=>({carNPE:i===1?40:35,carStarted:i===1?20:18,apoNPE:i===1?15:12,apoStarted:i===1?8:6,convGoal:50}));
+        const defaultMonthly = Array.from({length:12},(_,i)=>({carNPE:i===1?40:35,carStarted:i===1?20:18,apoNPE:i===1?15:12,apoStarted:i===1?8:6,convGoal:70}));
         const hasGoals   = goals.monthly.some((m, i) => {
           const d = defaultMonthly[i];
           return m.carNPE !== d.carNPE || m.carStarted !== d.carStarted || m.apoNPE !== d.apoNPE || m.apoStarted !== d.apoStarted;
