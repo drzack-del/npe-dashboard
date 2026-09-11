@@ -1151,6 +1151,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     return /failed to fetch|networkerror|load failed|network request failed|fetch failed/i.test(msg);
   };
 
+  // The frontend deploys in seconds; the matching migration is pasted into the SQL Editor
+  // by hand, sometimes days later. In that window PostgREST rejects every patient write
+  // with PGRST204 "Could not find the 'x' column of 'patients' in the schema cache" — and
+  // because it carries a code it is (correctly) not retried as transient. Pull the column
+  // name out so the save can go through without it instead of failing wholesale.
+  const unknownColumnIn = (error) => {
+    if (!error) return null;
+    const m = String(error.message || '').match(/Could not find the '([^']+)' column/i);
+    return m ? m[1] : null;
+  };
+
   const pendingKey = () => `cadenceiq-pending-writes-${managedPracticeId || currentUser?.practiceId}`;
 
   const readPending = () => {
@@ -1209,6 +1220,31 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     existing.push({ patientId, patientName, ts: new Date().toISOString() });
     localStorage.setItem(key, JSON.stringify(existing));
     setSaveFailures(existing);
+  };
+
+  // One ticket per missing column per device — not one per patient save. Deliberately
+  // does NOT go through autoReportBug: the save succeeded (minus the field), so it must
+  // not land in the red save-failures banner.
+  const reportSchemaDrift = (column, error) => {
+    if (!supabase || currentUser?.id === 'demo') return;
+    const key = 'cadenceiq-schema-drift-reported';
+    const reported = JSON.parse(localStorage.getItem(key) || '[]');
+    if (reported.includes(column)) return;
+    localStorage.setItem(key, JSON.stringify([...reported, column]));
+    supabase.from('feedback').insert({
+      practice_id: managedPracticeId || currentUser.practiceId,
+      tc_name: currentUser.name,
+      tc_email: currentUser.email,
+      view: currentView,
+      category: 'Auto Bug Report',
+      description:
+        `Database migration pending: patients.${column} does not exist yet, so saves are going through WITHOUT that field.\n` +
+        `Run the migration that adds '${column}' (see supabase/migrations/).\n` +
+        `Error: ${error.message || error.code}\n` +
+        `TC: ${currentUser.name} | Practice: ${managedPracticeId || currentUser.practiceId}`,
+    }).then(({ error: e }) => {
+      if (e) console.error('Failed to report schema drift:', e);
+    }, e => console.error('Failed to report schema drift:', e));
   };
 
   const clearSaveFailure = (patientId) => {
@@ -1279,12 +1315,27 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
     const backoffs = [400, 1200, 3000];
     let last = null;
+    const dropped = []; // columns the live schema does not have yet
     for (let attempt = 0; attempt <= backoffs.length; attempt++) {
       last = await attemptUpsert(row);
       if (last.ok) {
         dequeuePending(patient.id);
         clearSaveFailure(patient.id);
+        if (dropped.length) {
+          setSaveError(`⚠️ ${patient.name} saved, but ${dropped.join(', ')} could not be stored — database update pending. Tell Dr. Miller.`);
+          setTimeout(() => setSaveError(''), 15000);
+        }
         return true;
+      }
+      // Frontend outran its migration: drop the unknown column and try again right away.
+      // Losing one flag beats losing the whole patient. Does not consume a backoff slot.
+      const missing = unknownColumnIn(last.error);
+      if (missing && missing in row && !dropped.includes(missing)) {
+        reportSchemaDrift(missing, last.error);
+        dropped.push(missing);
+        delete row[missing];
+        attempt--;
+        continue;
       }
       if (!isTransientNetworkError(last.error)) break; // hard rejection — stop retrying
       if (attempt < backoffs.length) await sleep(backoffs[attempt]);
@@ -1336,7 +1387,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       if (rows.length === 0) return;
       let synced = 0;
       for (const row of rows) {
-        const { ok, error } = await attemptUpsert(row);
+        let { ok, error } = await attemptUpsert(row);
+        // Same schema-drift tolerance as dbUpsert: a queued patient must not be thrown
+        // away because a column landed in the app before it landed in the database.
+        const missing = unknownColumnIn(error);
+        if (!ok && missing && missing in row) {
+          reportSchemaDrift(missing, error);
+          const { [missing]: _dropped, ...rest } = row;
+          ({ ok, error } = await attemptUpsert(rest));
+        }
         if (ok) {
           dequeuePending(row.id, row); // only if a fresher edit hasn't replaced it
           clearSaveFailure(row.id);
