@@ -3332,10 +3332,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             // their own password. Everything else is practice-wide or data entry.
             ? ['dashboard', 'patients', 'settings']
             : currentUser?.role === 'tc'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'terms', 'ontime', 'today', 'settings']
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
             : currentUser?.role === 'manager'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'terms', 'ontime', 'today', 'settings']
-            : ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'terms', 'ontime', 'today', 'metrics', 'settings',
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
+            : ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'ontime', 'today', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
             <button
@@ -3365,7 +3365,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {view === 'medicaid' && '🏥 Medicaid Pipeline'}
               {view === 'monthly' && '📊 Monthly Reports'}
               {view === 'bonus' && '💰 Bonus Audit'}
-              {view === 'terms' && '📆 Contract Terms'}
               {view === 'ontime' && '⏱️ On-Time Audit'}
               {view === 'metrics' && 'Practice Metrics'}
               {view === 'settings' && '⚙️ Settings'}
