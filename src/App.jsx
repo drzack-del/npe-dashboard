@@ -14247,7 +14247,7 @@ const MetricCard = ({label, value, color, goal, goalLabel, sub, badge, badgeColo
       <div style={{fontSize:'11px',color:'#6b7280',fontWeight:'600',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:'4px'}}>{label}{onClick && <span style={{marginLeft:'5px',fontSize:'10px',color:'#93c5fd',fontWeight:'500'}}>↗ breakdown</span>}</div>
       <div style={{fontSize:'34px',fontWeight:'800',color: color || '#202020',lineHeight:1,marginBottom:'4px'}}>{value}</div>
       {goal && <div style={{fontSize:'12px',color:'#9ca3af'}}>Goal: <strong style={{color:'#374151'}}>{goal}</strong>{goalLabel ? <span style={{marginLeft:'6px',color:'#9ca3af'}}>{goalLabel}</span> : null}</div>}
-      {sub && !goal && <div style={{fontSize:'12px',color:'#9ca3af'}}>{sub}</div>}
+      {sub && <div style={{fontSize:'12px',color:'#9ca3af',marginTop:goal ? '4px' : 0}}>{sub}</div>}
       {pct !== null && <div style={{height:'4px',backgroundColor:'#f3f4f6',borderRadius:'2px',marginTop:'8px'}}><div style={{height:'4px',borderRadius:'2px',backgroundColor:barColor,width:`${pct}%`,transition:'width 0.4s ease'}}></div></div>}
       {showBadge && <div style={{position:'absolute',top:'12px',right:'12px',fontSize:'10px',fontWeight:'700',padding:'2px 7px',borderRadius:'10px',backgroundColor:badgeBg,color:badgeFg}}>{showBadge}</div>}
     </div>
