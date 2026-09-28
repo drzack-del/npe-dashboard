@@ -2007,6 +2007,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const overallConv = convDenom > 0 ? Math.round((started.length / convDenom) * 100) : 0;
     const sdsConv = convDenom > 0 ? Math.round((sds.length / convDenom) * 100) : 0;
 
+    // Keep payer type on a patient after they start: MP is cleared at conversion,
+    // so it cannot be the only Medicaid signal here.
+    const isMedicaidPatient = p => p.isMedicaid === true || p.medicaidPipeline === true || p.MP === true || (p.obstacle || '').toLowerCase().includes('medicaid');
+    const payerConversion = (matchesPayer) => {
+      const denominator = pts.filter(p => p.OBS !== true && matchesPayer(p)).length;
+      const numerator = started.filter(matchesPayer).length;
+      return { starts: numerator, npe: denominator, rate: denominator > 0 ? Math.round((numerator / denominator) * 100) : null };
+    };
+    const medicaidConversion = payerConversion(isMedicaidPatient);
+    const privatePayConversion = payerConversion(p => !isMedicaidPatient(p));
+
     // OBS counts per location, for the Observation pipeline tile
     const obsPerLocation = locations
       .map(loc => ({ loc, count: pts.filter(p => p.OBS === true && p.location === loc).length }))
@@ -2139,7 +2150,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
     return {
       total, started: started.length, sds: sds.length, pending, scheduled, observation, medicaidPending, noTx, obsPerLocation,
-      overallConv, sdsConv, retainers, whitening, pif, sdsBonus, retBonus, whiteBonus, pifBonus, totalBonus,
+      overallConv, sdsConv, privatePayConversion, medicaidConversion, retainers, whitening, pif, sdsBonus, retBonus, whiteBonus, pifBonus, totalBonus,
       perLocation, carTotal, apoTotal, carStarted, apoStarted, carConv, apoConv,
       avgDP, avgDPAll, brCount, invCount, ph1Count, ph2Count, ltdCount, sdsRate, addons,
       lengthBrackets, lengthUnrecorded
@@ -5202,6 +5213,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   sub={currentUser?.role === 'tc' && trends ? trendLabel(trends.starts) : null}
                   onClick={() => setShowStartsByLocation({ perLocation: dash.perLocation || [], started: dash.started, label: dashTimeframe === 'month' ? monthLabel : 'All Time', tcFilter: effectiveTCFilter, list: periodStartsMine, allList: periodStartsAll })} />
                 <MetricCard label="Case Acceptance" value={`${dash.overallConv}%`} color="#2563EB"
+                  sub={`Private Pay: ${dash.privatePayConversion.rate ?? '—'}% · Medicaid: ${dash.medicaidConversion.rate ?? '—'}%`}
                   goal={dashTimeframe === 'month' && convGoal > 0 ? `${convGoal}%` : null}
                   goalLabel={trends && trends.conv !== null
                     ? trendLabel(trends.conv)
