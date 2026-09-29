@@ -16,7 +16,7 @@ SELECT
   (ARRAY['Avery','Blake','Casey','Drew','Emery','Finley','Gray','Harper','Jordan','Kai'])[1 + n % 10]
     || ' ' || (ARRAY['Testwell','Samplesen','Fakeman','Mockley','Demoson'])[1 + n % 5] || ' ' || n,
   '555-01' || lpad(n::text, 2, '0'),
-  (10 + n % 30)::text,
+  10 + n % 30,
   to_char(current_date - (n * 3), 'YYYY-MM-DD'),
   p.locations[1 + n % array_length(p.locations, 1)],
   CASE WHEN n % 4 = 0 THEN '500' ELSE '' END,

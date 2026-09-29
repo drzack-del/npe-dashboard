@@ -18,7 +18,7 @@ import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { applySchema, runFile, repo, here as dbDir } from '../schema.mjs';
-import { createAuth } from './auth.mjs';
+import { createAuth, verifyJwt } from './auth.mjs';
 import { DEMO_USERS, LOCAL_TEST_PASSWORD } from './demo-users.mjs';
 import { PG_PORT, REST_PORT, GATEWAY_PORT, JWT_SECRET, APP_ENV } from './local-config.mjs';
 
@@ -101,14 +101,18 @@ const gateway = http.createServer(async (req, res) => {
     const raw = await readBody(req);
 
     if (url.pathname.startsWith('/rest/v1')) {
+      const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => !['host', 'origin', 'connection', 'content-length'].includes(k)));
+      // Versions of the app with the production anon key built in send a token this stack did
+      // not sign. Treat any such request as anonymous rather than rejecting it.
+      if (headers.authorization && !verifyJwt(headers.authorization.replace(/^Bearer /i, ''), JWT_SECRET)) delete headers.authorization;
       const upstream = await fetch(`http://127.0.0.1:${REST_PORT}${url.pathname.slice('/rest/v1'.length) || '/'}${url.search}`, {
         method: req.method,
-        headers: Object.fromEntries(Object.entries(req.headers).filter(([k]) => !['host', 'origin', 'connection', 'content-length'].includes(k))),
+        headers,
         body: ['GET', 'HEAD'].includes(req.method) ? undefined : raw,
       });
-      const headers = { ...cors(req) };
-      upstream.headers.forEach((v, k) => { if (!k.startsWith('access-control-') && !['content-encoding', 'transfer-encoding', 'connection'].includes(k)) headers[k] = v; });
-      res.writeHead(upstream.status, headers);
+      const responseHeaders = { ...cors(req) };
+      upstream.headers.forEach((v, k) => { if (!k.startsWith('access-control-') && !['content-encoding', 'transfer-encoding', 'connection'].includes(k)) responseHeaders[k] = v; });
+      res.writeHead(upstream.status, responseHeaders);
       return res.end(Buffer.from(await upstream.arrayBuffer()));
     }
     const body = raw.length ? JSON.parse(raw.toString()) : {};

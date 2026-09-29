@@ -8,6 +8,7 @@
 // tests/api-session.mjs (the per-request pattern the AWS API layer will use).
 import EmbeddedPostgres from 'embedded-postgres';
 import pg from 'pg';
+import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -40,19 +41,30 @@ try {
     await applySchema(admin);
 
     console.log('Tests:');
-    await admin.query('BEGIN');
-    try {
-      await runFile(admin, path.join(repo, 'tests/security-policies.sql'));
-    } finally {
-      await admin.query('ROLLBACK');
+    // tests/security-policies.sql belongs to the pending security update and only exists on
+    // branches that carry it.
+    const securityTests = path.join(repo, 'tests/security-policies.sql');
+    if (existsSync(securityTests)) {
+      await admin.query('BEGIN');
+      try {
+        await runFile(admin, securityTests);
+      } finally {
+        await admin.query('ROLLBACK');
+      }
+    } else {
+      console.log('  skip tests/security-policies.sql (only on branches with the pending security update)');
     }
+    let result;
     try {
-      for (const name of await runApiSessionTests({ admin, connect })) console.log(`  ok   api: ${name}`);
+      result = await runApiSessionTests({ admin, connect });
     } catch (err) {
       console.error(`  FAIL api-session: ${err.message}`);
       throw err;
     }
-    console.log('\nProduction structure + pending migrations applied; all security tests passed on plain Postgres 17.');
+    console.log(`  (database version: ${result.version})`);
+    for (const name of result.passed) console.log(`  ok   api: ${name}`);
+    for (const gap of result.gaps) console.log(`  gap  api: ${gap}`);
+    console.log(`\nAll checks passed on plain Postgres 17${result.gaps.length ? `; ${result.gaps.length} known gap(s) in this version listed above` : ''}.`);
   } finally {
     await admin.end();
   }

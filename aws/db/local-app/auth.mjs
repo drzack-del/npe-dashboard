@@ -14,7 +14,7 @@ export const signJwt = (payload, secret) => {
   const sig = crypto.createHmac('sha256', secret).update(`${head}.${body}`).digest('base64url');
   return `${head}.${body}.${sig}`;
 };
-const verifyJwt = (token, secret) => {
+export const verifyJwt = (token, secret) => {
   const [head, body, sig] = (token || '').split('.');
   if (!sig) return null;
   const expected = crypto.createHmac('sha256', secret).update(`${head}.${body}`).digest('base64url');

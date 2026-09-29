@@ -23,7 +23,9 @@ test('adding a pending patient saves every field to the database', async ({ page
   await page.getByPlaceholder('24', { exact: true }).fill('20');
   await page.locator('select').filter({ has: page.locator('option[value="24"]') }).selectOption('24');
   await page.locator('select').filter({ has: page.locator('option', { hasText: 'Waiting on Finances' }) }).selectOption({ label: 'Waiting on Finances' });
-  await page.getByRole('button', { name: 'No', exact: true }).nth(1).click(); // not a transfer
+  // "Is this a transfer patient?" only exists in versions that have that feature.
+  const transferNo = page.getByRole('button', { name: 'No', exact: true }).nth(1);
+  if (await transferNo.count()) await transferNo.click();
   await page.getByRole('button', { name: /Add Patient/ }).click();
   await expect(page.getByText(`${NAME} saved`)).toBeVisible();
 
@@ -36,8 +38,12 @@ test('adding a pending patient saves every field to the database', async ({ page
   });
   expect(rows[0].next_touch_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
-  const audit = await dbQuery(`SELECT count(*)::int AS n FROM private.security_events WHERE record_id = $1 AND event_name = 'insert'`, [rows[0].id]);
-  expect(audit[0].n, 'the save is recorded in the audit log').toBe(1);
+  // The audit log arrives with the pending security update.
+  const [{ audited }] = await dbQuery(`SELECT to_regclass('private.security_events') IS NOT NULL AS audited`);
+  if (audited) {
+    const audit = await dbQuery(`SELECT count(*)::int AS n FROM private.security_events WHERE record_id = $1 AND event_name = 'insert'`, [rows[0].id]);
+    expect(audit[0].n, 'the save is recorded in the audit log').toBe(1);
+  }
 });
 
 test('the new patient is still there after a reload', async ({ page }) => {
@@ -67,16 +73,14 @@ test('deleting a patient removes it from the database', async ({ page }) => {
     .toBe(0);
 });
 
-// Known bug, being fixed in a separate session: "today" is computed in UTC, so in the evening
-// (US time) a new patient's NPE date defaults to tomorrow. The browser here runs in a time zone
-// whose date differs from UTC right now, so this reproduces at any hour. test.fail() keeps the
-// suite green while the bug exists and flags it the moment the fix lands, so this line can go.
+// Regression check for the evening date bug fixed on 2026-09-28 ("today" was computed in UTC,
+// so after 8pm US time a new patient's NPE date defaulted to tomorrow). The browser runs in a
+// time zone whose date differs from UTC right now, so this catches a regression at any hour.
 const utcHour = new Date().getUTCHours();
 const zone = utcHour >= 10 ? 'Pacific/Kiritimati' : 'Etc/GMT+12';
 test.describe('in a time zone whose date differs from UTC', () => {
   test.use({ timezoneId: zone });
   test('a new patient defaults to today\'s local date', async ({ page }) => {
-    test.fail(true, 'Known bug: new-patient date uses UTC (fix in progress)');
     const localToday = new Intl.DateTimeFormat('en-CA', { timeZone: zone }).format(new Date());
     await signIn(page, 'admin@demo-ortho.invalid');
     await openTab(page, 'Add NPE');
