@@ -1,6 +1,6 @@
-// Loads the full CadenceIQ schema into an empty plain-Postgres database, in the same order
-// run-local.mjs uses: Supabase stand-in -> reconstructed baseline -> placeholder practice ->
-// supabase/migrations (by date) -> patches/.
+// Loads the CadenceIQ schema into an empty plain-Postgres database: Supabase stand-in ->
+// production's real structure -> placeholder practice -> migrations not yet run in
+// production -> patches/.
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,10 +29,23 @@ export const runFile = async (client, file, log = console.log) => {
   }
 };
 
+// The last migration already run in production (see prod-schema/production-schema.sql).
+export const appliedThrough = async () =>
+  (await readFile(path.join(here, 'prod-schema/APPLIED_THROUGH'), 'utf8')).trim();
+
+// Migrations not yet run in production, in the order they would be pasted.
+export async function pendingMigrations() {
+  const cutoff = sortKey(await appliedThrough());
+  return (await sqlFiles(path.join(repo, 'supabase/migrations')))
+    .filter(f => sortKey(path.basename(f)) > cutoff);
+}
+
+// Production's structure as it is today, then the pending migrations on top: the same steps
+// that happen when the pending migrations are pasted into the Supabase SQL Editor.
 export async function applySchema(client, log = console.log) {
-  for (const f of ['00_supabase_compat.sql', '01_baseline_reconstructed.sql', '02_seed_placeholder_practice.sql']) {
-    await runFile(client, path.join(here, f), log);
-  }
-  for (const f of await sqlFiles(path.join(repo, 'supabase/migrations'))) await runFile(client, f, log);
+  await runFile(client, path.join(here, '00_supabase_compat.sql'), log);
+  await runFile(client, path.join(here, 'prod-schema/production-schema.sql'), log);
+  await runFile(client, path.join(here, '02_seed_placeholder_practice.sql'), log);
+  for (const f of await pendingMigrations()) await runFile(client, f, log);
   for (const f of await sqlFiles(path.join(here, 'patches'))) await runFile(client, f, log);
 }
