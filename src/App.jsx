@@ -4314,7 +4314,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                              label: kpiPeriodLabel, total: prodTotal, booksNet: prodBooksNet, goal: prodGoal,
                              perLocation: Object.entries(prodByLoc).map(([loc, amt]) => ({ loc, amt })).sort((a,b)=>b.amt-a.amt),
                            }) } : null,
-                    conv:  { hint:'↗ breakdown', onClick:() => setShowConvBreakdown({ dashPatients: selNPEPts, dashStartPatients: selStartPts }) },
+                    // Same modal, two cohorts. Conversion hands it the exam list for both halves,
+                    // which is exactly how nmCohort is calculated, so its split sums to the tile.
+                    cohortConv: { hint:'↗ breakdown', onClick:() => setShowConvBreakdown({ mode:'cohort', label: kpiPeriodLabel, dashPatients: selNPEPts, dashStartPatients: selNPEPts }) },
+                    conv:  { hint:'↗ breakdown', onClick:() => setShowConvBreakdown({ mode:'acceptance', label: kpiPeriodLabel, dashPatients: selNPEPts, dashStartPatients: selStartPts }) },
                   };
                   // The per-product rates no longer have columns of their own, so this drill
                   // is the only place the full picture lives — the breakdown already opens on
@@ -5141,7 +5144,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     : (dashTimeframe === 'month' && dash.overallConv < convGoal ? `· ${convGoal - dash.overallConv} pts behind` : null)}
                   badge={dashTimeframe === 'month' ? (dash.overallConv >= convGoal ? '✓ Goal Met' : `${dash.overallConv}%`) : null}
                   badgeColor={dashTimeframe === 'month' ? (dash.overallConv >= convGoal ? '#dcfce7' : dash.overallConv >= convGoal * 0.8 ? '#fef3c7' : '#fee2e2') : null}
-                  onClick={() => setShowConvBreakdown({ dashPatients, dashStartPatients })} />
+                  onClick={() => setShowConvBreakdown({ mode:'acceptance', dashPatients, dashStartPatients })} />
                 <MetricCard label={currentUser?.role === 'tc' ? 'My Same-Day Starts' : 'Same-Day Starts'} value={dash.sds} color="#3b82f6"
                   sub={dash.started > 0 ? `SDS Rate: ${dash.sdsRate}% of starts` : 'No starts yet'} />
                 <MetricCard label="Add-On Attach Rate" value={dash.addons.starts > 0 ? `${dash.addons.attachRate}%` : '—'} color="#0891b2"
@@ -12455,8 +12458,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
       {/* Conversion Breakdown Modal */}
       {showConvBreakdown && (() => {
-        const { dashPatients: dp, dashStartPatients: dsp } = showConvBreakdown;
+        const { dashPatients: dp, dashStartPatients: dsp, mode = 'acceptance', label: periodLabel } = showConvBreakdown;
         const sp = dsp || dp;
+        const isCohort = mode === 'cohort';
         // isMedicaid/medicaidPipeline survive a start; MP is cleared when a patient converts,
         // so MP alone would misclassify every started Medicaid patient — obstacle text is
         // checked too since it now persists through the start (no longer wiped at scheduling).
@@ -12471,6 +12475,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         const privStarted = allStarted.filter(p => !isMedicaid(p));
         const medConv = medNPE.length > 0 ? Math.round((medStarted.length / medNPE.length) * 100) : null;
         const privConv = privNPE.length > 0 ? Math.round((privStarted.length / privNPE.length) * 100) : null;
+        // Conversion is still maturing: exams in the period who have neither started nor
+        // declined can still convert, so each payer card says how many are undecided.
+        const undecidedOf = pool => pool.filter(p => !isSDS(p) && !p.ST && !p.NOTX).length;
         // Breakdown by obstacle for non-Medicaid non-started
         const obstacleMap = {};
         convPool.forEach(p => {
@@ -12497,8 +12504,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           <div onClick={() => setShowConvBreakdown(null)} style={{position:'fixed',top:0,left:0,right:0,bottom:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10000}}>
             <div onClick={e => e.stopPropagation()} style={{backgroundColor:'white',padding:'28px',borderRadius:'14px',maxWidth:'520px',width:'94%',boxShadow:'0 20px 40px rgba(0,0,0,0.25)',maxHeight:'85vh',overflowY:'auto'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'20px'}}>
-                <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:0}}>📊 Conversion Breakdown</h3>
+                <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:0}}>📊 {isCohort ? 'Conversion' : 'Case Acceptance'} Breakdown{periodLabel ? <span style={{fontSize:'13px',fontWeight:'600',color:'#9ca3af'}}> · {periodLabel}</span> : null}</h3>
                 <button onClick={() => setShowConvBreakdown(null)} style={{background:'none',border:'none',fontSize:'20px',cursor:'pointer',color:'#9ca3af',lineHeight:1}}>×</button>
+              </div>
+              <div style={{fontSize:'12px',color:'#6b7280',lineHeight:1.5,margin:'-10px 0 18px'}}>
+                {isCohort
+                  ? 'Of the exams held in this period, how many of those same patients have started.'
+                  : 'Starts landing in this period against exams held in this period. A patient who consulted earlier and started now counts, so this can read over 100%.'}
               </div>
 
               {/* Private vs Medicaid split */}
@@ -12506,9 +12518,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>By Insurance Type</div>
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'12px'}}>
                   {[
-                    {label:'Private Pay', npe:privNPE.length, started:privStarted.length, conv:privConv, bg:'#eff6ff', border:'#bfdbfe', color:'#2563EB'},
-                    {label:'Medicaid', npe:medNPE.length, started:medStarted.length, conv:medConv, bg:'#fef3c7', border:'#fde68a', color:'#d97706'},
-                  ].map(({label,npe,started,conv,bg,border,color}) => (
+                    {label:'Private Pay', npe:privNPE.length, started:privStarted.length, conv:privConv, undecided:undecidedOf(privNPE), bg:'#eff6ff', border:'#bfdbfe', color:'#2563EB'},
+                    {label:'Medicaid', npe:medNPE.length, started:medStarted.length, conv:medConv, undecided:undecidedOf(medNPE), bg:'#fef3c7', border:'#fde68a', color:'#d97706'},
+                  ].map(({label,npe,started,conv,undecided,bg,border,color}) => (
                     <div key={label} style={{backgroundColor:bg,border:`1px solid ${border}`,borderRadius:'10px',padding:'14px'}}>
                       <div style={{fontSize:'12px',fontWeight:'700',color:'#374151',marginBottom:'8px'}}>{label}</div>
                       <div style={{fontSize:'11px',color:'#6b7280',marginBottom:'2px'}}>{npe} NPEs · {started} started</div>
@@ -12516,6 +12528,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <div style={{height:'5px',backgroundColor:'rgba(0,0,0,0.08)',borderRadius:'3px'}}>
                         {conv !== null && <div style={{height:'5px',borderRadius:'3px',backgroundColor:color,width:`${Math.min(100,conv)}%`}}></div>}
                       </div>
+                      {isCohort && undecided > 0 && <div style={{fontSize:'11px',color:'#6b7280',marginTop:'6px'}}>{undecided} still deciding</div>}
                     </div>
                   ))}
                 </div>
