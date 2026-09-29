@@ -1,0 +1,24 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "npe-dashboard",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173,
+      "autoPort": true
+    },
+    {
+      "name": "local-test-backend",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["aws/db/local-app/start.mjs"],
+      "port": 54321
+    },
+    {
+      "name": "app-on-local-test-backend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--mode", "awslocal", "--port", "5174", "--strictPort"],
+      "port": 5174
+    }
+  ]
+}
