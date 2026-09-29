@@ -1,3 +1,4 @@
+import './case-economics.css';
 import React, { useState, useEffect, useRef, Component } from 'react';
 
 class ErrorBoundary extends Component {
@@ -1828,6 +1829,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (n === null) return '';
     const b = TREATMENT_BRACKETS.find(b => (b.min === 0 ? n <= b.top : n > b.min && n <= b.top));
     return b ? String(b.top) : String(n);
+  };
+  const caseLengthMix = (starts) => {
+    const groups = [
+      ...TREATMENT_BRACKETS.map(b => ({ ...b, matches: p => {
+        const tm = termMonths(p.treatmentMonths);
+        return !p.PH1 && tm !== null && (b.min === 0 ? tm <= b.top : tm > b.min && tm <= b.top);
+      } })),
+      { label: '24+ mo', matches: p => !p.PH1 && termMonths(p.treatmentMonths) > 24 },
+      { label: 'Phase 1', matches: p => !!p.PH1 },
+    ];
+    return groups.map(({ matches, ...b }) => {
+      const cases = starts.filter(matches);
+      const fees = cases.map(p => parseDP(p.contractAmount)).filter(v => v > 0);
+      return { ...b, count: cases.length, feeN: fees.length,
+        avgFee: fees.length ? Math.round(fees.reduce((a, c) => a + c, 0) / fees.length) : null };
+    });
   };
   // Shared option list for all four places treatment length is entered.
   const treatmentOptions = (current) => {
@@ -4523,159 +4540,39 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   );
                 })()}
 
-                {/* ── Average down payment ──────────────────────────────────────
-                    Deliberately NOT in the KPI row: that row is rates and counts the
-                    practice is steered by, and a dollar average behaves differently —
-                    it swings on one unusual case and has no goal behind it.
-                    Deliberately NOT reusing calculateMetrics' `avgDP` either. That one
-                    silently drops every $0-down start (`filter(v => v > 0)`), which on an
-                    owner's dashboard hides the thing worth knowing: how many started with
-                    nothing down. Its definition is left alone because the Metrics tab and
-                    the benchmark row read it; this card computes its own and reports what
-                    it excluded, the way the Production column does. */}
-                {/* Hidden from TCs, matching the card this replaces: a practice-wide
-                    dollar average is management information, and a TC's own view is
-                    scoped to their patients anyway. */}
-                {currentUser?.role !== 'tc' && (() => {
-                  const dpPeriodLabel = isRangeMode ? customRangeLabel : selMonthLabel;
-                  const dpStarts = selStartPts.filter(p => isSDS(p) || p.ST);
-                  if (dpStarts.length === 0) return null;
-                  const dpPIF     = dpStarts.filter(p => p.PIF);
-                  const dpFinance = dpStarts.filter(p => !p.PIF);
-                  const dpVals    = dpFinance.map(p => parseDP(p.dp)).filter(v => v > 0);
-                  const dpZero    = dpFinance.filter(p => parseDP(p.dp) === 0).length;
-                  const dpAvg     = dpVals.length > 0
+                {/* Keep the existing cohorts and role gates while sharing one compact panel. */}
+                {(currentUser?.role !== 'tc' || showProduction) && (() => {
+                  const periodLabel = isRangeMode ? customRangeLabel : selMonthLabel;
+                  const starts = selStartPts.filter(p => isSDS(p) || p.ST);
+                  if (starts.length === 0) return null;
+                  const showCaseMetrics = currentUser?.role !== 'tc';
+                  // Positive down payments only; excluded starts remain explicitly counted.
+                  const dpPIF = starts.filter(p => p.PIF);
+                  const dpFinance = starts.filter(p => !p.PIF);
+                  const dpVals = dpFinance.map(p => parseDP(p.dp)).filter(v => v > 0);
+                  const dpZero = dpFinance.filter(p => parseDP(p.dp) === 0).length;
+                  const dpAvg = dpVals.length > 0
                     ? Math.round(dpVals.reduce((a, b) => a + b, 0) / dpVals.length) : null;
-                  const dpMoney   = v => `$${Math.round(v).toLocaleString()}`;
-                  return (
-                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
-                      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:'14px',gap:'12px',flexWrap:'wrap'}}>
-                        <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>💵 Average Down Payment</div>
-                        <div style={{fontSize:'11px',color:'#9ca3af',fontWeight:'600'}}>
-                          {dpStarts.length} start{dpStarts.length !== 1 ? 's' : ''} · {dpPeriodLabel}
-                        </div>
-                      </div>
-                      {dpAvg === null ? (
-                        <div style={{fontSize:'13px',color:'#6b7280',lineHeight:1.6}}>
-                          No start in this period has a down payment recorded.
-                          {dpPIF.length > 0 && ` ${dpPIF.length} paid in full — those have no down payment to average.`}
-                        </div>
-                      ) : (
-                        <div style={{display:'flex',alignItems:'flex-end',gap:'22px',flexWrap:'wrap'}}>
-                          <div>
-                            <div style={{fontSize:'40px',fontWeight:'800',lineHeight:1,color:'#7c3aed',fontVariantNumeric:'tabular-nums'}}>{dpMoney(dpAvg)}</div>
-                            <div style={{fontSize:'11px',fontWeight:'600',color:'#9ca3af',marginTop:'7px'}}>
-                              across {dpVals.length} of {dpStarts.length} start{dpStarts.length !== 1 ? 's' : ''}
-                            </div>
-                          </div>
-                          {/* What the average leaves out. Both are real starts, and both
-                              would drag the number down if folded in — so they are named
-                              beside it rather than averaged away or quietly dropped. */}
-                          <div style={{fontSize:'12px',color:'#6b7280',lineHeight:1.7}}>
-                            {dpZero > 0 && <div><strong style={{color:'#b45309'}}>{dpZero}</strong> started with $0 down</div>}
-                            {dpPIF.length > 0 && <div><strong style={{color:'#374151'}}>{dpPIF.length}</strong> paid in full — no plan to put money down on</div>}
-                            {dpZero === 0 && dpPIF.length === 0 && <div>Every start in this period put money down.</div>}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* ── Case Length Mix ──────────────────────────────────────────
-                    Fee is priced off treatment LENGTH, not treatment type — braces and
-                    Invisalign cost the same for the same length — so this, not a treatment
-                    type breakdown, is the cut that explains the average case fee.
-                    Same start cohort and period label as the cards either side of it, so
-                    the three always reconcile. Contract amount is missing on some older
-                    starts, so only priced ones are averaged and the tooltip says how many
-                    stood behind each average. */}
-                {currentUser?.role !== 'tc' && (() => {
-                  const clPeriodLabel = isRangeMode ? customRangeLabel : selMonthLabel;
-                  const clStarts = selStartPts.filter(p => isSDS(p) || p.ST);
-                  if (clStarts.length === 0) return null;
-                  const palette = {
-                    '0–6 mo':   { color:'#b45309', bg:'#fffbeb', border:'#fde68a' },
-                    '6–12 mo':  { color:'#0e7490', bg:'#ecfeff', border:'#a5f3fc' },
-                    '12–18 mo': { color:'#3b82f6', bg:'#eff6ff', border:'#bfdbfe' },
-                    '18–24 mo': { color:'#0f766e', bg:'#f0fdfa', border:'#99f6e4' },
-                  };
-                  // Upper-inclusive, matching how the fee schedule reads: a 12-month case
-                  // is a 6–12 case, not a 12–18 one.
-                  const buckets = TREATMENT_BRACKETS.map(b => {
-                    const inB = clStarts.filter(p => {
-                      const tm = termMonths(p.treatmentMonths);
-                      if (tm === null) return false;
-                      return b.min === 0 ? tm <= b.top : (tm > b.min && tm <= b.top);
-                    });
-                    const fees = inB.map(p => parseDP(p.contractAmount)).filter(v => v > 0);
-                    return { ...b, count: inB.length, feeN: fees.length,
-                      avgFee: fees.length ? Math.round(fees.reduce((a, c) => a + c, 0) / fees.length) : null };
-                  });
-                  // Both of these are real starts that no bracket can hold. Named beside the
-                  // tiles rather than dropped, so the counts still add back up to Starts.
-                  const overCount  = clStarts.filter(p => { const tm = termMonths(p.treatmentMonths); return tm !== null && tm > 24; }).length;
-                  const unrecorded = clStarts.filter(p => termMonths(p.treatmentMonths) === null).length;
-                  return (
-                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
-                      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:'14px',gap:'12px',flexWrap:'wrap'}}>
-                        <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>📆 Case Length Mix</div>
-                        <div style={{fontSize:'11px',color:'#9ca3af',fontWeight:'600'}}>
-                          {clStarts.length} start{clStarts.length !== 1 ? 's' : ''} · {clPeriodLabel}
-                        </div>
-                      </div>
-                      <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
-                        {buckets.map(b => {
-                          const c = palette[b.label];
-                          return (
-                            <div key={b.label}
-                              title={`${b.count} start${b.count === 1 ? '' : 's'}${b.feeN < b.count ? ` · average from the ${b.feeN} with a contract amount recorded` : ''}`}
-                              style={{borderRadius:'8px',padding:'12px 16px',textAlign:'center',minWidth:'96px',backgroundColor:c.bg,border:`1px solid ${c.border}`}}>
-                              <div style={{fontSize:'26px',fontWeight:'800',color:c.color,lineHeight:1}}>{b.count}</div>
-                              <div style={{fontSize:'11px',color:c.color,opacity:0.8,marginTop:'3px'}}>{b.label}</div>
-                              <div style={{fontSize:'13px',fontWeight:'700',color:c.color,marginTop:'7px',paddingTop:'6px',borderTop:`1px solid ${c.border}`}}>
-                                {b.avgFee !== null ? `$${b.avgFee.toLocaleString()}` : '—'}
-                              </div>
-                              <div style={{fontSize:'9px',color:c.color,opacity:0.65,marginTop:'1px'}}>avg fee</div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {(overCount > 0 || unrecorded > 0) && (
-                        <div style={{fontSize:'12px',color:'#6b7280',lineHeight:1.7,marginTop:'12px'}}>
-                          {overCount > 0 && <div><strong style={{color:'#b45309'}}>{overCount}</strong> longer than 24 months — off the fee schedule</div>}
-                          {unrecorded > 0 && <div><strong style={{color:'#b45309'}}>{unrecorded}</strong> with no treatment length recorded — backfill in 📆 Contract Terms</div>}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* Financed beyond treatment. Cohort is in-house financed starts only: a
-                    paid-in-full case has no term to compare, so counting it as compliant would
-                    let a cash-heavy month score well while every financed plan ran past debond.
-                    A third-party-financed case (CareCredit etc.) is on the lender's terms, not
-                    ours, and is out for the same reason. Both are reported as counts beside
-                    the number, never inside it. No thresholds or colour bands — the number is
-                    left to speak for itself. */}
-                {showProduction && (() => {
-                  // kpiPeriodLabel lives inside the KPI table's own IIFE above, so this
-                  // card derives the same label from the outer-scope pieces it is built from.
-                  const kpiPeriodLabel = isRangeMode ? customRangeLabel : selMonthLabel;
-                  const termStarts = selStartPts.filter(p => isSDS(p) || p.ST);
-                  if (termStarts.length === 0) return null;
-                  const rows = termStarts.map(p => ({
+                  const dollars = v => `$${Math.round(v).toLocaleString()}`;
+                  // Preserve upper-inclusive brackets; put Phase 1 first as in the mockup.
+                  const mix = caseLengthMix(starts);
+                  const buckets = [...mix.filter(b => b.label === 'Phase 1'),
+                    ...mix.filter(b => b.label !== 'Phase 1' && b.label !== '24+ mo')];
+                  const overCount = starts.filter(p => !p.PH1 && termMonths(p.treatmentMonths) > 24).length;
+                  const unrecorded = starts.filter(p => !p.PH1 && termMonths(p.treatmentMonths) === null).length;
+                  // Financing is in-house only. PIF and lender-held plans stay excluded.
+                  const rows = starts.map(p => ({
                     p, fm: termMonths(p.financedMonths), tm: termMonths(p.treatmentMonths), tp: !!p.thirdPartyFinancing,
                   }));
                   const thirdParty = rows.filter(r => r.tp).length;
-                  const pifCount  = rows.filter(r => !r.tp && r.fm === 0).length;
-                  const financed  = rows.filter(r => !r.tp && r.fm !== null && r.fm > 0);
-                  const complete  = financed.filter(r => r.tm !== null && r.tm > 0);
+                  const pifCount = rows.filter(r => !r.tp && r.fm === 0).length;
+                  const financed = rows.filter(r => !r.tp && r.fm !== null && r.fm > 0);
+                  const complete = financed.filter(r => r.tm !== null && r.tm > 0);
                   const avg = a => a.length ? a.reduce((x, v) => x + v, 0) / a.length : null;
                   const avgGap = avg(complete.map(r => r.fm - r.tm));
-                  const avgFm  = avg(complete.map(r => r.fm));
-                  const avgTm  = avg(complete.map(r => r.tm));
-                  const money  = v => parseFloat((v || '').toString().replace(/[^0-9.]/g, '')) || 0;
+                  const avgFm = avg(complete.map(r => r.fm));
+                  const avgTm = avg(complete.map(r => r.tm));
+                  const money = v => parseFloat((v || '').toString().replace(/[^0-9.]/g, '')) || 0;
                   const owedAfter = complete.reduce((sum, r) => {
                     const gap = r.fm - r.tm;
                     if (gap <= 0) return sum;
@@ -4684,60 +4581,81 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   }, 0);
                   const paidOff = complete.filter(r => r.fm - r.tm <= 0).length;
                   const missing = financed.length - complete.length;
-                  const cardShell = (body) => (
-                    <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
-                      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:'14px',gap:'12px',flexWrap:'wrap'}}>
-                        <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>📆 Financed Beyond Treatment</div>
-                        <div style={{fontSize:'11px',color:'#9ca3af',fontWeight:'600'}}>
-                          {complete.length} financed start{complete.length !== 1 ? 's' : ''} · {kpiPeriodLabel}
-                        </div>
+                  return (
+                    <div className="case-economics">
+                      <header className="case-economics-header">
+                        <h2>Case Economics</h2>
+                        <span>{starts.length} start{starts.length !== 1 ? 's' : ''} · {periodLabel}</span>
+                      </header>
+                      <div className={`case-economics-grid${showProduction ? '' : ' case-economics-grid-two'}`}>
+                        {showCaseMetrics && <>
+                          <section className="case-economics-down-payment">
+                            <h3>Average Down Payment</h3>
+                            {dpAvg !== null ? <>
+                              <div className="case-economics-value case-economics-purple">{dollars(dpAvg)}</div>
+                              <div className="case-economics-secondary">{dpVals.length} contributing start{dpVals.length !== 1 ? 's' : ''}</div>
+                            </> : <div className="case-economics-secondary">No positive down payments recorded.</div>}
+                            <div className="case-economics-note">
+                              {dpZero > 0 || dpPIF.length > 0
+                                ? [dpZero > 0 && `${dpZero} zero-down`, dpPIF.length > 0 && `${dpPIF.length} paid in full`].filter(Boolean).join(' · ')
+                                : 'Every start put money down.'}
+                            </div>
+                          </section>
+                          <section className="case-economics-mix">
+                            <h3>Case Length Mix <span>· starts</span></h3>
+                            <div className="case-economics-table-wrap">
+                              <table aria-label="Case length mix: starts and average case fees">
+                                <thead><tr>{buckets.map(b => <th key={b.label} scope="col">{b.label}</th>)}</tr></thead>
+                                <tbody>
+                                  <tr className="case-economics-counts">{buckets.map(b => <td key={b.label} aria-label={`${b.count} starts`}>{b.count}</td>)}</tr>
+                                </tbody>
+                                <tbody>
+                                  <tr className="case-economics-fee-label"><th colSpan={buckets.length} scope="rowgroup">Average case fee</th></tr>
+                                  <tr className="case-economics-fees">{buckets.map(b => (
+                                    <td key={b.label} title={`Average from ${b.feeN} of ${b.count} starts with a contract amount recorded`}>
+                                      {b.avgFee !== null ? dollars(b.avgFee) : '—'}
+                                    </td>
+                                  ))}</tr>
+                                </tbody>
+                              </table>
+                            </div>
+                          </section>
+                        </>}
+                        {showProduction && <section className="case-economics-financing">
+                          <h3>Financed Beyond Treatment</h3>
+                          {complete.length > 0 ? <>
+                            <div className="case-economics-value">{avgGap > 0 ? '+' : ''}{avgGap.toFixed(1)} <span>months</span></div>
+                            <div className="case-economics-secondary">{avgFm.toFixed(1)} financed · {avgTm.toFixed(1)} treatment</div>
+                            <div className="case-economics-note">
+                              <div>{paidOff}/{complete.length} paid off by debond</div>
+                              {owedAfter > 0 && <div><strong>{dollars(owedAfter)}</strong> estimated owed after treatment</div>}
+                            </div>
+                            <button type="button" className="case-economics-link" onClick={() => setShowTermDetail({ rows: complete, label: periodLabel })}>View patients ↗</button>
+                          </> : <>
+                            <div className="case-economics-secondary">No financed start has both terms recorded yet.</div>
+                            <button type="button" className="case-economics-link" onClick={() => setCurrentView('terms')}>Fill in contract terms →</button>
+                          </>}
+                        </section>}
                       </div>
-                      {body}
-                    </div>
-                  );
-                  // Nothing to average yet. Say what is missing and where to fix it rather
-                  // than rendering a confident-looking dash.
-                  if (complete.length === 0) return cardShell(
-                    <div style={{fontSize:'13px',color:'#6b7280',lineHeight:1.6}}>
-                      No financed start in this period has both numbers recorded yet.
-                      {financed.length > 0 && ` ${financed.length} financed start${financed.length !== 1 ? 's are' : ' is'} waiting on them.`}
-                      {pifCount > 0 && ` ${pifCount} paid in full — those have no term to compare.`}
-                      {thirdParty > 0 && ` ${thirdParty} third-party financed — on the lender's terms, not ours.`}
-                      <button onClick={() => setCurrentView('terms')}
-                        style={{marginLeft:'8px',padding:'4px 10px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'12px',fontWeight:'600',color:'#374151',cursor:'pointer'}}>
-                        Fill these in →
-                      </button>
-                    </div>
-                  );
-                  return cardShell(
-                    <div>
-                      <div onClick={() => setShowTermDetail({ rows: complete, label: kpiPeriodLabel })}
-                        style={{cursor:'pointer',display:'flex',alignItems:'flex-end',gap:'20px',flexWrap:'wrap'}}>
-                        <div>
-                          <div style={{fontSize:'40px',fontWeight:'800',lineHeight:1,color:'#202020',fontVariantNumeric:'tabular-nums'}}>
-                            {avgGap > 0 ? '+' : ''}{avgGap.toFixed(1)}
+                      <footer className="case-economics-footer">
+                        {showProduction && <span>Financing coverage: {complete.length} of {financed.length} starts</span>}
+                        {showProduction && missing > 0 && <button type="button" className="case-economics-link" onClick={() => setCurrentView('terms')}>Fill in {missing} missing treatment length{missing !== 1 ? 's' : ''} →</button>}
+                        {showCaseMetrics && overCount > 0 && <span>{overCount} longer than 24 months — off schedule</span>}
+                        {showCaseMetrics && unrecorded > 0 && <button type="button" className="case-economics-link" onClick={() => setCurrentView('terms')}>{unrecorded} start{unrecorded !== 1 ? 's' : ''} missing treatment length →</button>}
+                        <details>
+                          <summary>Calculation details</summary>
+                          <div className="case-economics-details">
+                            {showCaseMetrics && <>
+                              <div>Down payment averages positive payments only; excludes {dpZero} zero-down and {dpPIF.length} paid-in-full starts.</div>
+                              <div>Case fees average only starts with a recorded positive contract amount. {buckets.map(b => `${b.label}: ${b.feeN}/${b.count}`).join(' · ')}.</div>
+                            </>}
+                            {showProduction && <>
+                              <div>Financing includes in-house plans only; excludes {pifCount} paid-in-full and {thirdParty} third-party financed starts.</div>
+                              <div>Financing averages use the {complete.length} starts with both terms recorded. Balance after treatment is an estimate.</div>
+                            </>}
                           </div>
-                          <div style={{fontSize:'12px',color:'#6b7280',fontWeight:'600',marginTop:'5px'}}>months on average</div>
-                        </div>
-                        <div style={{fontSize:'13px',color:'#4b5563',lineHeight:1.7,paddingBottom:'2px'}}>
-                          <div><strong>{avgFm.toFixed(1)} mo</strong> financed · <strong>{avgTm.toFixed(1)} mo</strong> treatment</div>
-                          <div>{paidOff} of {complete.length} paid off by debond{owedAfter > 0 ? ` · $${Math.round(owedAfter).toLocaleString()} still owed after debond` : ''}</div>
-                        </div>
-                        <div style={{fontSize:'11px',color:'#9ca3af',fontWeight:'700',paddingBottom:'4px'}}>↗ patients</div>
-                      </div>
-                      {/* Coverage and the paid-in-full count are what stop this number
-                          from reading as complete while the backfill is still running. */}
-                      <div style={{marginTop:'14px',paddingTop:'12px',borderTop:'1px solid #f3f4f6',fontSize:'11px',color:'#9ca3af',display:'flex',gap:'14px',flexWrap:'wrap'}}>
-                        <span>Coverage: {complete.length} of {financed.length} financed {financed.length !== 1 ? 'starts have' : 'start has'} both numbers</span>
-                        {pifCount > 0 && <span>{pifCount} paid in full — not counted</span>}
-                        {thirdParty > 0 && <span>{thirdParty} third-party financed — not counted</span>}
-                        {missing > 0 && (
-                          <button onClick={() => setCurrentView('terms')}
-                            style={{padding:0,background:'none',border:'none',color:'#2563EB',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
-                            Fill in {missing} missing →
-                          </button>
-                        )}
-                      </div>
+                        </details>
+                      </footer>
                     </div>
                   );
                 })()}
