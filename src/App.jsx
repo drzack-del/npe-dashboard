@@ -197,6 +197,9 @@ import { createClient } from '@supabase/supabase-js';
           const day = String(d.getDate()).padStart(2, '0');
           return `${y}-${m}-${day}`;
         };
+        // Today as YYYY-MM-DD in the practice's local time. Never toISOString() for a calendar
+        // date — that is UTC, which is already tomorrow after 8pm Eastern.
+        const localToday = () => localDateStr(new Date());
 
         const skipWeekend = (dateStr) => {
           if (!dateStr) return dateStr;
@@ -204,7 +207,7 @@ import { createClient } from '@supabase/supabase-js';
           if (isNaN(d.getTime())) return dateStr;
           if (d.getDay() === 6) d.setDate(d.getDate() + 2);
           if (d.getDay() === 0) d.setDate(d.getDate() + 1);
-          return d.toISOString().split('T')[0];
+          return localDateStr(d);
         };
 
         const addMonths = (dateStr, months) => {
@@ -212,7 +215,7 @@ import { createClient } from '@supabase/supabase-js';
           const d = new Date(dateStr + 'T12:00:00');
           if (isNaN(d.getTime())) return dateStr;
           d.setMonth(d.getMonth() + months);
-          return skipWeekend(d.toISOString().split('T')[0]);
+          return skipWeekend(localDateStr(d));
         };
 
         // Standalone Supabase settings helpers (usable before login / outside NPEDashboard)
@@ -231,8 +234,8 @@ import { createClient } from '@supabase/supabase-js';
         const generateId = () => crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); });
 
         const generateDemoPatients = () => {
-          const todayStr = new Date().toISOString().split('T')[0];
-          const ago = (n) => { const d = new Date(todayStr + 'T12:00:00'); d.setDate(d.getDate() - n); return d.toISOString().split('T')[0]; };
+          const todayStr = localToday();
+          const ago = (n) => { const d = new Date(todayStr + 'T12:00:00'); d.setDate(d.getDate() - n); return localDateStr(d); };
           let id = 90001;
           const p = (fields) => ({
             'R+': false, 'W+': false, PIF: false, BR: false, INV: false, PH1: false, PH2: false, LTD: false,
@@ -316,7 +319,7 @@ import { createClient } from '@supabase/supabase-js';
 
         const calcNextTouchDate = (npeDate, obstacle, contactAttempts, lastContactDate) => {
           const cadence = CADENCES[obstacle] || DEFAULT_CADENCE;
-          const todayStr = new Date().toISOString().split('T')[0];
+          const todayStr = localToday();
 
           if (contactAttempts >= cadence.length) return '__MAX__';
 
@@ -325,7 +328,7 @@ import { createClient } from '@supabase/supabase-js';
           const base = new Date(baseStr + 'T12:00:00');
           const d = new Date(base);
           d.setDate(base.getDate() + cadence[contactAttempts]);
-          const dateStr = skipWeekend(d.toISOString().split('T')[0]);
+          const dateStr = skipWeekend(localDateStr(d));
 
           // If the result is already past (e.g. patient added late), default to today
           return dateStr >= todayStr ? dateStr : skipWeekend(todayStr);
@@ -336,14 +339,14 @@ import { createClient } from '@supabase/supabase-js';
           const d = new Date(p.bondDate + 'T12:00:00');
           if (isNaN(d.getTime())) return null;
           d.setDate(d.getDate() + 1);
-          return skipWeekend(d.toISOString().split('T')[0]);
+          return skipWeekend(localDateStr(d));
         };
         const getOBSCheckDate = (p) => {
           if (!p.OBS || !p.obsApptDate) return null;
           const d = new Date(p.obsApptDate + 'T12:00:00');
           if (isNaN(d.getTime())) return null;
           d.setDate(d.getDate() + 1);
-          return skipWeekend(d.toISOString().split('T')[0]);
+          return skipWeekend(localDateStr(d));
         };
         // Returns the booking-call date for an OBS not-scheduled patient: anticipatedDate minus leadMonths
         const getOBSBookingCallDate = (anticipatedDate, leadMonths) => {
@@ -351,7 +354,7 @@ import { createClient } from '@supabase/supabase-js';
           const d = new Date(anticipatedDate + 'T12:00:00');
           if (isNaN(d.getTime())) return null;
           d.setMonth(d.getMonth() - leadMonths);
-          return skipWeekend(d.toISOString().split('T')[0]);
+          return skipWeekend(localDateStr(d));
         };
         // ────────────────────────────────────────────────────────────────
 
@@ -858,7 +861,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const flushingRef = useRef(false); // guards against overlapping outbox flushes
 
   const [newPatientForm, setNewPatientForm] = useState({
-    name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: '', dp: '', contractAmount: '', financedMonths: '', treatmentMonths: '', thirdPartyFinancing: false, tc: '', status: '',
+    name: '', phone: '', age: '', npeDate: localToday(), location: '', dp: '', contractAmount: '', financedMonths: '', treatmentMonths: '', thirdPartyFinancing: false, tc: '', status: '',
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
     'R+': false, 'W+': false, PIF: false, obstacle: '', notes: '', recap: '', addonSkipReason: '', nextTouchOverride: '', bondDate: '', obsApptDate: '', obsAnticipatedDate: '', medicaidPipeline: false, isMedicaid: ''
   });
@@ -887,17 +890,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [greyfinchScanning, setGreyfinchScanning] = useState(false);
 
   const [startedForm, setStartedForm] = useState({
-    startDate: new Date().toISOString().split('T')[0],
+    startDate: localToday(),
     dp: '', financedMonths: '', treatmentMonths: '', thirdPartyFinancing: false,
     BR: false, INV: false, PH1: false, PH2: false, LTD: false,
     'R+': false, 'W+': false, PIF: false, recap: '', addonSkipReason: ''
   });
 
   const [bonusMonthFilter, setBonusMonthFilter] = useState(
-    new Date().toISOString().slice(0, 7)
+    localToday().slice(0, 7)
   );
   const [ontimeMonthFilter, setOntimeMonthFilter] = useState(
-    new Date().toISOString().slice(0, 7)
+    localToday().slice(0, 7)
   );
   const [followupTCFilter, setFollowupTCFilter] = useState('All');
   const [bonusTCSelect, setBonusTCSelect] = useState('All');
@@ -971,8 +974,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     cc: ['drzack@northtampabraces.com', 'nicole@northtampabraces.com']
   });
   const [recapEmailStatus, setRecapEmailStatus] = useState(''); // '' | 'sending' | 'sent' | 'error'
-  // Which day the Today's Activity / End-of-Day report is showing (UTC date; defaults to today)
-  const [activityDate, setActivityDate] = useState(new Date().toISOString().split('T')[0]);
+  // Which day the Today's Activity / End-of-Day report is showing (local date; defaults to today)
+  const [activityDate, setActivityDate] = useState(localToday());
   // Comma-separated editing buffers for the Settings recipient inputs
   const [recipientToStr, setRecipientToStr] = useState('');
   const [recipientCcStr, setRecipientCcStr] = useState('');
@@ -1120,7 +1123,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         if (p.obsAnticipatedDate) {
           const d = new Date(p.obsAnticipatedDate + 'T12:00:00');
           d.setMonth(d.getMonth() - obsRecallMonths);
-          return { ...p, nextTouchDate: skipWeekend(d.toISOString().split('T')[0]) };
+          return { ...p, nextTouchDate: skipWeekend(localDateStr(d)) };
         }
         return { ...p, nextTouchDate: addMonths(p.npeDate, obsRecallMonths) };
       }
@@ -2462,7 +2465,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       alert('Please select whether you reached the patient before saving.');
       return;
     }
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     let updatedPatient = null;
     const updated = patients.map(p => {
       if (p.id !== patientId) return p;
@@ -2497,7 +2500,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         nextDate = getOBSBookingCallDate(contactForm.obsAnticipatedDate, obsRecallMonths) || addMonths(todayStr, obsRecallMonths);
       } else {
         nextDate = isSkipMedicaid
-          ? skipWeekend(d14.toISOString().split('T')[0])
+          ? skipWeekend(localDateStr(d14))
           : (contactForm.nextTouchDate ? skipWeekend(contactForm.nextTouchDate) : null)
             || (p.OBS && p.obsAnticipatedDate
                 ? (getOBSBookingCallDate(p.obsAnticipatedDate, obsRecallMonths) || addMonths(todayStr, obsRecallMonths))
@@ -2531,7 +2534,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
 
   const handleConvertToNotx = async (patientId) => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     let updatedPatient = null;
     const updated = patients.map(p => {
       if (p.id !== patientId) return p;
@@ -2586,7 +2589,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // started) so day-after confirmations attribute the start to the right day;
     // SDS defaults to NPE date.
     setStartedForm({
-      startDate: patient.SCH ? (patient.bondDate || new Date().toISOString().split('T')[0]) : patient.npeDate,
+      startDate: patient.SCH ? (patient.bondDate || localToday()) : patient.npeDate,
       dp: patient.dp || '',
       contractAmount: patient.contractAmount || '',
       financedMonths: patient.financedMonths ?? '', treatmentMonths: patient.treatmentMonths ?? '',
@@ -2631,7 +2634,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       return;
     }
     const isSameDay = startedForm.startDate === patient.npeDate;
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     // Record a metric-neutral start entry so the recap surfaces in the End-of-Day report.
     // noCount + empty time/scheduledDate keep it out of every contact/on-time counter.
     const startLog = {
@@ -2687,7 +2690,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       alert('Please enter the scheduled bond date before saving.');
       return;
     }
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     const checkDate = getBondCheckDate({ SCH: true, bondDate });
     const logEntry = {
       date: todayStr,
@@ -2736,7 +2739,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       alert('Please enter the bond date before saving.');
       return;
     }
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     const checkDate = getBondCheckDate({ SCH: true, bondDate });
     const logEntry = {
       date: todayStr,
@@ -2773,7 +2776,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
 
   const handleMissedBond = async (patient, notes = '') => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     const logEntry = {
       date: todayStr,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
@@ -2799,7 +2802,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
 
   const handleRescheduleBond = async (patient, newBondDate, notes = '') => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     const newCheckDate = getBondCheckDate({ SCH: true, bondDate: newBondDate });
     const logEntry = {
       date: todayStr,
@@ -2824,7 +2827,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // OBS check-in: patient attended but not ready → clear appt, schedule next recall
   const handleOBSAttended = async (patient, notes = '') => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     const logEntry = {
       date: todayStr,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
@@ -2849,9 +2852,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // OBS check-in: no-show → clear appt, push back into follow-up queue for reschedule call
   const handleOBSNoShow = async (patient, notes = '') => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     const d = new Date(todayStr + 'T12:00:00'); d.setDate(d.getDate() + 14);
-    const nextDate = skipWeekend(d.toISOString().split('T')[0]);
+    const nextDate = skipWeekend(localDateStr(d));
     const logEntry = {
       date: todayStr,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
@@ -2876,7 +2879,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // OBS check-in: reschedule the OBS appointment to a new date
   const handleRescheduleOBS = async (patient, newApptDate, notes = '') => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = localToday();
     const newCheckDate = getOBSCheckDate({ OBS: true, obsApptDate: newApptDate });
     const logEntry = {
       date: todayStr,
@@ -3076,7 +3079,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       : '';
     const combinedRecap = [(newPatientForm.recap || '').trim(), addonSkipNote].filter(Boolean).join(' — ');
     const addRecapEntry = {
-      date: new Date().toISOString().split('T')[0],
+      date: localToday(),
       time: '',
       scheduledDate: '',
       reachedPatient: (isSameDay || isST) ? 'Started treatment' : 'New patient added',
@@ -3142,7 +3145,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setShowAddonSkipPrompt(false);
     saveToastFor(saveOk, '✅ ' + patient.name + ' saved!' + nextInfo);
     setNewPatientForm({
-      name: '', phone: '', age: '', npeDate: new Date().toISOString().split('T')[0], location: newPatientForm.location || locations[0] || '', dp: '', contractAmount: '',
+      name: '', phone: '', age: '', npeDate: localToday(), location: newPatientForm.location || locations[0] || '', dp: '', contractAmount: '',
       financedMonths: '', treatmentMonths: '', thirdPartyFinancing: false,
       tc: newPatientForm.tc || tcNames[0] || '', status: '',
       BR: false, INV: false, PH1: false, PH2: false, LTD: false,
@@ -3501,7 +3504,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           // Today's queue counts — scoped to the selected TC so the hero/urgency cards
           // match the (already TC-scoped) metric cards below. For a TC this is always
           // her own queue; for an admin it follows the TC dropdown.
-          const todayStr = new Date().toISOString().split('T')[0];
+          const todayStr = localToday();
           const queueScoped = effectiveTCFilter !== 'All'
             ? patients.filter(p => p.tc === effectiveTCFilter)
             : patients;
@@ -3575,9 +3578,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           })();
 
           // ── Calls logged today by this TC — the "done" side of the progress header.
-          // contact_log dates are UTC (toISOString); noCount and Medicaid-skip entries
+          // contact_log dates are local calendar dates; noCount and Medicaid-skip entries
           // never count as contacts, matching the Today's Activity totals.
-          const todayUTCStr = new Date().toISOString().split('T')[0];
+          const todayUTCStr = localToday();
           const callsDoneToday = currentUser?.role === 'tc'
             ? patients.reduce((n, p) => n + (p.contact_log || []).filter(e =>
                 e.date === todayUTCStr &&
@@ -3916,7 +3919,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           if (useNewDashboard) {
             const selMonthStr  = `${dashYear}-${String(dashMonth + 1).padStart(2, '0')}`;
             const selMonthLabel = new Date(dashYear, dashMonth, 1).toLocaleDateString('en-US', {month:'long', year:'numeric'});
-            const todayStrNew  = new Date().toISOString().split('T')[0];
+            const todayStrNew  = localToday();
             const quarterLabel = `Q${dashQuarter} ${dashYear}`;
             const currentQ = Math.floor(nowM / 3) + 1;
             const isCurrentQuarter = dashQuarter === currentQ && dashYear === nowY;
@@ -4977,7 +4980,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
             {/* Active popup bonus banner */}
             {(() => {
-              const todayStr = new Date().toISOString().split('T')[0];
+              const todayStr = localToday();
               const myTC = currentUser?.role === 'tc' ? currentUser.name : null;
               const activeBonuses = popupBonuses.filter(b =>
                 todayStr >= b.startDate && todayStr <= b.endDate &&
@@ -5167,7 +5170,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     onClick={() => setCurrentView('bonus')} />
                 )}
                 {currentUser?.role === 'manager' && showBonus && (() => {
-                  const thisMonth = new Date().toISOString().slice(0, 7);
+                  const thisMonth = localToday().slice(0, 7);
                   const g = goalTierBonusFor(currentUser.name, thisMonth);
                   const goal = startsGoalForMonth(thisMonth);
                   const starts = practiceStartsInMonth(thisMonth);
@@ -5630,7 +5633,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const curM = new Date().getMonth();
           const curY = new Date().getFullYear();
           const monthStr = `${curY}-${String(curM + 1).padStart(2, '0')}`;
-          const todayStr = new Date().toISOString().split('T')[0];
+          const todayStr = localToday();
           const monthLabel = new Date().toLocaleDateString('en-US', {month:'long', year:'numeric'});
           const dateLabel = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'});
 
@@ -5711,7 +5714,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           }).length;
           const staleCutoff = new Date(todayStr + 'T12:00:00');
           staleCutoff.setDate(staleCutoff.getDate() - 14);
-          const staleCutoffStr = staleCutoff.toISOString().split('T')[0];
+          const staleCutoffStr = localDateStr(staleCutoff);
           const staleCount = patients.filter(p => {
             if (!p.PEN && !p.MP) return false;
             const recentContact = (p.contact_log || []).some(e => e.date && e.date > staleCutoffStr);
@@ -6012,7 +6015,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
             {/* Active popup bonus banner */}
             {(() => {
-              const todayStr = new Date().toISOString().split('T')[0];
+              const todayStr = localToday();
               const myTC = currentUser?.role === 'tc' ? currentUser.name : null;
               const activeBonuses = popupBonuses.filter(b =>
                 todayStr >= b.startDate && todayStr <= b.endDate &&
@@ -6767,7 +6770,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               Auto: {(() => {
                                 const p = patients.find(x => x.id === showContactLog);
                                 if (!p) return '—';
-                                const todayPreview = new Date().toISOString().split('T')[0];
+                                const todayPreview = localToday();
                                 const eff = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
                                 const n = calcNextTouchDate(p.npeDate, eff, p.contactAttempts + 1, todayPreview);
                                 if (n === '__MAX__') return '⚠️ Max attempts';
@@ -6884,7 +6887,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         <input
                           type="date"
                           value={pushDateValue[patient.id] || ''}
-                          min={new Date().toISOString().split('T')[0]}
+                          min={localToday()}
                           onChange={e => setPushDateValue(prev => ({ ...prev, [patient.id]: e.target.value }))}
                           style={{padding:'8px 10px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px'}}
                         />
@@ -7380,7 +7383,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           Not Scheduled Yet
                         </button>
                         <button type="button"
-                          onClick={() => setNewPatientForm({...newPatientForm, nextTouchOverride: '', obsAnticipatedDate: '', obsApptDate: newPatientForm.obsApptDate || new Date().toISOString().split('T')[0]})}
+                          onClick={() => setNewPatientForm({...newPatientForm, nextTouchOverride: '', obsAnticipatedDate: '', obsApptDate: newPatientForm.obsApptDate || localToday()})}
                           style={{flex:1,padding:'8px',borderRadius:'6px',border:`2px solid ${hasAppt?'#16a34a':'#d1d5db'}`,backgroundColor: hasAppt?'#dcfce7':'white',fontWeight:'700',fontSize:'13px',cursor:'pointer',color: hasAppt?'#166534':'#6b7280'}}
                         >
                           Appointment Confirmed
@@ -7945,7 +7948,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
         {/* MEDICAID PIPELINE */}
         {currentView === 'medicaid' && medicaidEnabled && (() => {
-          const todayStr = new Date().toISOString().split('T')[0];
+          const todayStr = localToday();
           const mpPatients = patients.filter(p => p.MP || p.medicaidPipeline);
 
           // A patient who started before Medicaid came back: keeps their start (MP is false),
@@ -8053,7 +8056,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           // Days since NPE
           const daysSince = npeDate => {
             if (!npeDate) return null;
-            const diff = Math.floor((new Date(todayStr) - new Date(npeDate + 'T00:00:00')) / 86400000);
+            const diff = Math.round((new Date(todayStr + 'T12:00:00') - new Date(npeDate + 'T12:00:00')) / 86400000);
             return diff;
           };
 
@@ -9262,14 +9265,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         {currentView === 'today' && (currentUser?.role === 'admin' || currentUser?.role === 'tc' || currentUser?.role === 'manager') && (() => {
           const isTC = currentUser?.role === 'tc';
           const myTCName = currentUser?.name || '';
-          // Contact-log entry.date and startDate are both written with toISOString() (UTC),
-          // so compare against the UTC date here — using local date dropped evening entries.
-          const realToday = new Date().toISOString().split('T')[0];
+          // Contact-log entry.date and startDate are local calendar dates (localToday). Entries
+          // logged in the evening before 2026-09-28 carry the next day's date (old UTC bug).
+          const realToday = localToday();
           const todayUTC = activityDate || realToday;   // the day being viewed
           const shiftActivityDate = (deltaDays) => {
             const d = new Date(todayUTC + 'T12:00:00');
             d.setDate(d.getDate() + deltaDays);
-            setActivityDate(d.toISOString().split('T')[0]);
+            setActivityDate(localDateStr(d));
           };
           const isStartedToday = (p) => (isSDS(p) || p.ST || p.DBRETS) && effectiveStartDate(p) === todayUTC;
           const visibleTCNames = isTC ? [myTCName] : tcNames;
@@ -11537,7 +11540,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     </div>
                                   </div>
                                   {hasGoalTiers && enabled && (() => {
-                                    const thisMonth = new Date().toISOString().slice(0, 7);
+                                    const thisMonth = localToday().slice(0, 7);
                                     const goal = startsGoalForMonth(thisMonth);
                                     const starts = practiceStartsInMonth(thisMonth);
                                     const monthLabel = new Date(thisMonth + '-01T12:00:00').toLocaleDateString('en-US', {month:'long'});
@@ -11783,7 +11786,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               ) : (
                 <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
                   {[...popupBonuses].reverse().map(bonus => {
-                    const todayStr = new Date().toISOString().split('T')[0];
+                    const todayStr = localToday();
                     const isActive = todayStr >= bonus.startDate && todayStr <= bonus.endDate;
                     const isEnded = todayStr > bonus.endDate;
                     const threshOk = isThresholdMet(bonus, null);
@@ -12888,7 +12891,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       {showObsList && (() => {
         const { list = [], perLocation = [], label, tcFilter } = showObsList;
         const showingPractice = !tcFilter || tcFilter === 'All';
-        const todayStr = new Date().toISOString().split('T')[0];
+        const todayStr = localToday();
         const fmtDate = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
 
         // Each OBS patient is in one of three states: a booked re-check appointment,
@@ -13651,7 +13654,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             {(editForm.PEN || editForm.MP || editForm.OBS) && editForm.npeDate && (() => {
               const effObstacle = editForm.obstacle || (editForm.MP ? 'Waiting to Hear from Medicaid' : '');
               const attempts = editForm.contactAttempts || 0;
-              const todayStr = new Date().toISOString().split('T')[0];
+              const todayStr = localToday();
 
               if (editForm.OBS) {
                 const hasAppt = !!editForm.obsApptDate;
@@ -13722,7 +13725,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         })()}
                         <button
                           type="button"
-                          onClick={() => setEditForm({...editForm, obsApptDate: new Date().toISOString().split('T')[0], obsAnticipatedDate: ''})}
+                          onClick={() => setEditForm({...editForm, obsApptDate: localToday(), obsAnticipatedDate: ''})}
                           style={{fontSize:'12px',color:'#166534',background:'none',border:'1px solid #86efac',borderRadius:'4px',padding:'4px 10px',cursor:'pointer',fontWeight:'600'}}
                         >+ Appointment is now confirmed</button>
                       </div>
@@ -13744,7 +13747,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 } else if (isFuture && projBase) {
                   const d = new Date(projBase + 'T12:00:00');
                   d.setDate(d.getDate() + cadenceArr[i]);
-                  date = skipWeekend(d.toISOString().split('T')[0]);
+                  date = skipWeekend(localDateStr(d));
                   projBase = date;
                 }
                 rows.push({ num: i+1, days: cadenceArr[i], date, isDone, isNext, isFuture });
