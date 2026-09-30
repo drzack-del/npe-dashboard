@@ -19,3 +19,20 @@ so nothing is left in the database.
 
 Fixtures: four fake users (two practice admins, a North location owner, a TC) and three fake
 patients across two fake practices. After the run, `auth.users` holds 0 rows.
+
+# Login (Cognito) checks
+
+Run through the AWS connector with one fake account (`phase3-check@cadenceiq-test.invalid`,
+created with emails suppressed and deleted afterwards). Authenticator codes are computed with
+an RFC 6238 TOTP implementation that is self-tested against the RFC's published vector.
+
+| Check | 2026-09-30 |
+|---|---|
+| Nobody can create their own account (sign-up refused) | PASS |
+| Password shorter than 12 characters rejected | PASS |
+| Correct password alone returns no token (authenticator setup required) | PASS |
+| Authenticator setup completes and issues a token | PASS |
+| Later sign-ins ask for the authenticator code | PASS |
+| Wrong authenticator code rejected | PASS |
+| Password + correct code returns an access token with `role=authenticated`, `aal=aal2`, `email`, `sub`, 60-minute lifetime | PASS |
+| Test account removed afterwards (0 users) | PASS |
