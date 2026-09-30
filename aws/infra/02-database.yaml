@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CadenceIQ database (Stage 2, test): Aurora PostgreSQL 17.6 serverless in the private
+  subnets from 01-foundation. Encrypted, TLS required, 7-day point-in-time restore, pauses
+  when idle. No inbound network access yet; the data layer is allowed in by a later phase.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: test
+    AllowedValues: [test, prod]
+  MaxCapacity:
+    Type: Number
+    Default: 2
+    Description: Upper limit in Aurora capacity units (1 ACU is about 2 GiB of memory).
+  SecondsUntilAutoPause:
+    Type: Number
+    Default: 1800
+    Description: Idle time before the database pauses (and stops costing compute).
+
+Resources:
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: CadenceIQ private subnets (no internet route)
+      SubnetIds: !Split [',', !ImportValue { 'Fn::Sub': 'cadenceiq-${Stage}-private-subnets' }]
+
+  # No inbound rules: nothing can reach the database until a later phase adds exactly one
+  # rule for the data layer. The Data API used for migrations does not need a network path.
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CadenceIQ database - no inbound access yet
+      VpcId: !ImportValue { 'Fn::Sub': 'cadenceiq-${Stage}-vpc' }
+      Tags: [{ Key: Name, Value: !Sub 'cadenceiq-${Stage}-db' }]
+
+  # TLS required for every connection; every connection and disconnection logged.
+  DbClusterParameters:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: CadenceIQ - require TLS, log connections
+      Family: aurora-postgresql17
+      Parameters:
+        rds.force_ssl: '1'
+        log_connections: '1'
+        log_disconnections: '1'
+
+  DbCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBClusterIdentifier: !Sub 'cadenceiq-${Stage}'
+      Engine: aurora-postgresql
+      EngineVersion: '17.6'
+      DatabaseName: cadenceiq
+      MasterUsername: cadenceiq_admin
+      # Password generated and stored by AWS in Secrets Manager; nobody types or sees it.
+      ManageMasterUserPassword: true
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VpcSecurityGroupIds: [!Ref DbSecurityGroup]
+      DBClusterParameterGroupName: !Ref DbClusterParameters
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '07:00-08:00'
+      PreferredMaintenanceWindow: 'sun:08:30-sun:09:30'
+      CopyTagsToSnapshot: true
+      DeletionProtection: true
+      EnableHttpEndpoint: true
+      EnableCloudwatchLogsExports: [postgresql]
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0
+        MaxCapacity: !Ref MaxCapacity
+        SecondsUntilAutoPause: !Ref SecondsUntilAutoPause
+      Tags: [{ Key: Name, Value: !Sub 'cadenceiq-${Stage}' }]
+
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub 'cadenceiq-${Stage}-1'
+      DBClusterIdentifier: !Ref DbCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+      # Version changes happen deliberately, after being tested, not automatically.
+      AutoMinorVersionUpgrade: false
+
+Outputs:
+  ClusterArn:
+    Value: !GetAtt DbCluster.DBClusterArn
+    Export: { Name: !Sub 'cadenceiq-${Stage}-db-cluster-arn' }
+  ClusterEndpoint:
+    Value: !GetAtt DbCluster.Endpoint.Address
+    Export: { Name: !Sub 'cadenceiq-${Stage}-db-endpoint' }
+  MasterSecretArn:
+    Value: !GetAtt DbCluster.MasterUserSecret.SecretArn
+    Export: { Name: !Sub 'cadenceiq-${Stage}-db-master-secret' }
+  DbSecurityGroup:
+    Value: !Ref DbSecurityGroup
+    Export: { Name: !Sub 'cadenceiq-${Stage}-db-sg' }

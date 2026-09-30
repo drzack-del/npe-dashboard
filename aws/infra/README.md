@@ -10,5 +10,6 @@ Account 488482832567, region us-east-1, covered by the AWS BAA (accepted 2026-09
 | Template | Stack | Creates |
 |---|---|---|
 | `01-foundation.yaml` | `cadenceiq-test-foundation` | Private network (database subnets with no internet route, no NAT gateway), account-wide CloudTrail with signed log files, VPC flow logs, encrypted HTTPS-only audit-log bucket kept 6 years. |
+| `02-database.yaml` | `cadenceiq-test-database` | Aurora PostgreSQL 17.6 serverless in the private subnets: encrypted, TLS required, connections logged, 7-day point-in-time restore, pauses when idle, deletion protection, AWS-managed admin password in Secrets Manager, Data API for migrations. No inbound network access. |
 
 Later phases (database, login, data layer, functions) add their own templates here.
