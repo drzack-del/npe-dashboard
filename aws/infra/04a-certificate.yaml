@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CadenceIQ HTTPS certificate for the test data layer (api-test.trycadenceiq.com). Free.
+  DNS for trycadenceiq.com is at Porkbun, so validation is manual: AWS shows one CNAME record,
+  it is added at Porkbun, and this stack finishes once AWS sees it (it waits until then).
+
+Parameters:
+  Stage:
+    Type: String
+    Default: test
+    AllowedValues: [test, prod]
+  DomainName:
+    Type: String
+    Default: api-test.trycadenceiq.com
+
+Resources:
+  ApiCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      Tags: [{ Key: Name, Value: !Sub 'cadenceiq-${Stage}-api' }]
+
+Outputs:
+  CertificateArn:
+    Value: !Ref ApiCertificate
+    Export: { Name: !Sub 'cadenceiq-${Stage}-api-certificate' }
+  DomainName:
+    Value: !Ref DomainName
+    Export: { Name: !Sub 'cadenceiq-${Stage}-api-domain' }
