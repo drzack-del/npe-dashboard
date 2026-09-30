@@ -43,8 +43,10 @@ import { createClient } from '@supabase/supabase-js';
         // ────────────────────────────────────────────────────────────────
 
         // ── SUPABASE CONFIG ──────────────────────────────────────────────
-        const SUPABASE_URL  = 'https://flhvblepqsuvsmscmmxm.supabase.co';
-        const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZsaHZibGVwcXN1dnNtc2NtbXhtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4NzM3MzAsImV4cCI6MjA4ODQ0OTczMH0.0FF6wCEFjpHqg55m1wKZCtJp6jQnPodECgUspc0ZoMo';
+        // Build-time settings override these, so a test copy of the app can point at a test
+        // backend. With no settings (as on Vercel today) the live Supabase project is used.
+        const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL || 'https://flhvblepqsuvsmscmmxm.supabase.co';
+        const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZsaHZibGVwcXN1dnNtc2NtbXhtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4NzM3MzAsImV4cCI6MjA4ODQ0OTczMH0.0FF6wCEFjpHqg55m1wKZCtJp6jQnPodECgUspc0ZoMo';
         const supabase = (SUPABASE_URL.startsWith('http'))
           ? createClient(SUPABASE_URL, SUPABASE_ANON, {
               auth: { detectSessionInUrl: false }
