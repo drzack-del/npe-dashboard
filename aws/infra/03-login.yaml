@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CadenceIQ login (Stage 2, test): Cognito user pool with a password plus an authenticator-app
+  code required for everyone, invite-only accounts, and a small function that adds the three
+  claims the database's security rules read (role, aal, email) to each access token.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: test
+    AllowedValues: [test, prod]
+
+Resources:
+  # Adds the claims PostgREST and the RLS policies expect, matching what Supabase Auth puts in
+  # its tokens: role=authenticated (PostgREST switches to that database role), aal=aal2
+  # (two-step verification done), and email (tc_users policies match on it).
+  # aal2 is safe to set unconditionally because the pool below requires MFA: Cognito issues no
+  # tokens until the authenticator code has been verified.
+  TokenClaimsFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  TokenClaimsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'cadenceiq-${Stage}-token-claims'
+      Description: Adds role, aal and email claims to CadenceIQ access tokens
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt TokenClaimsFunctionRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            const email = (event.request.userAttributes.email || '').toLowerCase();
+            const claims = { role: 'authenticated', aal: 'aal2', email };
+            event.response = {
+              claimsAndScopeOverrideDetails: {
+                accessTokenGeneration: { claimsToAddOrOverride: claims },
+              },
+            };
+            return event;
+          };
+
+  TokenClaimsLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/cadenceiq-${Stage}-token-claims'
+      RetentionInDays: 365
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub 'cadenceiq-${Stage}'
+      UserPoolTier: ESSENTIALS
+      DeletionProtection: ACTIVE
+      UsernameAttributes: [email]
+      UsernameConfiguration: { CaseSensitive: false }
+      AutoVerifiedAttributes: [email]
+      # Password plus authenticator app, for everyone, on every sign-in. No text messages.
+      MfaConfiguration: 'ON'
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          TemporaryPasswordValidityDays: 7
+      # Invite-only: practice admins add staff; nobody can create their own account.
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AccountRecoverySetting:
+        RecoveryMechanisms: [{ Name: verified_email, Priority: 1 }]
+      LambdaConfig:
+        PreTokenGenerationConfig:
+          LambdaArn: !GetAtt TokenClaimsFunction.Arn
+          LambdaVersion: V2_0
+
+  TokenClaimsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TokenClaimsFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  # The browser app's client: no secret (it runs in the browser), password check without
+  # sending the password (SRP). ALLOW_ADMIN_USER_PASSWORD_AUTH lets the automated checks sign
+  # in test users with AWS credentials; it is not usable from the browser. Remove it for prod.
+  WebClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: cadenceiq-web
+      GenerateSecret: false
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH, ALLOW_ADMIN_USER_PASSWORD_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 12
+      TokenValidityUnits: { AccessToken: minutes, IdToken: minutes, RefreshToken: hours }
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+    Export: { Name: !Sub 'cadenceiq-${Stage}-user-pool-id' }
+  WebClientId:
+    Value: !Ref WebClient
+    Export: { Name: !Sub 'cadenceiq-${Stage}-web-client-id' }
+  Issuer:
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
+    Export: { Name: !Sub 'cadenceiq-${Stage}-token-issuer' }
