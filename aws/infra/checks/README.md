@@ -36,3 +36,28 @@ an RFC 6238 TOTP implementation that is self-tested against the RFC's published 
 | Wrong authenticator code rejected | PASS |
 | Password + correct code returns an access token with `role=authenticated`, `aal=aal2`, `email`, `sub`, 60-minute lifetime | PASS |
 | Test account removed afterwards (0 users) | PASS |
+
+# Data layer checks over the internet (https://api-test.trycadenceiq.com)
+
+Three fake Cognito accounts (two practice admins, one North location owner) with real
+authenticator setup, plus fake practices and patients committed to the test database; all
+removed afterwards (0 Cognito users, 0 rows in patients, tc_users, practices, auth.users).
+Requests sent from outside AWS with Python urllib against `/rest/v1/patients`.
+
+| Check | 2026-09-30 |
+|---|---|
+| `/health` returns 200 (PostgREST connected with the generated `authenticator` password) | PASS |
+| Anonymous request sees no patients | PASS |
+| Practice A admin sees only practice A (both offices) | PASS |
+| Practice B admin sees only practice B | PASS |
+| North office owner sees only North | PASS |
+| Admin can update their own practice's patient | PASS |
+| Admin cannot change another practice's patient (0 rows) | PASS |
+| Admin cannot add a patient to another practice (403, RLS) | PASS |
+| Tampered token rejected (401) | PASS |
+| Token signed with a made-up key rejected (401) | PASS |
+| Unsigned (`alg: none`) token rejected (401) | PASS |
+| ID token instead of access token gets no patients | PASS |
+| Garbage token rejected (401) | PASS |
+| Plain HTTP (port 80) refused | PASS |
+| TLS 1.1 refused | PASS |
