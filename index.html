@@ -161,6 +161,65 @@
     .compare p { margin: 0; color: var(--ink-2); font-size: 15.5px; max-width: 860px; }
     .compare p.compare-fine { margin-top: 10px; font-size: 12px; color: #9ca3af; }
 
+    /* ── Audit mock ────────────────────────────────── */
+    .ot-banner { display: flex; justify-content: space-between; align-items: center; margin: 16px 20px 0; padding: 14px 18px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 10px; }
+    .ot-k { font-weight: 800; font-size: 14px; }
+    .ot-sub { font-size: 12px; color: var(--muted); }
+    .ot-v { font-size: 34px; font-weight: 900; color: #059669; letter-spacing: -0.03em; }
+    .ot-tcs { display: flex; gap: 10px; padding: 12px 20px 4px; }
+    .ot-tc { flex: 1; text-align: center; border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+    .ot-tc .n { font-size: 12px; font-weight: 700; color: var(--ink-2); }
+    .ot-tc .v { font-size: 22px; font-weight: 900; letter-spacing: -0.03em; }
+    .ot-tc .s { font-size: 11px; color: var(--muted); }
+    .good { color: #059669; } .warn { color: #d97706; }
+    .ot-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+    .ot-table th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 700; padding: 8px 10px; background: #f9fafb; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .ot-table td { padding: 9px 10px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; }
+    .ot-table th:first-child, .ot-table td:first-child { padding-left: 20px; }
+    .ot-table tr:last-child td { border-bottom: 0; }
+    .ot-table th:last-child, .ot-table td:last-child { padding-right: 20px; }
+    @media (max-width: 1100px) { .ot-table .hide-md { display: none; } }
+    .ot-table .pt { font-weight: 600; }
+    .cnum { font-weight: 800; color: #1e40af; background: var(--blue-soft); padding: 2px 7px; border-radius: 6px; font-size: 12px; }
+
+    /* ── Dashboard mock ────────────────────────────── */
+    .dash { box-shadow: 0 20px 50px rgba(15,23,42,0.12); border: 1px solid var(--line); }
+    .dash-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding: 20px 24px 14px; flex-wrap: wrap; }
+    .dash-date { font-size: 12px; color: var(--muted); }
+    .dash-title { font-size: 24px; font-weight: 900; letter-spacing: -0.03em; }
+    .seg { display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; font-size: 13px; font-weight: 700; }
+    .seg span { padding: 7px 14px; color: var(--ink-2); }
+    .seg span.on { background: #1e40af; color: #fff; }
+    .dash-acc { margin: 0 24px 16px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 12px; }
+    .dash-acc-k { font-size: 13px; font-weight: 800; margin-bottom: 8px; }
+    .dash-acc-k span { font-weight: 500; color: var(--muted); }
+    .dash-acc-row { display: grid; grid-template-columns: 70px 56px 1fr auto; align-items: center; gap: 14px; }
+    .dash-acc-row .n { font-weight: 700; font-size: 14px; }
+    .dash-acc-row .v { font-weight: 900; font-size: 22px; color: #059669; }
+    .dash-acc-row .ok { font-size: 13px; font-weight: 700; color: #059669; }
+    .kpis { display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .kpi { padding: 16px 12px; text-align: center; border-left: 1px solid #f3f4f6; }
+    .kpi:first-child { border-left: 0; }
+    .kl { font-size: 10.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 6px; }
+    .kv { font-size: 28px; font-weight: 900; letter-spacing: -0.03em; line-height: 1.1; }
+    .ks { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+    .kbar { height: 4px; background: #f3f4f6; border-radius: 99px; margin: 8px 6px 0; overflow: hidden; }
+    .kbar span { display: block; height: 100%; background: currentColor; }
+    .kpi:nth-child(1) .kbar span { background: #4b5563; }
+    .kpi:nth-child(2) .kbar span, .kpi:nth-child(3) .kbar span { background: #10b981; }
+    .ink { color: var(--ink); } .green { color: #059669; } .blue { color: #2563EB; } .purple { color: #7c3aed; } .teal { color: #0e7490; }
+    .loc { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .loc th { font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); text-align: right; padding: 12px 24px 6px; }
+    .loc th:first-child, .loc td.ln { text-align: left; }
+    .loc td { padding: 10px 24px; text-align: right; font-weight: 800; border-top: 1px solid #f3f4f6; }
+    .loc td.ln { font-weight: 600; }
+    .econ { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); background: #fcfcfd; }
+    .econ > div { padding: 18px 24px; }
+    .econ > div + div { border-left: 1px solid var(--line); }
+    .ek { font-size: 13px; font-weight: 700; color: var(--ink-2); }
+    .ev { font-size: 26px; font-weight: 900; letter-spacing: -0.03em; }
+    .es { font-size: 12px; color: var(--muted); }
+
     /* ── Pricing ────────────────────────────────────── */
     .plans { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; max-width: 880px; margin: 0 auto; }
     .plan { border: 1px solid var(--line); border-radius: 18px; padding: 34px; position: relative; background: #fff; }
@@ -208,6 +267,11 @@
       .steps, .features, .cad-notes { grid-template-columns: 1fr; }
       .cad-grid { grid-template-columns: 1fr 1fr; }
       .acc-grid { grid-template-columns: 1fr; gap: 40px; }
+      .kpis { grid-template-columns: repeat(4, 1fr); }
+      .kpi:nth-child(5) { border-left: 0; }
+      .kpi { border-bottom: 1px solid #f3f4f6; }
+      .econ { grid-template-columns: 1fr; }
+      .econ > div + div { border-left: 0; border-top: 1px solid var(--line); }
       .accountability h2 { font-size: 34px; }
       .plans, .includes { grid-template-columns: 1fr; }
       .nav-links a.plain { display: none; }
@@ -222,6 +286,22 @@
       .mock-row { padding: 12px 14px; }
       .plan { padding: 28px 22px; }
       .cad-grid { grid-template-columns: 1fr; }
+      .hide-sm { display: none; }
+      .kpis { grid-template-columns: repeat(2, 1fr); }
+      .kpi { border-left: 0 !important; }
+      .kpi:nth-child(even) { border-left: 1px solid #f3f4f6 !important; }
+      .loc th, .loc td { padding-left: 8px; padding-right: 8px; }
+      .loc th { font-size: 9.5px; letter-spacing: 0.02em; }
+      .loc th:first-child, .loc td.ln { padding-left: 14px; }
+      .loc th:last-child, .loc td:last-child { padding-right: 14px; }
+      .loc { font-size: 13px; }
+      .dash-head, .econ > div { padding-left: 16px; padding-right: 16px; }
+      .dash-acc { margin-left: 16px; margin-right: 16px; }
+      .dash-acc-row { grid-template-columns: 56px 48px 1fr; }
+      .dash-acc-row .ok { display: none; }
+      .ot-table th:first-child, .ot-table td:first-child { padding-left: 14px; }
+      .ot-banner { margin: 14px 14px 0; }
+      .ot-tcs { padding: 12px 14px 4px; }
       .booking iframe { height: 760px; }
     }
   </style>
@@ -242,6 +322,7 @@
       </a>
       <nav class="nav-links">
         <a class="plain" href="#cadences">How it works</a>
+        <a class="plain" href="#kpis">Dashboard</a>
         <a class="plain" href="#features">Features</a>
         <a class="plain" href="#pricing">Pricing</a>
         <a class="btn btn-primary" href="#demo">Request a demo</a>
@@ -371,15 +452,58 @@
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><strong>Overdue calls stay visible</strong> until they're done. Nobody falls through the cracks.</span></li>
           </ul>
         </div>
-        <div class="mock" aria-label="Example of the on-time follow-up audit">
-          <div class="mock-top"><div class="mock-title">On-time follow-up · this month</div><span class="pill pill-blue">By TC</span></div>
-          <div class="audit">
-            <div class="audit-row"><div class="audit-name">TC A</div><div class="bar"><span style="width:96%"></span></div><div class="audit-v">96%</div></div>
-            <div class="audit-row"><div class="audit-name">TC B</div><div class="bar"><span style="width:88%"></span></div><div class="audit-v">88%</div></div>
-            <div class="audit-row"><div class="audit-name">TC C</div><div class="bar warn"><span style="width:61%"></span></div><div class="audit-v">61%</div></div>
+        <div class="mock" aria-label="Example of the on-time follow-up audit, with sample data">
+          <div class="mock-top"><div class="mock-title">On-Time Follow-Up Audit</div><span class="pill pill-gray">September</span></div>
+          <div class="ot-banner"><div><div class="ot-k">Overall on-time rate</div><div class="ot-sub">141 of 162 follow-ups completed on time</div></div><div class="ot-v">87%</div></div>
+          <div class="ot-tcs">
+            <div class="ot-tc"><div class="n">Kayla</div><div class="v good">93%</div><div class="s">88/95 on time</div></div>
+            <div class="ot-tc"><div class="n">Jordan</div><div class="v warn">79%</div><div class="s">53/67 on time</div></div>
           </div>
-          <div class="mock-row"><div><div class="who">Overdue touches</div><div class="why">Past their due date, not yet logged</div></div><span class="pill pill-amber">7</span></div>
-          <div class="mock-row"><div><div class="who">Due today</div><div class="why">Across all TCs</div></div><span class="pill pill-gray">18</span></div>
+          <table class="ot-table">
+            <thead><tr><th>Patient</th><th>Contact</th><th class="hide-sm hide-md">TC</th><th>Due</th><th class="hide-sm">Done</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td class="pt">Sample Patient A</td><td><span class="cnum">#4</span></td><td class="hide-sm hide-md">Kayla</td><td>9/1</td><td class="hide-sm">9/1</td><td><span class="pill pill-green">On time</span></td></tr>
+              <tr><td class="pt">Sample Patient B</td><td><span class="cnum">#1</span></td><td class="hide-sm hide-md">Kayla</td><td>9/2</td><td class="hide-sm">9/2</td><td><span class="pill pill-green">On time</span></td></tr>
+              <tr><td class="pt">Sample Patient C</td><td><span class="cnum">#2</span></td><td class="hide-sm hide-md">Jordan</td><td>9/2</td><td class="hide-sm">9/4</td><td><span class="pill pill-amber">Late</span></td></tr>
+              <tr><td class="pt">Sample Patient D</td><td><span class="cnum">#3</span></td><td class="hide-sm hide-md">Jordan</td><td>9/3</td><td class="hide-sm">9/3</td><td><span class="pill pill-green">On time</span></td></tr>
+              <tr><td class="pt">Sample Patient E</td><td><span class="cnum">#1</span></td><td class="hide-sm hide-md">Kayla</td><td>9/4</td><td class="hide-sm">9/4</td><td><span class="pill pill-green">On time</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="kpis">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="kicker">Your KPIs at a glance</div>
+          <h2>The numbers that matter, easy to read.</h2>
+          <p>One screen shows how the month is going: exams, starts, production, conversion and case acceptance, for the whole practice and for each location.</p>
+        </div>
+        <div class="mock dash" aria-label="Example of the CadenceIQ practice dashboard, with sample data">
+          <div class="dash-head">
+            <div><div class="dash-date">Practice Health</div><div class="dash-title">September</div></div>
+            <div class="seg"><span class="on">Month</span><span>Quarter</span><span>Custom</span></div>
+          </div>
+          <div class="dash-acc">
+            <div class="dash-acc-k">TC follow-up accountability <span>· Goal 80%</span></div>
+            <div class="dash-acc-row"><div class="n">Kayla</div><div class="v">93%</div><div class="bar"><span style="width:93%"></span></div><div class="ok">On track</div></div>
+          </div>
+          <div class="kpis"><div class="kpi"><div class="kl ink">NPEs</div><div class="kv ink">64</div><div class="kbar"><span style="width:100%"></span></div><div class="ks">Goal: 60</div></div><div class="kpi"><div class="kl green">Starts</div><div class="kv green">36</div><div class="kbar"><span style="width:100%"></span></div><div class="ks">Goal: 35</div></div><div class="kpi"><div class="kl green">Production</div><div class="kv green">$198k</div><div class="kbar"><span style="width:96%"></span></div><div class="ks">Goal: $200k</div></div><div class="kpi"><div class="kl blue">Conversion</div><div class="kv blue">56%</div><div class="ks">36 of 64 exams</div></div><div class="kpi"><div class="kl purple">Case acceptance</div><div class="kv purple">59%</div><div class="ks">Goal: 60%</div></div><div class="kpi"><div class="kl purple">SDS rate</div><div class="kv purple">52%</div><div class="ks">19 of 36 starts</div></div><div class="kpi"><div class="kl teal">Add-ons</div><div class="kv teal">61%</div><div class="ks">Retainer + whitening</div></div></div>
+          <table class="loc">
+            <thead><tr><th>By location</th><th>NPEs</th><th>Starts</th><th>Conv.</th><th>Production</th></tr></thead>
+            <tbody><tr><td class="ln">Main Office</td><td>28</td><td class="green">16</td><td class="blue">57%</td><td class="green">$88k</td></tr><tr><td class="ln">North Office</td><td>21</td><td class="green">12</td><td class="blue">57%</td><td class="green">$64k</td></tr><tr><td class="ln">South Office</td><td>15</td><td class="green">8</td><td class="blue">53%</td><td class="green">$46k</td></tr></tbody>
+          </table>
+          <div class="econ">
+            <div><div class="ek">Average down payment</div><div class="ev purple">$500</div><div class="es">34 contributing starts</div></div>
+            <div><div class="ek">Most common case length</div><div class="ev">18–24 mo</div><div class="es">14 of 36 starts</div></div>
+            <div><div class="ek">Financed beyond treatment</div><div class="ev">+5.8 mo</div><div class="es">Average across financed starts</div></div>
+          </div>
+        </div>
+        <div class="compare">
+          <div class="compare-label">A metric tracker, like Gaidge</div>
+          <p>Like Gaidge, CadenceIQ is a metric tracker. It takes your practice data and turns it into the KPIs that matter most, shown in a way that is easy to digest and easy to understand. Conversion, case acceptance, starts, follow-up and TC performance are all laid out so the doctor and the whole team can read them at a glance.</p>
+          <p class="compare-fine">Gaidge is a trademark of its owner. CadenceIQ is not affiliated with or endorsed by Gaidge.</p>
         </div>
       </div>
     </section>
@@ -437,11 +561,6 @@
             <h3>All your locations</h3>
             <p>See every office side by side, or the whole practice at once.</p>
           </div>
-        </div>
-        <div class="compare">
-          <div class="compare-label">A metric tracker, like Gaidge</div>
-          <p>Like Gaidge, CadenceIQ is a metric tracker. It takes your practice data and turns it into the KPIs that matter most, shown in a way that is easy to digest and easy to understand. Conversion, case acceptance, starts, follow-up and TC performance are all laid out so the doctor and the whole team can read them at a glance.</p>
-          <p class="compare-fine">Gaidge is a trademark of its owner. CadenceIQ is not affiliated with or endorsed by Gaidge.</p>
         </div>
       </div>
     </section>
