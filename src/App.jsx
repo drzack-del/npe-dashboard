@@ -38,6 +38,9 @@ import { createClient } from '@supabase/supabase-js';
         const BETA_FEATURES = {
           newDashboard: true,
         };
+        // The "Try Demo" button on the sign-in page. Off until the demo has its own fake
+        // patients loaded (Dr. Miller, 2026-10-01); set to true to bring the button back.
+        const SHOW_DEMO_BUTTON = false;
         const hasFeature = (flag, practiceId) =>
           BETA_FEATURES[flag] === true || (Array.isArray(BETA_FEATURES[flag]) && BETA_FEATURES[flag].includes(practiceId));
         // ────────────────────────────────────────────────────────────────
@@ -596,6 +599,7 @@ import { createClient } from '@supabase/supabase-js';
                                 </div>
                               </>)
                             )}
+                            {SHOW_DEMO_BUTTON && (<>
                             <div style={{margin:'20px 0 4px',display:'flex',alignItems:'center',gap:'10px'}}>
                                 <div style={{flex:1,height:'1px',backgroundColor:'#e5e7eb'}}/>
                                 <span style={{fontSize:'11px',color:'#9ca3af',fontWeight:'600',letterSpacing:'0.05em'}}>OR</span>
@@ -605,6 +609,7 @@ import { createClient } from '@supabase/supabase-js';
                                 style={{width:'100%',marginTop:'12px',padding:'13px',backgroundColor:'#EBF3FC',color:'#2563EB',border:'2px solid #A7C6ED',borderRadius:'9px',fontSize:'14px',fontWeight:'700',cursor:'pointer',letterSpacing:'0.01em'}}>
                                 ▶ Try Demo — no login required
                             </button>
+                            </>)}
                         </div>
                     </div>
                 );
