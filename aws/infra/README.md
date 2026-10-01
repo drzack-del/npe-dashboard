@@ -14,7 +14,8 @@ Account 488482832567, region us-east-1, covered by the AWS BAA (accepted 2026-09
 | `03-login.yaml` | `cadenceiq-test-login` | Cognito user pool (Essentials): email sign-in, password + authenticator app required for everyone, invite-only, 12+ character passwords, deletion protection; web app client (no secret, SRP); a small function adding `role`, `aal`, `email` claims to access tokens for the database's security rules. |
 | `04a-certificate.yaml` | `cadenceiq-test-certificate` | Free HTTPS certificate for `api-test.trycadenceiq.com`. DNS is at Porkbun, so the validation CNAME AWS shows is added there by hand; the stack waits until AWS sees it. |
 | `04b-data-layer.yaml` | `cadenceiq-test-data-layer` | HTTPS-only load balancer (TLS 1.2/1.3) → PostgREST 14.1 behind an nginx that maps Supabase's `/rest/v1/` paths; tokens verified against the Cognito pool's public keys (`JwksJson` parameter); generated database password in Secrets Manager; the database's single inbound rule (data layer only). Starts with 0 running copies until the `authenticator` password is set in the database. |
+| `05-greyfinch.yaml` | `cadenceiq-test-greyfinch` | `greyfinch-sync` Lambda behind the load balancer at `/functions/v1/greyfinch-sync` (code in `aws/functions/greyfinch-sync`, uploaded after creation); Greyfinch key in Secrets Manager, empty in Stage 2. `set-user-password` is not ported: it was already retired on Supabase (returns 410). |
 
-Later phases (data layer, functions) add their own templates here.
+
 
 After `02-database.yaml`: bootstrap and load the schema as described in `sql/00_aws_bootstrap.sql`, then run the checks in `checks/README.md`.
