@@ -1611,6 +1611,20 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         practice_id: practiceId,
       });
       if (uErr) throw uErr;
+      if (USE_COGNITO) {
+        const docEmail = newPracticeDocEmail.trim().toLowerCase();
+        const added = `${newPracticeDocName.trim()} at ${newPracticeName.trim()} added!`;
+        try {
+          await sendInvite(docEmail);
+          setAddPracticeMsg({ type: 'success', text: `${added} An invite with a one-time password was emailed to ${docEmail}.` });
+        } catch (e) {
+          setAddPracticeMsg({ type: 'error', text: `${added} But the invite email could not be sent (${e.message}). Use "Resend invite" on the practice below.` });
+        }
+        setNewPracticeName(''); setNewPracticeDocName(''); setNewPracticeDocEmail('');
+        fetchAllPractices();
+        setAddPracticeLoading(false);
+        return;
+      }
       const invite = `Hi ${newPracticeDocName.trim().split(' ')[0]}! Your CadenceIQ account is ready.\n\n1️⃣ Go to: ${APP_URL}\n2️⃣ Click "Set up your account"\n3️⃣ Enter your email (${newPracticeDocEmail.trim().toLowerCase()}) and create a password\n\nYou're in. Reach out with any questions!`;
       setAddPracticeMsg({ type: 'success', text: `${newPracticeDocName.trim()} at ${newPracticeName.trim()} added!`, invite });
       setNewPracticeName(''); setNewPracticeDocName(''); setNewPracticeDocEmail('');
@@ -10899,7 +10913,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <span style={{fontSize:'18px'}}>🔑</span>
                     <div>
                       <h3 style={{fontSize:'16px',fontWeight:'800',color:'white',margin:0}}>CadenceIQ Admin — Add New Practice</h3>
-                      <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px'}}>Only visible to you. Creates the practice and admin user in Supabase.</div>
+                      <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px'}}>Only visible to you. {USE_COGNITO ? 'Creates the practice and emails its admin an invite.' : 'Creates the practice and admin user in Supabase.'}</div>
                     </div>
                   </div>
                   <button
@@ -11000,7 +11014,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                       }}>
                                         {hasAuth ? '✓ Active' : '⏳ Pending Setup'}
                                       </span>
-                                      {!hasAuth && invite && (
+                                      {USE_COGNITO && !hasAuth && (
+                                        <button disabled={inviteStatus[owner.id] === 'sending'}
+                                          onClick={async () => {
+                                            setInviteStatus(s => ({ ...s, [owner.id]: 'sending' }));
+                                            try { await sendInvite(owner.email); setInviteStatus(s => ({ ...s, [owner.id]: 'sent' })); }
+                                            catch (e) { setInviteStatus(s => ({ ...s, [owner.id]: 'error' })); alert(`Couldn't send the invite to ${owner.email}: ${e.message}`); }
+                                            setTimeout(() => setInviteStatus(s => { const n = {...s}; delete n[owner.id]; return n; }), 3000);
+                                          }}
+                                          style={{padding:'4px 12px',backgroundColor: inviteStatus[owner.id]==='sent' ? '#16a34a' : inviteStatus[owner.id]==='error' ? '#dc2626' : '#2563EB',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
+                                          {inviteStatus[owner.id]==='sent' ? '✓ Sent' : inviteStatus[owner.id]==='error' ? '✗ Error' : inviteStatus[owner.id]==='sending' ? 'Sending…' : 'Resend invite'}
+                                        </button>
+                                      )}
+                                      {!USE_COGNITO && !hasAuth && invite && (
                                         <button onClick={() => setPracticeInviteOverride(isExpanded ? null : { userId: owner.id, invite })}
                                           style={{padding:'4px 12px',backgroundColor: isExpanded ? '#475569' : '#2563EB',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>
                                           {isExpanded ? 'Hide' : '📋 Get Invite'}
@@ -11590,10 +11616,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           if (USE_COGNITO) {
                             try {
                               const r = await sendInvite(addedEmail);
-                              setTcMgmtMsgType(r.status === 'exists' ? 'info' : 'success');
+                              setTcMgmtMsgType('info');
                               setTcMgmtMsg(r.status === 'exists'
                                 ? `${addedName} was added to the team. ${addedEmail} already has a CadenceIQ login, so they can sign in now with their existing password and authenticator app.`
-                                : `✅ ${addedName} was added and an invite was emailed to ${addedEmail}.\n\nIt has a one-time password that works for 7 days. When they first sign in at ${APP_URL} they choose their own password and set up an authenticator app.`);
+                                : `✅ ${addedName} was added and an invite was emailed to ${addedEmail}. Its one-time password works for 7 days; at first sign-in they choose their own password and set up an authenticator app.`);
                             } catch (e) {
                               setTcMgmtMsgType('error');
                               setTcMgmtMsg(`${addedName} was added to the team, but the invite email could not be sent (${e.message}). Use "Resend invite" on their row to try again.`);
@@ -11614,7 +11640,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </button>
                       </div>
                       <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'8px'}}>
-                        You set the password — they log in immediately. They can change it themselves from Settings once they're in.
+                        {USE_COGNITO
+                          ? 'They get an email invite with a one-time password, then choose their own password and set up an authenticator app at first sign-in.'
+                          : "You set the password — they log in immediately. They can change it themselves from Settings once they're in."}
                       </div>
                     </div>
                   </div>
@@ -12033,7 +12061,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'12px'}}>
                 <div>
                   <strong style={{color: supabase ? '#166534' : '#92400e',fontSize:'15px'}}>
-                    {supabase ? '✅ Cloud Sync Active (Supabase)' : '⚠️ Running in local-only mode'}
+                    {supabase ? (USE_COGNITO ? '✅ Cloud Sync Active (AWS)' : '✅ Cloud Sync Active (Supabase)') : '⚠️ Running in local-only mode'}
                   </strong>
                   {supabase && (
                     <div style={{fontSize:'13px',color:'#166534',marginTop:'4px'}}>
