@@ -9,8 +9,8 @@ Read this first in a new session. Full transcript of the session that produced i
 - Dr. Miller is not technical and wants the **lowest-risk path**: everything tested before it
   touches production, staged gates, plain-language explanations, a preview + his explicit "yes"
   before creating anything billable or publishing. See memory `lowest-risk-migrations`.
-- Stages: 1 local tests (done) → **2 AWS with fake data (in progress)** → 3 copy of real data
-  (needs his separate yes; real Greyfinch key entered by him) → 4 staff trial → 5 cutover with
+- Stages: 1 local tests (done) → 2 AWS with fake data (done) → **3 copy of real data (done 2026-10-01)**
+  (real Greyfinch key still empty; he enters it) → 4 staff trial → 5 cutover with
   rehearsed switch-back → 6 keep Supabase ~30 days.
 - Repo rules in `AGENTS.md`: `main` == live site; publish only by fast-forwarding `main` and
   `git push origin main` (Vercel builds); one task per branch; don't edit `src/App.jsx` from two
@@ -71,6 +71,21 @@ All fake test users/rows were removed after each check.
 4. Before Stage 3/prod: remove `ALLOW_ADMIN_USER_PASSWORD_AUTH` from the Cognito client, consider
    ALB access logs + WAF, Business Support+, refresh `prod-schema/production-schema.sql` and
    `APPLIED_THROUGH` if any migration is run in production meanwhile.
+
+## Stage 3 done (2026-10-01): real data copied to AWS test
+- Snapshot of 2026-10-01 17:10 UTC (697 patients, 12 team members, 3 practices, ...); every table's
+  fingerprint matched Supabase. See `aws/infra/checks/README.md`. Supabase stays the live system;
+  the copy goes stale and must be re-copied right before cutover (same script, TRUNCATE first).
+- Stack `cadenceiq-test-data-import` (drop box bucket, 1-day expiry, S3 gateway endpoint limited to
+  it, role `cadenceiq-test-db-import`) is kept for the final copy; set `ImportRoleArn` on the
+  database stack only for the duration of a copy (detached now). Aurora needs ~1 minute after
+  attaching before aws_s3 imports work.
+- His Mac runs GlobalProtect (company VPN): only web ports leave it, so direct Postgres (5432/6543)
+  fails. Use `export-over-https.mjs` (secret key, Data API) instead of `export-from-supabase.mjs`.
+- Cognito web client no longer allows ADMIN_USER_PASSWORD_AUTH; automated Cognito checks need their
+  own test client (not built yet). Claude may not type passwords into Cognito sign-in pages.
+- Next: Stage 4 staff trial needs (a) hosted test URL + AllowedOrigins/AppUrl, (b) admin reset of a
+  lost authenticator, (c) SES email (he will do later), (d) his yes before any invites.
 
 ## Open items outside the migration
 - **Greyfinch exposure on live Supabase**: `greyfinch-sync` v11 returns Miller Ortho NPE PHI to

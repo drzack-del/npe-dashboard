@@ -90,3 +90,26 @@ Python urllib.
 | Pre-flight from an unknown site → no CORS permission | PASS |
 | Data layer unaffected: anonymous `/rest/v1/patients` → `[]` | PASS |
 | Data layer unaffected: signed-in `/rest/v1/tc_users` → own row | PASS |
+
+# Stage 3: copy of the real practice data (2026-10-01)
+
+Exported from live Supabase with `aws/infra/data-copy/export-over-https.mjs` (Data API over HTTPS,
+read twice and kept only if both reads matched; Dr. Miller ran it and typed the secret key).
+Claude saw only counts and fingerprints, never rows. Fingerprint = md5 of the sorted per-row
+md5(row(...)::text) with TimeZone=UTC; tc_users.auth_user_id exported empty. Loaded into Aurora
+from the import drop box with aws_s3.table_import_from_s3 in one transaction as cadenceiq_owner,
+committed only after every fingerprint matched. Files then deleted from the drop box and the Mac;
+the database's import role was detached again.
+
+| Table | Rows | Supabase (computed by Supabase) | Export | AWS after load |
+|---|---|---|---|---|
+| practices | 3 | 4248b5cb… | match | match |
+| tc_users | 12 | ca673fbe… | match | match |
+| patients | 697 | c553e2be… | match | match |
+| settings | 13 | 91c6d2d5… | match | match |
+| practice_goals | 26 | 1a7181a2… | match | match |
+| practice_metrics | 31 | dd45b60b… | match | match |
+| feedback | 1 | 85bae45f… | match | match |
+
+Login links copied: 0. Sequences set to max(id). No Cognito users exist yet; nobody can read the
+copy until staff are invited (Stage 4).
