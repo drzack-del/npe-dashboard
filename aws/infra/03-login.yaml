@@ -9,13 +9,19 @@ Parameters:
     Type: String
     Default: test
     AllowedValues: [test, prod]
+  AppUrl:
+    Type: String
+    Default: http://localhost:5173/app
+    Description: Where invited people sign in (named in the invite email).
 
 Resources:
   # Adds the claims PostgREST and the RLS policies expect, matching what Supabase Auth puts in
   # its tokens: role=authenticated (PostgREST switches to that database role), aal=aal2
   # (two-step verification done), and email (tc_users policies match on it).
   # aal2 is safe to set unconditionally because the pool below requires MFA: Cognito issues no
-  # tokens until the authenticator code has been verified.
+  # tokens until the authenticator code has been verified. email is added only once verified
+  # (admins create accounts with a verified address, and people cannot change it themselves),
+  # because the tc_users policies and first-sign-in linking match on it.
   TokenClaimsFunctionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -41,7 +47,8 @@ Resources:
       Code:
         ZipFile: |
           exports.handler = async (event) => {
-            const email = (event.request.userAttributes.email || '').toLowerCase();
+            const a = event.request.userAttributes;
+            const email = a.email_verified === 'true' ? (a.email || '').toLowerCase() : '';
             const claims = { role: 'authenticated', aal: 'aal2', email };
             event.response = {
               claimsAndScopeOverrideDetails: {
@@ -77,9 +84,20 @@ Resources:
           RequireNumbers: true
           RequireSymbols: false
           TemporaryPasswordValidityDays: 7
-      # Invite-only: practice admins add staff; nobody can create their own account.
+      # Invite-only: practice admins add staff; nobody can create their own account. The invite
+      # email carries a one-time password; the person picks their own at first sign-in.
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
+        InviteMessageTemplate:
+          EmailSubject: Your CadenceIQ invite
+          EmailMessage: !Sub >-
+            You have been added to CadenceIQ.<br><br>Sign in at ${AppUrl} with<br>Email: {username}<br>One-time
+            password: {####}<br><br>The one-time password works for 7 days. When you first sign in you will
+            choose your own password and set up an authenticator app (such as Google Authenticator or
+            Microsoft Authenticator).
+      # An email change only takes effect after the new address is verified.
+      UserAttributeUpdateSettings:
+        AttributesRequireVerificationBeforeUpdate: [email]
       AccountRecoverySetting:
         RecoveryMechanisms: [{ Name: verified_email, Priority: 1 }]
       LambdaConfig:
@@ -106,6 +124,8 @@ Resources:
       GenerateSecret: false
       ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH, ALLOW_ADMIN_USER_PASSWORD_AUTH]
       PreventUserExistenceErrors: ENABLED
+      # People cannot change their own email (the database matches on it); only name is writable.
+      WriteAttributes: [name]
       EnableTokenRevocation: true
       AccessTokenValidity: 60
       IdTokenValidity: 60
