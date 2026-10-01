@@ -84,6 +84,12 @@ All fake test users/rows were removed after each check.
   fails. Use `export-over-https.mjs` (secret key, Data API) instead of `export-from-supabase.mjs`.
 - Cognito web client no longer allows ADMIN_USER_PASSWORD_AUTH; automated Cognito checks need their
   own test client (not built yet). Claude may not type passwords into Cognito sign-in pages.
+- Stage 4 started 2026-10-01 with Dr. Miller alone on his Mac (`app-on-aws-test`, localhost:5175, orange
+  "AWS TEST COPY" banner from VITE_ENV_LABEL). His Cognito login (drzack@northtampabraces.com, created
+  with AdminCreateUser) is CONFIRMED and linked to his tc_users row; it is the only login. Networks with
+  SSL inspection (e.g. airport Wi-Fi with a Fortinet FortiGate) intercept trycadenceiq.com and break the
+  data calls (ERR_CERT_AUTHORITY_INVALID) while Cognito still works; never bypass, use a hotspot. Earlier
+  "GlobalProtect" diagnosis was wrong: it is installed but not connected.
 - Next: Stage 4 staff trial needs (a) hosted test URL + AllowedOrigins/AppUrl, (b) admin reset of a
   lost authenticator, (c) SES email (he will do later), (d) his yes before any invites.
 
