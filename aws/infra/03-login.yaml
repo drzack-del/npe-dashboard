@@ -127,6 +127,9 @@ Resources:
       # People cannot change their own email (the database matches on it); only name is writable.
       WriteAttributes: [name]
       EnableTokenRevocation: true
+      # Minutes a half-finished sign-in stays open between steps. First-time setup includes
+      # installing an authenticator app and scanning a code, which the 3-minute default cut off.
+      AuthSessionValidity: 15
       AccessTokenValidity: 60
       IdTokenValidity: 60
       RefreshTokenValidity: 12
