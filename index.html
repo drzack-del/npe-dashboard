@@ -74,8 +74,8 @@
     .btn-dark:hover { background: #000; }
 
     /* ── Hero ───────────────────────────────────────── */
-    .hero { background: var(--dark); color: #fff; padding: 88px 0 96px; overflow: hidden; }
-    .hero-grid { display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; }
+    .hero { background: var(--dark); color: #fff; padding: 64px 0 72px; overflow: hidden; }
+    .hero-grid { display: grid; grid-template-columns: 1fr 1.1fr; gap: 56px; align-items: center; }
     .eyebrow { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--blue-bright); font-weight: 700; margin-bottom: 18px; }
     h1 { font-size: 52px; line-height: 1.05; letter-spacing: -0.035em; margin: 0 0 22px; font-weight: 900; }
     .hero p.lead { font-size: 19px; color: rgba(255,255,255,0.72); margin: 0 0 32px; max-width: 520px; }
@@ -100,6 +100,53 @@
     .mock-row:last-child { border-bottom: 0; }
     .mock-row .who { font-weight: 700; }
     .mock-row .why { font-size: 12px; color: var(--muted); }
+
+    /* ── Hero product shot ─────────────────────────── */
+    .hero-trio { display: grid; gap: 10px; margin-top: 30px; font-size: 15px; color: rgba(255,255,255,0.72); }
+    .hero-trio strong { color: #fff; }
+    .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 9px; vertical-align: 1px; }
+    .d1 { background: #f59e0b; } .d2 { background: #10b981; } .d3 { background: #4A90E2; }
+    .shot { position: relative; padding-bottom: 40px; }
+    .win { background: #f4f5f7; color: var(--ink); border-radius: 14px; overflow: hidden; box-shadow: 0 30px 70px rgba(0,0,0,0.5); }
+    .win-bar { display: flex; gap: 6px; padding: 10px 14px; background: #2b2b2b; }
+    .win-bar span { width: 10px; height: 10px; border-radius: 50%; background: #4b4b4b; }
+    .win-tabs { display: flex; gap: 18px; padding: 0 16px; background: #fff; border-bottom: 1px solid var(--line); font-size: 12.5px; font-weight: 600; color: var(--muted); }
+    .win-tabs span { padding: 10px 0; }
+    .win-tabs span.on { color: var(--ink); font-weight: 800; box-shadow: inset 0 -2px 0 var(--blue); }
+    .win-body { padding: 14px; display: grid; gap: 10px; }
+    .acc-strip { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+    .acc-k { font-size: 12px; font-weight: 800; margin-bottom: 4px; }
+    .acc-k em { font-style: normal; font-weight: 500; color: var(--muted); }
+    .acc-line { display: grid; grid-template-columns: 54px 1fr 40px; align-items: center; gap: 10px; font-size: 12.5px; padding: 3px 0; }
+    .acc-line i { font-style: normal; font-weight: 900; text-align: right; }
+    .acc-line .bar { height: 7px; }
+    .week { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+    .week div { background: #fff; border: 1px solid var(--line); border-radius: 8px; text-align: center; padding: 5px 0; }
+    .week small { display: block; font-size: 10.5px; color: var(--muted); font-weight: 600; }
+    .week b { font-size: 16px; color: #9ca3af; }
+    .week .today { border: 2px solid var(--blue); background: #fff7ed; }
+    .week .today small { color: var(--blue); font-weight: 800; }
+    .week .today b { color: var(--blue); }
+    .q-head { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+    .q-count { font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--muted); margin-left: 4px; }
+    .q-card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px; }
+    .q-top { display: flex; align-items: center; gap: 8px; }
+    .q-name { font-weight: 800; font-size: 14px; }
+    .q-top .pill { font-size: 10.5px; padding: 2px 8px; }
+    .q-obs { font-size: 12.5px; font-weight: 700; color: #b91c1c; margin-top: 3px; }
+    .q-meta { font-size: 12px; color: var(--muted); }
+    .q-last { font-size: 11.5px; color: var(--muted); font-style: italic; }
+    .q-btns { display: flex; gap: 6px; margin-top: 8px; }
+    .qb { font-size: 11px; font-weight: 700; color: #fff; padding: 5px 9px; border-radius: 6px; white-space: nowrap; }
+    .qb-blue { background: #3b82f6; } .qb-green { background: #22c55e; } .qb-navy { background: #1e3a8a; }
+    .float-kpi { position: absolute; left: -40px; bottom: 0; background: #fff; color: var(--ink); border-radius: 12px; padding: 12px 16px; box-shadow: 0 20px 40px rgba(0,0,0,0.45); border: 1px solid var(--line); }
+    .fk-k { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 4px; }
+    .fk-row { display: flex; gap: 20px; }
+    .fk-row small { display: block; font-size: 11px; color: var(--muted); font-weight: 600; }
+    .fk-row b { font-size: 22px; font-weight: 900; letter-spacing: -0.03em; }
+    @media (max-width: 1100px) { .float-kpi { left: 8px; } }
+    .q-more { text-align: center; font-size: 12px; font-weight: 700; color: var(--muted); padding: 4px 0 2px; }
+    @media (max-width: 480px) { .hide-xs { display: none; } .shot { padding-bottom: 0; } .float-kpi { position: relative; left: 0; margin: 14px auto 0; width: fit-content; padding: 10px 14px; } .win-body { padding: 10px; } }
 
     /* ── Sections ───────────────────────────────────── */
     section { padding: 88px 0; scroll-margin-top: 64px; }
@@ -341,23 +388,48 @@
           <div class="hero-ctas">
             <a class="btn btn-primary" href="#demo">Request a demo</a>
           </div>
+          <div class="hero-trio">
+            <div><span class="dot d1"></span><strong>The queue</strong> tells TCs who to call</div>
+            <div><span class="dot d2"></span><strong>The tracker</strong> shows it was done on time</div>
+            <div><span class="dot d3"></span><strong>The KPIs</strong> show it's working</div>
+          </div>
           <div class="hero-note">Built by a practicing orthodontist.</div>
         </div>
 
-        <div class="mock" aria-label="Example of the CadenceIQ follow-up queue">
-          <div class="mock-top">
-            <div class="mock-title">Today's follow-ups</div>
-            <span class="pill pill-blue">Main Office</span>
+        <div class="shot" aria-label="Example of the CadenceIQ follow-up queue, TC accountability tracker and KPIs, with sample data">
+          <div class="win">
+            <div class="win-bar"><span></span><span></span><span></span></div>
+            <div class="win-tabs"><span>Dashboard</span><span class="on">Follow-Up Queue</span><span class="hide-xs">On-Time Audit</span></div>
+            <div class="win-body">
+              <div class="acc-strip">
+                <div class="acc-k"><span class="dot d2"></span>TC accountability <em>· goal 80%</em></div>
+                <div class="acc-line"><b>Kayla</b><div class="bar"><span style="width:93%"></span></div><i class="good">93%</i></div>
+                <div class="acc-line"><b>Jordan</b><div class="bar warn"><span style="width:79%"></span></div><i class="warn">79%</i></div>
+              </div>
+              <div class="week">
+                <div><small>Mon</small><b>4</b></div><div><small>Tue</small><b>6</b></div><div><small>Wed</small><b>3</b></div>
+                <div class="today"><small>Today</small><b>5</b></div><div><small>Fri</small><b>2</b></div>
+              </div>
+              <div class="q-head"><span class="dot d1"></span>Call today <span class="q-count">5 patients</span></div>
+              <div class="q-card">
+                <div class="q-top"><span class="q-name">Sample Patient A</span><span class="pill pill-green">New · 1d</span></div>
+                <div class="q-obs">Price / Down Payment</div>
+                <div class="q-meta">Attempt #1 of 4 · Kayla</div>
+                <div class="q-btns"><span class="qb qb-blue">Log contact</span><span class="qb qb-green">Mark started</span><span class="qb qb-navy hide-xs">Schedule bond</span></div>
+              </div>
+              <div class="q-card">
+                <div class="q-top"><span class="q-name">Sample Patient B</span><span class="pill pill-amber">Active · 7d</span></div>
+                <div class="q-obs">Spouse / Partner Needs to Approve</div>
+                <div class="q-meta">Attempt #2 of 3 · Kayla</div><div class="q-last">Last: spoke with patient, husband still reviewing</div>
+                <div class="q-btns"><span class="qb qb-blue">Log contact</span><span class="qb qb-green">Mark started</span><span class="qb qb-navy hide-xs">Schedule bond</span></div>
+              </div>
+              <div class="q-more">+ 3 more due today</div>
+            </div>
           </div>
-          <div class="mock-stats">
-            <div class="mock-stat"><div class="k">NPEs</div><div class="v">42</div></div>
-            <div class="mock-stat"><div class="k">Starts</div><div class="v">29</div></div>
-            <div class="mock-stat"><div class="k">Conversion</div><div class="v">69%</div></div>
+          <div class="float-kpi">
+            <div class="fk-k"><span class="dot d3"></span>This month</div>
+            <div class="fk-row"><div><small>Conversion</small><b class="blue">56%</b></div><div><small>Starts</small><b class="green">36</b></div><div class="hide-xs"><small>Production</small><b class="green">$198k</b></div></div>
           </div>
-          <div class="mock-row"><div><div class="who">Sample Patient A</div><div class="why">Call #2 · exam 3 days ago</div></div><span class="pill pill-amber">Price / Down Payment</span></div>
-          <div class="mock-row"><div><div class="who">Sample Patient B</div><div class="why">Call #1 · exam yesterday</div></div><span class="pill pill-blue">Spouse to Approve</span></div>
-          <div class="mock-row"><div><div class="who">Sample Patient C</div><div class="why">Bonded yesterday · confirm start</div></div><span class="pill pill-green">Check-in</span></div>
-          <div class="mock-row"><div><div class="who">Sample Patient D</div><div class="why">Call #3 · exam 10 days ago</div></div><span class="pill pill-gray">Waiting on Medicaid</span></div>
         </div>
       </div>
     </section>
