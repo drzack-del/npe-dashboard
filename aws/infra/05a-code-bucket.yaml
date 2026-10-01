@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CadenceIQ function-code bucket (Stage 2, test): private, encrypted, HTTPS-only storage for
+  Lambda code zips that are too large to put inline in a template. Every upload is kept as a
+  version, so there is a record of exactly what code each function ran. Holds no patient data.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: test
+    AllowedValues: [test, prod]
+
+Resources:
+  CodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'cadenceiq-${Stage}-function-code-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      VersioningConfiguration: { Status: Enabled }
+      LifecycleConfiguration:
+        Rules:
+          - Id: keep-old-versions-6-years
+            Status: Enabled
+            NoncurrentVersionExpiration: { NoncurrentDays: 2190 }
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+
+  CodeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CodeBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: HttpsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt CodeBucket.Arn, !Sub '${CodeBucket.Arn}/*']
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } }
+
+Outputs:
+  CodeBucketName:
+    Value: !Ref CodeBucket
+    Export: { Name: !Sub 'cadenceiq-${Stage}-function-code-bucket' }

@@ -61,3 +61,32 @@ Requests sent from outside AWS with Python urllib against `/rest/v1/patients`.
 | Garbage token rejected (401) | PASS |
 | Plain HTTP (port 80) refused | PASS |
 | TLS 1.1 refused | PASS |
+
+# greyfinch-sync checks over the internet (https://api-test.trycadenceiq.com/functions/v1/greyfinch-sync)
+
+Stack `cadenceiq-test-greyfinch` created 2026-10-01; code loaded from
+`s3://cadenceiq-test-function-code-488482832567/greyfinch-sync/greyfinch-sync.zip` version
+`5gEzO9W7VN.Vz4rnGCtc3bzO3yOvasQ5` (`CodeSha256` 2dVNWVZxJ9iDr7iXKRsqMCXzVyOfyThKPXL1DzgwYOk=, matches
+the zip of `index.mjs` at commit 49f8183). Greyfinch secret empty. Four fake Cognito accounts with real
+authenticator setup (Miller staff, another practice's admin, Miller North location owner, inactive
+Miller staff), fake `practices`/`auth.users`/`tc_users` rows; all removed afterwards (0 Cognito
+users; 0 rows in auth.users, tc_users, practices, patients). Requests sent from outside AWS with
+Python urllib.
+
+| Check | 2026-10-01 |
+|---|---|
+| No token → 401 | PASS |
+| Garbage token → 401 | PASS |
+| Tampered token (changed `sub`) → 401 | PASS |
+| Unsigned (`alg: none`) token → 401 | PASS |
+| ID token instead of access token → 401 | PASS |
+| Staff of another practice → 403 | PASS |
+| Miller single-office (location) owner → 403 | PASS |
+| Inactive Miller staff → 403 | PASS |
+| Unknown website origin with a valid staff token → 403 | PASS |
+| GET instead of POST → 405 | PASS |
+| Active Miller staff → 503 "Greyfinch is not connected yet." (empty key) | PASS |
+| Pre-flight from `http://localhost:5173` → 204 with CORS permission | PASS |
+| Pre-flight from an unknown site → no CORS permission | PASS |
+| Data layer unaffected: anonymous `/rest/v1/patients` → `[]` | PASS |
+| Data layer unaffected: signed-in `/rest/v1/tc_users` → own row | PASS |

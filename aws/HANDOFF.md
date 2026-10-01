@@ -34,6 +34,8 @@ Read this first in a new session. Full transcript of the session that produced i
 | 3 login | `login` | Cognito pool `us-east-1_HncsSFH9J`, client `3rhchvg8f8qnqgvfahg6l7tpaa`; MFA required, invite-only; pre-token Lambda adds role/aal/email |
 | 4a cert | `certificate` | ACM cert for `api-test.trycadenceiq.com` (DNS at **Porkbun**, he adds records by hand) |
 | 4b data layer | `data-layer` | ALB `cadenceiq-test-api-723723109.us-east-1.elb.amazonaws.com` → nginx `/rest/v1/` → PostgREST 14.1; secret `cadenceiq-test/db-authenticator`; `DesiredCount` param (0 pauses it) |
+| 5 greyfinch-sync | `greyfinch` | Lambda `cadenceiq-test-greyfinch-sync` at `/functions/v1/greyfinch-sync` (ALB rule priority 10); secret `cadenceiq-test/greyfinch` (empty) |
+| 5a code bucket | `function-code` | `cadenceiq-test-function-code-488482832567` (versioned, private) |
 | budget | — | "CadenceIQ monthly spend" $100/mo, alerts to drzack@northtampabraces.com |
 
 Production structure (no data) loaded on Aurora: 7 tables, 26 policies, 5 functions, 1 trigger.
@@ -44,15 +46,10 @@ All fake test users/rows were removed after each check.
    `assumed-role/AWSReservedSSO_AdministratorAccess…/drzack33612`, never `:root`; if root,
    have him sign out of root in the browser and reconnect via his access portal
    (https://d-90666144e0.awsapps.com/start).
-2. **Phase 5 (greyfinch-sync)**, template `aws/infra/05-greyfinch.yaml` (4221 bytes, checksum
-   717280725 with the repo's byte-sum method) and code `aws/functions/greyfinch-sync/index.mjs`
-   (17/17 local checks). Preview with a change set; parameters: `JwksJson` (from
-   https://cognito-idp.us-east-1.amazonaws.com/us-east-1_HncsSFH9J/.well-known/jwks.json),
-   `ListenerArn` (look up the data-layer ALB's HTTPS listener). After his yes: create, then
-   upload the real code (7 KB, over CloudFormation's 4 KB inline limit). Untested: whether the
-   connector sandbox allows `zipfile` and passing bytes to `lambda:UpdateFunctionCode`; if not,
-   find another upload path. Then test over HTTPS: non-staff 401/403, staff → 503 "not connected yet".
-   `set-user-password` is NOT ported (already retired on Supabase, returns 410).
+2. ~~Phase 5 (greyfinch-sync)~~ **done 2026-10-01**: stacks `greyfinch` and `function-code` (see
+   table), 15/15 HTTPS checks in `aws/infra/checks/README.md`. Code upload path: zip locally →
+   presigned PUT to the code bucket → `UpdateFunctionCode` from the S3 version (sandbox blocks
+   `zipfile`/`base64`). `set-user-password` is NOT ported (already retired on Supabase, returns 410).
 3. **Phase 6**: switch the app's login from Supabase Auth to Cognito on its own branch (supabase-js
    `accessToken` option for data calls; replace sign-in, MFA screens, sign-out, password reset;
    sign-up becomes invite-only). Add the test app's origin to `AllowedOrigins` on the data layer and

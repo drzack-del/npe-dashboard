@@ -11,7 +11,10 @@ RLS applies, must be active, in `PRACTICE_ID`, and not location-scoped. CORS is 
 `ALLOWED_ORIGINS`; errors never echo the Greyfinch key.
 
 Deploy: `aws/infra/05-greyfinch.yaml` creates the function with a placeholder (the code exceeds
-CloudFormation's 4 KB inline limit); then this `index.mjs` is uploaded as the function code.
+CloudFormation's 4 KB inline limit); then this `index.mjs` is zipped on the Mac, uploaded to the
+function-code bucket (`aws/infra/05a-code-bucket.yaml`) through a presigned URL, and loaded with
+`lambda:UpdateFunctionCode` from that S3 version. (The AWS connector sandbox blocks `zipfile` and
+`base64`, so the zip cannot be built there.)
 The Greyfinch key/secret live in Secrets Manager (`cadenceiq-<stage>/greyfinch`) and start empty.
 
 Local checks (2026-10-01), with a generated RSA key, signed fake tokens and a stand-in PostgREST:
