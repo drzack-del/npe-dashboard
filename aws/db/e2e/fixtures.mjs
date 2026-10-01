@@ -72,7 +72,7 @@ export async function currentCode(email) {
 }
 
 export async function submitPassword(page, email, password = LOCAL_TEST_PASSWORD) {
-  await page.goto('/');
+  await page.goto('/app');
   await page.getByPlaceholder('you@example.com').fill(email);
   await page.getByPlaceholder('Enter your password').fill(password);
   await page.getByPlaceholder('Enter your password').press('Enter');
