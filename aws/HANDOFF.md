@@ -94,6 +94,13 @@ All fake test users/rows were removed after each check.
   Notes: the KPI table defaults to the current month (empty on the 1st); the one copied feedback row is
   an old auto bug report (2026-09-24 16:24 UTC, fixed by the transfer_patient_flag migration 6 min later)
   and shows as new in the test copy because localhost never marked it seen.
+- Hosted test address (2026-10-01): https://app-test.trycadenceiq.com/app = Vercel preview of branch
+  `aws-cognito-login` (Vercel domain assigned to that git branch; 6 VITE_* preview env vars scoped to
+  that branch only; production has none). Porkbun CNAME app-test -> cname.vercel-dns.com (he added it;
+  the domain has a Porkbun wildcard, so every new subdomain needs its own record). Custom domains skip
+  Vercel's preview login wall. Stack parameters now: AllowedOrigins (data-layer, greyfinch, invite) =
+  localhost:5173-5175 + https://app-test.trycadenceiq.com; login AppUrl = https://app-test.trycadenceiq.com/app
+  (repo template defaults still say localhost; pass these values on future updates).
 - Next: Stage 4 staff trial needs (a) hosted test URL + AllowedOrigins/AppUrl, (b) admin reset of a
   lost authenticator, (c) SES email (he will do later), (d) his yes before any invites.
 
