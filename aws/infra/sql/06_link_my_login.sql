@@ -8,6 +8,8 @@
 --
 -- Run as cadenceiq_admin through the Data API: SET ROLE cadenceiq_owner, the statements below,
 -- RESET ROLE, in one transaction, so the function is owned by cadenceiq_owner like the rest.
+-- Then run NOTIFY pgrst, 'reload schema' so the data layer sees the new function (until then
+-- /rest/v1/rpc/link_my_login answers 404).
 -- Undo: DROP FUNCTION public.link_my_login();
 
 CREATE OR REPLACE FUNCTION public.link_my_login()
