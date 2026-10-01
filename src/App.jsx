@@ -570,7 +570,7 @@ import { createClient } from '@supabase/supabase-js';
 
                 if (USE_COGNITO) return (
                     <Suspense fallback={<div style={{minHeight:'100vh',backgroundColor:'#202020'}} />}>
-                        <CognitoLogin brandHero={brandHero} onSignedIn={handleCognitoSignedIn} onDemo={handleDemoLogin} />
+                        <CognitoLogin brandHero={brandHero} onSignedIn={handleCognitoSignedIn} onDemo={SHOW_DEMO_BUTTON ? handleDemoLogin : null} />
                     </Suspense>
                 );
 

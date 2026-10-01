@@ -3,7 +3,7 @@
 //
 // Steps: email + password → (first time) choose a password → (first time) set up an
 // authenticator app → six-digit code. Forgot password emails a code. There is no sign-up:
-// accounts are invite-only.
+// accounts are invite-only. The Try Demo button shows only when App.jsx passes onDemo.
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import * as auth from './cognitoAuth.js';
@@ -218,7 +218,7 @@ export default function CognitoLogin({ brandHero, onSignedIn, onDemo }) {
           <div style={{textAlign:'center',marginTop:'16px'}}>
             <button onClick={backToSignIn} style={linkStyle}>Back to Sign In</button>
           </div>
-        ) : (
+        ) : onDemo && (
           <>
             <div style={{margin:'20px 0 4px',display:'flex',alignItems:'center',gap:'10px'}}>
               <div style={{flex:1,height:'1px',backgroundColor:'#e5e7eb'}}/>
