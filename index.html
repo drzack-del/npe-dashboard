@@ -67,6 +67,7 @@
     .btn-login { color: #fff; border-color: rgba(255,255,255,0.25); padding: 8px 18px; }
     .btn-login:hover { border-color: #fff; }
     .btn-primary { background: var(--blue); color: #fff; }
+    .nav-cta .sm { display: none; }
     .btn-primary:hover { background: #1d4ed8; }
     .btn-ghost { color: #fff; border-color: rgba(255,255,255,0.25); }
     .btn-ghost:hover { border-color: #fff; }
@@ -206,6 +207,7 @@
     .compare { margin-top: 28px; background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--blue); border-radius: 14px; padding: 24px 28px; }
     .compare-label { font-weight: 800; font-size: 17px; margin-bottom: 6px; letter-spacing: -0.01em; }
     .compare p { margin: 0; color: var(--ink-2); font-size: 15.5px; max-width: 860px; }
+    .compare p + p { margin-top: 8px; }
     .compare p.compare-fine { margin-top: 10px; font-size: 12px; color: #9ca3af; }
 
     /* ── Audit mock ────────────────────────────────── */
@@ -267,6 +269,21 @@
     .ev { font-size: 26px; font-weight: 900; letter-spacing: -0.03em; }
     .es { font-size: 12px; color: var(--muted); }
 
+    /* ── CTAs ──────────────────────────────────────── */
+    .cta-note { margin-top: 10px; font-size: 13px; color: rgba(255,255,255,0.5); }
+    .btn-white { background: #fff; color: var(--blue); }
+    .btn-white:hover { background: #eff6ff; }
+    .cta-band { background: var(--blue); color: #fff; padding: 56px 0; }
+    .cta-band-in { display: flex; align-items: center; justify-content: space-between; gap: 32px; }
+    .cta-band h2 { color: #fff; font-size: 32px; margin-bottom: 8px; }
+    .cta-band p { margin: 0; color: rgba(255,255,255,0.85); max-width: 600px; }
+    .cta-band-btns { flex: none; text-align: center; }
+    .cta-band .cta-note { color: rgba(255,255,255,0.75); }
+    .roi { max-width: 880px; margin: 28px auto 0; padding: 22px 28px; border-radius: 14px; background: #ecfdf5; border: 1px solid #a7f3d0; }
+    .roi-big { font-size: 20px; font-weight: 900; letter-spacing: -0.02em; color: #065f46; margin-bottom: 4px; }
+    .roi p { margin: 0; color: var(--ink-2); font-size: 15px; }
+    @media (max-width: 900px) { .cta-band-in { flex-direction: column; align-items: flex-start; } .cta-band-btns { text-align: left; } .cta-band h2 { font-size: 26px; } }
+
     /* ── Pricing ────────────────────────────────────── */
     .plans { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; max-width: 880px; margin: 0 auto; }
     .plan { border: 1px solid var(--line); border-radius: 18px; padding: 34px; position: relative; background: #fff; }
@@ -327,7 +344,10 @@
       .wrap { padding: 0 16px; }
       .wordmark { font-size: 20px; }
       .nav-links { gap: 8px; }
-      .nav-links .btn-primary { display: none; }
+      .nav-links .btn { padding: 7px 12px; font-size: 13px; }
+      .nav-cta .lg { display: none; }
+      .nav-cta .sm { display: inline; }
+      .brand svg { width: 22px; height: 20px; }
       .mock-stat { padding: 12px 14px; }
       .mock-stat .v { font-size: 20px; }
       .mock-row { padding: 12px 14px; }
@@ -372,7 +392,7 @@
         <a class="plain" href="#kpis">Dashboard</a>
         <a class="plain" href="#features">Features</a>
         <a class="plain" href="#pricing">Pricing</a>
-        <a class="btn btn-primary" href="#demo">Request a demo</a>
+        <a class="btn btn-primary nav-cta" href="#demo"><span class="lg">Request a demo</span><span class="sm">Get a demo</span></a>
         <a class="btn btn-login" id="login-link" href="/app">Login</a>
       </nav>
     </div>
@@ -388,6 +408,7 @@
           <div class="hero-ctas">
             <a class="btn btn-primary" href="#demo">Request a demo</a>
           </div>
+          <div class="cta-note">30-minute video call · No commitment</div>
           <div class="hero-trio">
             <div><span class="dot d1"></span><strong>The queue</strong> tells TCs who to call</div>
             <div><span class="dot d2"></span><strong>The tracker</strong> shows it was done on time</div>
@@ -574,7 +595,21 @@
         <div class="compare">
           <div class="compare-label">A metric tracker, like Gaidge</div>
           <p>Like Gaidge, CadenceIQ is a metric tracker. It takes your practice data and turns it into the KPIs that matter most, shown in a way that is easy to digest and easy to understand. Conversion, case acceptance, starts, follow-up and TC performance are all laid out so the doctor and the whole team can read them at a glance.</p>
+          <p>Already use Gaidge? CadenceIQ adds the follow-up queue and TC accountability that drive those numbers.</p>
           <p class="compare-fine">Gaidge is a trademark of its owner. CadenceIQ is not affiliated with or endorsed by Gaidge.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta-band">
+      <div class="wrap cta-band-in">
+        <div>
+          <h2>See what your follow-up is really doing.</h2>
+          <p>We'll walk through the queue, the TC accountability tracker and the dashboard, and talk about how it would fit your practice.</p>
+        </div>
+        <div class="cta-band-btns">
+          <a class="btn btn-white" href="#demo">Request a demo</a>
+          <div class="cta-note">30-minute video call · No commitment</div>
         </div>
       </div>
     </section>
@@ -659,6 +694,10 @@
             <div class="setup">$500 one-time setup</div>
             <a class="btn btn-dark" href="#demo">Request a demo</a>
           </div>
+        </div>
+        <div class="roi">
+          <div class="roi-big">One extra start covers more than a year.</div>
+          <p>A Foundation Partner year costs $3,500, setup included. A single orthodontic case is usually worth more than that, so if CadenceIQ helps your team convert just one more patient, it has paid for itself. Most practices are looking for a lot more than one.</p>
         </div>
         <div class="includes">
           <div>
