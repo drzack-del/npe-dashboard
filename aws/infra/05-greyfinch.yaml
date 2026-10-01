@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CadenceIQ greyfinch-sync function (Stage 2, test) behind the API load balancer at
+  /functions/v1/greyfinch-sync. The function code lives in aws/functions/greyfinch-sync/ and
+  is uploaded after this stack is created (it is larger than CloudFormation's inline limit),
+  so the function starts with a placeholder that only answers 503. The Greyfinch key starts
+  EMPTY: Stage 2 uses fake data only, and the real key is entered by hand at cutover.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: test
+    AllowedValues: [test, prod]
+  JwksJson:
+    Type: String
+    Description: Public signing keys of the Cognito user pool.
+  ListenerArn:
+    Type: String
+    Description: HTTPS listener of the API load balancer (from cadenceiq-<stage>-data-layer).
+  ApiBase:
+    Type: String
+    Default: https://api-test.trycadenceiq.com/rest/v1
+  AllowedOrigins:
+    Type: String
+    Default: 'http://localhost:5173,http://localhost:5174,http://localhost:5175'
+  PracticeId:
+    Type: String
+    Default: miller-ortho
+    Description: The practice whose Greyfinch credentials these are; only its staff may call.
+
+Resources:
+  # Placeholder values only. The real key and secret are typed in by Dr. Miller at cutover.
+  GreyfinchSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'cadenceiq-${Stage}/greyfinch'
+      Description: Greyfinch API key and secret for the practice in PracticeId
+      SecretString: '{"key":"","secret":""}'
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: read-greyfinch-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref GreyfinchSecret
+
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/cadenceiq-${Stage}-greyfinch-sync'
+      RetentionInDays: 365
+
+  Function:
+    Type: AWS::Lambda::Function
+    DependsOn: Logs
+    Properties:
+      FunctionName: !Sub 'cadenceiq-${Stage}-greyfinch-sync'
+      Description: Greyfinch NPE bookings for active practice staff (code in aws/functions/greyfinch-sync)
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt FunctionRole.Arn
+      Timeout: 20
+      MemorySize: 256
+      Environment:
+        Variables:
+          JWKS: !Ref JwksJson
+          ISSUER: !ImportValue { 'Fn::Sub': 'cadenceiq-${Stage}-token-issuer' }
+          CLIENT_ID: !ImportValue { 'Fn::Sub': 'cadenceiq-${Stage}-web-client-id' }
+          API_BASE: !Ref ApiBase
+          ALLOWED_ORIGINS: !Ref AllowedOrigins
+          PRACTICE_ID: !Ref PracticeId
+          GREYFINCH_SECRET_ARN: !Ref GreyfinchSecret
+      Code:
+        ZipFile: |
+          exports.handler = async () => ({ statusCode: 503, headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ error: 'Not deployed yet' }), isBase64Encoded: false });
+
+  LoadBalancerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: elasticloadbalancing.amazonaws.com
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: LoadBalancerInvokePermission
+    Properties:
+      TargetType: lambda
+      Targets: [{ Id: !GetAtt Function.Arn }]
+
+  # Only this exact path reaches the function; everything else still goes to the data layer.
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ListenerArn
+      Priority: 10
+      Conditions: [{ Field: path-pattern, PathPatternConfig: { Values: [/functions/v1/greyfinch-sync] } }]
+      Actions: [{ Type: forward, TargetGroupArn: !Ref TargetGroup }]
+
+Outputs:
+  FunctionName:
+    Value: !Ref Function
+  GreyfinchSecretArn:
+    Value: !Ref GreyfinchSecret
