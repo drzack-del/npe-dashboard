@@ -90,6 +90,10 @@ All fake test users/rows were removed after each check.
   SSL inspection (e.g. airport Wi-Fi with a Fortinet FortiGate) intercept trycadenceiq.com and break the
   data calls (ERR_CERT_AUTHORITY_INVALID) while Cognito still works; never bypass, use a hotspot. Earlier
   "GlobalProtect" diagnosis was wrong: it is installed but not connected.
+  His verdict after clicking through dashboard (September KPIs), patients and settings: "it looks good".
+  Notes: the KPI table defaults to the current month (empty on the 1st); the one copied feedback row is
+  an old auto bug report (2026-09-24 16:24 UTC, fixed by the transfer_patient_flag migration 6 min later)
+  and shows as new in the test copy because localhost never marked it seen.
 - Next: Stage 4 staff trial needs (a) hosted test URL + AllowedOrigins/AppUrl, (b) admin reset of a
   lost authenticator, (c) SES email (he will do later), (d) his yes before any invites.
 
