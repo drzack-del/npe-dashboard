@@ -99,7 +99,7 @@ export function friendlyError(err) {
   if (name === 'NotAuthorizedException') {
     if (/temporary password has expired/i.test(msg)) return 'Your invite has expired. Ask your practice admin to resend it.';
     if (/cannot be reset in the current state/i.test(msg)) return 'You have not finished setting up your account yet. Sign in with the one-time password from your invite email, or ask your admin to resend it.';
-    if (/invalid session/i.test(msg)) return 'This sign-in took too long. Please start again.';
+    if (/invalid session/i.test(msg)) return 'This screen timed out (sign-in steps stay open for 15 minutes). Click "Back to Sign In" and sign in again. If you were setting up your authenticator app, delete the CadenceIQ entry you just added and scan the new code.';
     return 'Incorrect email or password.';
   }
   if (name === 'CodeMismatchException' || name === 'EnableSoftwareTokenMFAException') return 'That code did not match. Use the current six-digit code from your authenticator app.';
