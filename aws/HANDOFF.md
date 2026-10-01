@@ -23,6 +23,11 @@ Read this first in a new session. Full transcript of the session that produced i
 - Branch `aws-local-testing` (worktree `.claude/worktrees/aws-local-testing`): local harness in
   `aws/db/` (`npm test` = DB checks on production's real structure + Playwright app checks;
   browser is network-locked because live `main` falls back to the production Supabase URL).
+- Branch `aws-cognito-login` (worktree `.claude/worktrees/aws-cognito-login`, from live `main`):
+  Phase 6 app code. `VITE_AUTH_PROVIDER=cognito` switches sign-in to Cognito (`src/cognitoAuth.js`,
+  `src/CognitoLogin.jsx`, lazy-loaded; the live build without it contains none of it). Run against
+  AWS test with `npx vite --mode awstest` (`.env.awstest`, public IDs only; launch.json entry
+  `app-on-aws-test`, port 5175). NOT merged to main yet: needs his yes.
 - Already live on `main`: App.jsx reads `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` if set
   (byte-identical build without them; Vercel has none).
 
@@ -36,6 +41,9 @@ Read this first in a new session. Full transcript of the session that produced i
 | 4b data layer | `data-layer` | ALB `cadenceiq-test-api-723723109.us-east-1.elb.amazonaws.com` → nginx `/rest/v1/` → PostgREST 14.1; secret `cadenceiq-test/db-authenticator`; `DesiredCount` param (0 pauses it) |
 | 5 greyfinch-sync | `greyfinch` | Lambda `cadenceiq-test-greyfinch-sync` at `/functions/v1/greyfinch-sync` (ALB rule priority 10); secret `cadenceiq-test/greyfinch` (empty) |
 | 5a code bucket | `function-code` | `cadenceiq-test-function-code-488482832567` (versioned, private) |
+| 6 invite | `invite` | Lambda `cadenceiq-test-invite-user` at `/functions/v1/invite-user` (rule priority 20), code from the bucket (pinned S3 version) |
+| 6 login update | `login` | users cannot write `email` (WriteAttributes [name], verify-before-update), token email only when verified, invite email template (`AppUrl` param, test default localhost:5173), AuthSessionValidity 15 min |
+| 6 DB | — | `public.link_my_login()` (aws/infra/sql/06_link_my_login.sql) creates auth.users row + links tc_users on first sign-in; after DDL run `NOTIFY pgrst, 'reload schema'` |
 | budget | — | "CadenceIQ monthly spend" $100/mo, alerts to drzack@northtampabraces.com |
 
 Production structure (no data) loaded on Aurora: 7 tables, 26 policies, 5 functions, 1 trigger.
@@ -50,10 +58,16 @@ All fake test users/rows were removed after each check.
    table), 15/15 HTTPS checks in `aws/infra/checks/README.md`. Code upload path: zip locally →
    presigned PUT to the code bucket → `UpdateFunctionCode` from the S3 version (sandbox blocks
    `zipfile`/`base64`). `set-user-password` is NOT ported (already retired on Supabase, returns 410).
-3. **Phase 6**: switch the app's login from Supabase Auth to Cognito on its own branch (supabase-js
-   `accessToken` option for data calls; replace sign-in, MFA screens, sign-out, password reset;
-   sign-up becomes invite-only). Add the test app's origin to `AllowedOrigins` on the data layer and
-   greyfinch stacks. Then run the 19 Playwright app checks against AWS.
+3. **Phase 6 (in progress, 2026-10-01)**: app code on `aws-cognito-login`; AWS side applied (table
+   above). Verified: session resume + link_my_login, team invite (real email to
+   zack.miller96+cadenceiq-tc1@gmail.com), self email change refused, Greyfinch 503 through the app,
+   sign-out; Dr. Miller completed a real first sign-in (one-time password → new password → QR → code).
+   First attempt failed: Cognito's 3-minute AuthSessionValidity cut off authenticator setup → raised to 15.
+   Claude may not type passwords into the Cognito sign-in page (external identity provider), so
+   browser sign-in steps are done by him; Claude injects sandbox-minted tokens into Amplify's
+   localStorage keys to test post-sign-in screens. invite-user 22/22 and link_my_login 7/7 local checks.
+   Remaining: Playwright run with flag OFF (live behaviour unchanged), delete test accounts/rows,
+   his yes to merge the off-by-default code to main, then automated Cognito-mode checks.
 4. Before Stage 3/prod: remove `ALLOW_ADMIN_USER_PASSWORD_AUTH` from the Cognito client, consider
    ALB access logs + WAF, Business Support+, refresh `prod-schema/production-schema.sql` and
    `APPLIED_THROUGH` if any migration is run in production meanwhile.
@@ -68,6 +82,10 @@ All fake test users/rows were removed after each check.
 - He was advised to delete the unused `send-email` Supabase function (open relay). Unconfirmed.
 
 ## Gotchas learned
+- New DB functions are invisible to PostgREST (404) until `NOTIFY pgrst, 'reload schema'`.
+- `aws_mcp` sandbox has no `elasticloadbalancingv2` name: use `elbv2`; `zipfile`/`base64` blocked.
+- Demo button + homepage "live demo" links were removed from live 2026-10-01 (they could open his
+  real dashboard); `SHOW_DEMO_BUTTON` in App.jsx; keep off until a fake-patient demo exists.
 - Connector sandbox: ~4-minute script limit (poll long waits with background `sleep` + re-check),
   no `hashlib` (byte-sum checksum to prove the template sent matches the repo file), Data API
   Commit/Rollback take only resourceArn/secretArn/transactionId.
