@@ -284,6 +284,20 @@
     .roi p { margin: 0; color: var(--ink-2); font-size: 15px; }
     @media (max-width: 900px) { .cta-band-in { flex-direction: column; align-items: flex-start; } .cta-band-btns { text-align: left; } .cta-band h2 { font-size: 26px; } }
 
+    /* ── FAQ and softer contact options ─────────────── */
+    .faq-wrap { max-width: 820px; }
+    .faq { border-top: 1px solid var(--line); }
+    .faq-item { border-bottom: 1px solid var(--line); }
+    .faq-item summary { cursor: pointer; list-style: none; padding: 20px 36px 20px 0; font-size: 17px; font-weight: 800; position: relative; letter-spacing: -0.01em; }
+    .faq-item summary::-webkit-details-marker { display: none; }
+    .faq-item summary::after { content: '+'; position: absolute; right: 4px; top: 16px; font-size: 24px; font-weight: 400; color: var(--muted); }
+    .faq-item[open] summary::after { content: '−'; }
+    .faq-item p { margin: 0 0 20px; color: var(--ink-2); font-size: 15.5px; }
+    .soft { margin-top: 24px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.12); }
+    .soft-k { font-weight: 800; color: #fff; margin-bottom: 4px; }
+    .soft p { margin: 0 0 12px; color: rgba(255,255,255,0.7); font-size: 15px; }
+    .soft a:not(.btn) { color: #fff; }
+
     /* ── Pricing ────────────────────────────────────── */
     .plans { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; max-width: 880px; margin: 0 auto; }
     .plan { border: 1px solid var(--line); border-radius: 18px; padding: 34px; position: relative; background: #fff; }
@@ -392,6 +406,7 @@
         <a class="plain" href="#kpis">Dashboard</a>
         <a class="plain" href="#features">Features</a>
         <a class="plain" href="#pricing">Pricing</a>
+        <a class="plain" href="#faq">FAQ</a>
         <a class="btn btn-primary nav-cta" href="#demo"><span class="lg">Request a demo</span><span class="sm">Get a demo</span></a>
         <a class="btn btn-login" id="login-link" href="/app">Login</a>
       </nav>
@@ -680,7 +695,7 @@
         </div>
         <div class="plans">
           <div class="plan featured">
-            <div class="badge">Limited to the first 5 practices</div>
+            <div class="badge">Only 3 of 5 spots left</div>
             <h3>Foundation Partner</h3>
             <p class="sub">Keep this rate for as long as you remain an active client.</p>
             <div class="price">$250<small> /month per practice</small></div>
@@ -719,6 +734,37 @@
       </div>
     </section>
 
+    <section id="faq">
+      <div class="wrap faq-wrap">
+        <div class="section-head center">
+          <div class="kicker">Questions</div>
+          <h2>Common questions from practice owners.</h2>
+        </div>
+        <div class="faq">
+          <details class="faq-item">
+            <summary>Is there a contract?</summary>
+            <p>No. CadenceIQ is month to month and you can cancel anytime. The one-time $500 setup covers getting your practice connected and your team onboarded, and isn't refunded.</p>
+          </details>
+          <details class="faq-item">
+            <summary>How do new patients get into CadenceIQ?</summary>
+            <p>After each consult, the TC adds the patient and the obstacle that's holding them back. From then on, CadenceIQ schedules every follow-up for them. A direct Greyfinch connection is coming soon, so new patients can be pulled in automatically.</p>
+          </details>
+          <details class="faq-item">
+            <summary>Does it replace our practice management software?</summary>
+            <p>No. CadenceIQ works alongside the software you already use. It focuses on what happens between the consult and the start, and on the numbers that show how well that's going.</p>
+          </details>
+          <details class="faq-item">
+            <summary>We have more than one location. Does that cost more?</summary>
+            <p>No. Pricing is per practice, not per location, and every subscription includes a view across all of your offices.</p>
+          </details>
+          <details class="faq-item">
+            <summary>What happens on the demo call?</summary>
+            <p>A 30-minute video call. We walk through the follow-up queue, the TC accountability tracker and the dashboard, talk about how your practice handles follow-up today, and go over what setup looks like. No commitment.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
     <section class="demo" id="demo">
       <div class="wrap demo-grid">
         <div>
@@ -732,6 +778,15 @@
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>A walkthrough of what setup looks like</li>
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>Foundation Partner availability</li>
           </ul>
+          <div class="soft" id="interest" hidden>
+            <div class="soft-k">Not ready for a call?</div>
+            <p>Leave your name and number and we'll send you more information.</p>
+            <a class="btn btn-ghost" id="interest-link" href="#" target="_blank" rel="noopener">Get more info →</a>
+          </div>
+          <div class="soft" id="contact" hidden>
+            <div class="soft-k">Questions?</div>
+            <p id="contact-lines"></p>
+          </div>
         </div>
         <div class="booking" id="booking"></div>
       </div>
@@ -749,6 +804,27 @@
     // ── Demo booking calendar ────────────────────────────────────────
     // Paste the Google Calendar appointment-schedule link here. Phone number is
     // collected by Google's booking form (set it to "required" in Google Calendar).
+    // ── Interest form and contact details ───────────────────────────
+    // Leave a value empty to keep that part hidden on the page.
+    var INTEREST_FORM_URL = '';
+    var CONTACT = { name: '', phone: '', email: '' };
+
+    (function () {
+      if (INTEREST_FORM_URL) {
+        document.getElementById('interest-link').href = INTEREST_FORM_URL;
+        document.getElementById('interest').hidden = false;
+      }
+      var bits = [];
+      function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+      if (CONTACT.name) bits.push('<strong>' + esc(CONTACT.name) + '</strong>');
+      if (CONTACT.phone) bits.push('<a href="tel:' + esc(CONTACT.phone.replace(/[^0-9+]/g, '')) + '">' + esc(CONTACT.phone) + '</a>');
+      if (CONTACT.email) bits.push('<a href="mailto:' + esc(CONTACT.email) + '">' + esc(CONTACT.email) + '</a>');
+      if (bits.length) {
+        document.getElementById('contact-lines').innerHTML = bits.join('<br>');
+        document.getElementById('contact').hidden = false;
+      }
+    })();
+
     var BOOKING_URL = 'https://calendar.google.com/calendar/appointments/schedules/AcZssZ1NN7L2Rmf_axp4nzzTFYTA1EZViWPzDlU1lt4JTYmvOmuoC9YDJ92a0u-aO1mNyt9mnV1vTxYy';
 
     (function () {
