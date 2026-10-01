@@ -57,11 +57,13 @@ const fingerprintSql = (table) =>
 // CSV in PostgreSQL's format: unquoted empty = NULL, "" = empty text.
 const csvCell = v => (v === null ? '' : `"${String(v).replace(/"/g, '""')}"`);
 
+// Prints the question once, then shows nothing of what is typed.
 function askHidden(question) {
   return new Promise(resolve => {
+    process.stdout.write(question);
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    rl._writeToOutput = (s) => { if (s.includes(question)) process.stdout.write(s); };
-    rl.question(question, answer => { rl.close(); process.stdout.write('\n'); resolve(answer); });
+    rl._writeToOutput = () => {};
+    rl.question('', answer => { rl.close(); process.stdout.write('\n'); resolve(answer); });
   });
 }
 
@@ -115,7 +117,9 @@ try {
   console.log('Tell Claude "export done". It does not need the files\' contents, only that they exist.');
 } catch (err) {
   failed = true;
-  const msg = /password authentication failed/i.test(err.message) ? 'The password was not accepted. Nothing was exported.' : err.message;
+  const msg = /password authentication failed/i.test(err.message) ? 'The password was not accepted. Nothing was exported.'
+    : /timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND/i.test(err.message) ? 'Could not reach the Supabase database. This network may block database connections (only web traffic allowed); try another network, such as a phone hotspot. Nothing was exported.'
+    : err.message;
   console.error(`\nStopped: ${msg}`);
 } finally {
   await client.end().catch(() => {});
