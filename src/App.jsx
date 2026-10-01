@@ -482,7 +482,7 @@ import { createClient } from '@supabase/supabase-js';
                 setLoginError('');
                 setLoginLoading(true);
                 try {
-                    const { error } = await withTimeout(supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin }));
+                    const { error } = await withTimeout(supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + '/app' }));
                     if (error) setLoginError(error.message);
                     else setForgotPwSent(true);
                 } catch (err) {
