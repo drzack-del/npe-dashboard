@@ -1,5 +1,5 @@
 import './case-economics.css';
-import React, { useState, useEffect, useRef, Component } from 'react';
+import React, { useState, useEffect, useRef, Component, lazy, Suspense } from 'react';
 
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -50,10 +50,17 @@ import { createClient } from '@supabase/supabase-js';
         // backend. With no settings (as on Vercel today) the live Supabase project is used.
         const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL || 'https://flhvblepqsuvsmscmmxm.supabase.co';
         const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZsaHZibGVwcXN1dnNtc2NtbXhtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4NzM3MzAsImV4cCI6MjA4ODQ0OTczMH0.0FF6wCEFjpHqg55m1wKZCtJp6jQnPodECgUspc0ZoMo';
+        // VITE_AUTH_PROVIDER=cognito switches sign-in to AWS Cognito, for builds pointed at the
+        // AWS backend. Without it (as on Vercel today) sign-in is Supabase Auth, unchanged, and
+        // the Cognito files below are never downloaded.
+        const USE_COGNITO = import.meta.env.VITE_AUTH_PROVIDER === 'cognito';
+        const cognitoAuth = USE_COGNITO ? import('./cognitoAuth.js') : null;
+        const CognitoLogin = USE_COGNITO ? lazy(() => import('./CognitoLogin.jsx')) : null;
         const supabase = (SUPABASE_URL.startsWith('http'))
-          ? createClient(SUPABASE_URL, SUPABASE_ANON, {
-              auth: { detectSessionInUrl: false }
-            })
+          ? createClient(SUPABASE_URL, SUPABASE_ANON, USE_COGNITO
+              // Data calls carry the Cognito access token; supabase.auth is unused in this mode.
+              ? { accessToken: async () => (await cognitoAuth).accessToken() }
+              : { auth: { detectSessionInUrl: false } })
           : null;
         // ────────────────────────────────────────────────────────────────
 
@@ -391,7 +398,10 @@ import { createClient } from '@supabase/supabase-js';
                 }
                 if (!data) return null;
                 if (!data.auth_user_id) {
-                    await supabase.from('tc_users').update({ auth_user_id: userId }).eq('email', userEmail);
+                    // On AWS the database records the login itself (there is no Supabase Auth
+                    // to create the auth.users row), then links it to this team-member row.
+                    if (USE_COGNITO) await supabase.rpc('link_my_login');
+                    else await supabase.from('tc_users').update({ auth_user_id: userId }).eq('email', userEmail);
                 }
                 const practiceId = data.practice_id || 'miller-ortho';
                 let practiceName = 'Practice';
@@ -407,6 +417,20 @@ import { createClient } from '@supabase/supabase-js';
 
             useEffect(() => {
                 if (!supabase) { setAuthLoading(false); return; }
+                if (USE_COGNITO) {
+                    // Resume a sign-in from earlier in this browser, if it is still valid.
+                    let cancelled = false;
+                    cognitoAuth.then(async (auth) => {
+                        const user = await auth.currentUser();
+                        if (user) {
+                            const profile = await fetchProfile(user.id, user.email);
+                            if (cancelled) return;
+                            if (profile) setCurrentUser(profile);
+                            else await auth.signOut();
+                        }
+                    }).catch(() => {}).finally(() => { if (!cancelled) setAuthLoading(false); });
+                    return () => { cancelled = true; };
+                }
                 const loadingTimeout = setTimeout(() => setAuthLoading(false), 5000);
                 supabase.auth.getSession().then(async ({ data: { session } }) => {
                     clearTimeout(loadingTimeout);
@@ -499,8 +523,18 @@ import { createClient } from '@supabase/supabase-js';
                 setShowDemoWelcome(true);
             };
 
+            // Called by the Cognito sign-in screens once the password and code are accepted.
+            // Returns a message to show instead if there is no CadenceIQ profile for the login.
+            const handleCognitoSignedIn = async (user) => {
+                const profile = user ? await fetchProfile(user.id, user.email) : null;
+                if (!profile) return 'No CadenceIQ account was found for this login. Ask your practice admin to add you.';
+                setCurrentUser(profile);
+                return null;
+            };
+
             const handleSignOut = async () => {
-                if (supabase && currentUser?.id !== 'demo') await supabase.auth.signOut();
+                if (USE_COGNITO && currentUser?.id !== 'demo') await (await cognitoAuth).signOut();
+                else if (supabase && currentUser?.id !== 'demo') await supabase.auth.signOut();
                 setCurrentUser(null);
                 setEmail(''); setPassword('');
             };
@@ -532,6 +566,12 @@ import { createClient } from '@supabase/supabase-js';
                         <div style={{fontSize:'12px',color:'rgba(255,255,255,0.4)',letterSpacing:'0.2em',textTransform:'uppercase',marginBottom:'6px'}}>Practice Intelligence</div>
                         <div style={{width:'40px',height:'2px',backgroundColor:'#4A90E2',margin:'0 auto',opacity:0.5}}></div>
                     </div>
+                );
+
+                if (USE_COGNITO) return (
+                    <Suspense fallback={<div style={{minHeight:'100vh',backgroundColor:'#202020'}} />}>
+                        <CognitoLogin brandHero={brandHero} onSignedIn={handleCognitoSignedIn} onDemo={handleDemoLogin} />
+                    </Suspense>
                 );
 
                 if (signUpDone) return (
@@ -2938,8 +2978,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const callGreyfinch = async (payload) => {
     let token = SUPABASE_ANON;
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.access_token) token = session.access_token;
+      if (USE_COGNITO) token = (await (await cognitoAuth).accessToken()) || token;
+      else {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) token = session.access_token;
+      }
     } catch {}
     const res = await fetch(`${SUPABASE_URL}/functions/v1/greyfinch-sync`, {
       method: 'POST',
@@ -2950,6 +2993,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
     return result;
   };
+
+  // AWS only: asks the invite-user function to create the login for someone already on the
+  // team list and email them a one-time password, or to resend it if they have not signed in
+  // yet. Resolves to { status: 'invited' | 'resent' | 'exists' }. Throws on any error.
+  const sendInvite = async (email) => {
+    const token = await (await cognitoAuth).accessToken();
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/invite-user`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ email }),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
+    return result;
+  };
+  const [inviteStatus, setInviteStatus] = useState({});
 
   // Pull the NPE appointments scheduled for `dateStr`. A monotonic request id ensures a
   // slow response for an earlier date can't overwrite a newer selection's results.
@@ -10735,7 +10794,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <h4 style={{fontSize:'16px',fontWeight:'800',color:'#202020',marginBottom:'4px'}}>🔑 Change My Password</h4>
               <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Update your login password. You'll stay signed in.</p>
               <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
-                <input type="password" placeholder="New password (min 6 characters)"
+                {USE_COGNITO && (
+                  <input type="password" placeholder="Current password" autoComplete="current-password"
+                    value={changePwForm.current} onChange={e => setChangePwForm(f => ({...f, current: e.target.value}))}
+                    style={{padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}} />
+                )}
+                <input type="password" placeholder={USE_COGNITO ? 'New password (min 12 characters)' : 'New password (min 6 characters)'}
                   value={changePwForm.next} onChange={e => setChangePwForm(f => ({...f, next: e.target.value}))}
                   style={{padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}} />
                 <input type="password" placeholder="Confirm new password"
@@ -10750,6 +10814,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   </div>
                 )}
                 <button disabled={changePwLoading} onClick={async () => {
+                  if (USE_COGNITO) {
+                    if (!changePwForm.current) return setChangePwMsg('Enter your current password.');
+                    if (changePwForm.next.length < 12) return setChangePwMsg('Password must be at least 12 characters.');
+                    if (changePwForm.next !== changePwForm.confirm) return setChangePwMsg('Passwords do not match.');
+                    setChangePwLoading(true);
+                    const auth = await cognitoAuth;
+                    try { await auth.changePassword(changePwForm.current, changePwForm.next); }
+                    catch (err) {
+                      setChangePwLoading(false);
+                      return setChangePwMsg('Error: ' + (err?.name === 'NotAuthorizedException' ? 'Your current password is not correct.' : auth.friendlyError(err)));
+                    }
+                    setChangePwLoading(false);
+                    setChangePwMsg('✅ Password updated successfully!');
+                    setChangePwForm({ current: '', next: '', confirm: '' });
+                    setTimeout(() => setChangePwMsg(''), 5000);
+                    return;
+                  }
                   if (changePwForm.next.length < 6) return setChangePwMsg('Password must be at least 6 characters.');
                   if (changePwForm.next !== changePwForm.confirm) return setChangePwMsg('Passwords do not match.');
                   setChangePwLoading(true);
@@ -10880,7 +10961,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                           {isExpanded ? 'Hide' : '📋 Get Invite'}
                                         </button>
                                       )}
-                                      {hasAuth && (<>
+                                      {hasAuth && !USE_COGNITO && (<>
                                         <input
                                           type="password"
                                           placeholder="Set new password…"
@@ -11248,7 +11329,30 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               <td style={{padding:'10px'}}>
                                 {u.email !== currentUser?.email && (
                                   <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
-                                    {u.auth_user_id && currentUser?.role === 'admin' && (<>
+                                    {USE_COGNITO && !u.auth_user_id && currentUser?.role === 'admin' && (
+                                      <button
+                                        disabled={inviteStatus[u.id] === 'sending'}
+                                        onClick={async () => {
+                                          setInviteStatus(s => ({ ...s, [u.id]: 'sending' }));
+                                          try {
+                                            const r = await sendInvite(u.email);
+                                            setInviteStatus(s => ({ ...s, [u.id]: 'sent' }));
+                                            setTcMgmtMsgType('info');
+                                            setTcMgmtMsg(r.status === 'exists'
+                                              ? `${u.email} already finished setting up their login. They can sign in, or use "Forgot password?" on the sign-in page.`
+                                              : `Invite emailed to ${u.email}. The one-time password in it works for 7 days.`);
+                                          } catch (e) {
+                                            setInviteStatus(s => ({ ...s, [u.id]: 'error' }));
+                                            setTcMgmtMsgType('error');
+                                            setTcMgmtMsg(`Couldn't send the invite to ${u.email}: ${e.message}`);
+                                          }
+                                          setTimeout(() => setInviteStatus(s => { const n = {...s}; delete n[u.id]; return n; }), 3000);
+                                        }}
+                                        style={{fontSize:'11px',padding:'4px 10px',border:'none',borderRadius:'5px',cursor:'pointer',fontWeight:'600',backgroundColor: inviteStatus[u.id]==='sent'?'#16a34a':inviteStatus[u.id]==='error'?'#dc2626':'#374151',color:'white',opacity:inviteStatus[u.id]==='sending'?0.5:1}}>
+                                        {inviteStatus[u.id]==='sent'?'✓ Sent':inviteStatus[u.id]==='error'?'✗ Error':inviteStatus[u.id]==='sending'?'Sending…':'Resend invite'}
+                                      </button>
+                                    )}
+                                    {!USE_COGNITO && u.auth_user_id && currentUser?.role === 'admin' && (<>
                                       <input
                                         type="password"
                                         placeholder="New password…"
@@ -11306,7 +11410,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     )}
                                     {currentUser?.role === 'admin' && (
                                     <button onClick={async () => {
-                                      if (!window.confirm(`Remove ${u.name} from the team?\n\nThis deletes their team row so they can no longer sign in to this practice. Their login itself is NOT deleted — if you add ${u.email} again later, the ORIGINAL password still applies and any new password you type on the add form will be ignored. Use Set Password instead in that case.`)) return;
+                                      if (!window.confirm(USE_COGNITO
+                                        ? `Remove ${u.name} from the team?\n\nThis deletes their team row so they can no longer sign in to this practice. If you add ${u.email} again later, their existing password and authenticator app still work.`
+                                        : `Remove ${u.name} from the team?\n\nThis deletes their team row so they can no longer sign in to this practice. Their login itself is NOT deleted — if you add ${u.email} again later, the ORIGINAL password still applies and any new password you type on the add form will be ignored. Use Set Password instead in that case.`)) return;
                                       const { data: rows, error } = await supabase.from('tc_users').delete().eq('id', u.id).select();
                                       if (error || !rows || rows.length === 0) {
                                         setTcMgmtMsgType('error');
@@ -11346,6 +11452,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           <input id="guide-tc-email" value={newTCEmail} onChange={e => setNewTCEmail(e.target.value)} placeholder="email@example.com" type="email"
                             style={{width:'100%',padding:'9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',boxSizing:'border-box'}} />
                         </div>
+                        {!USE_COGNITO && (
                         <div>
                           <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Temporary Password</label>
                           <div style={{position:'relative'}}>
@@ -11357,6 +11464,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             </button>
                           </div>
                         </div>
+                        )}
                         {currentUser?.role === 'admin' && (
                         <div>
                           <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Role</label>
@@ -11394,7 +11502,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         )}
                         <button id="guide-tc-add" onClick={async () => {
                           if (!newTCName.trim() || !newTCEmail.trim()) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Name and email are required.'); }
-                          if (!newTCPassword.trim() || newTCPassword.trim().length < 6) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Password must be at least 6 characters.'); }
+                          if (!USE_COGNITO && (!newTCPassword.trim() || newTCPassword.trim().length < 6)) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Password must be at least 6 characters.'); }
                           const isLocationOwnerRole = newTCRole === 'location_owner';
                           if (isLocationOwnerRole && !newTCLocationScope) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Pick a location for a Location Owner login.'); }
                           const addedName = newTCName.trim();
@@ -11407,9 +11515,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             setTcMgmtMsgType('error');
                             return setTcMgmtMsg(`${addedEmail} is already on your team. Use the Set Password box on their row to change their password, or Delete that row first.`);
                           }
-                          // Create Supabase auth account using a temp client so admin stays signed in
-                          const tempClient = createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false, detectSessionInUrl: false } });
-                          const { error: authError } = await tempClient.auth.signUp({ email: addedEmail, password: addedPassword });
+                          // Create Supabase auth account using a temp client so admin stays signed in.
+                          // On AWS the login is created after the team row, by the invite-user function.
+                          let authError = null;
+                          if (!USE_COGNITO) {
+                            const tempClient = createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false, detectSessionInUrl: false } });
+                            ({ error: authError } = await tempClient.auth.signUp({ email: addedEmail, password: addedPassword }));
+                          }
                           // "Already registered" means the auth account survived an earlier Delete
                           // (Delete only removes the tc_users row). signUp then does NOT change the
                           // password -- so the credentials handed out below would be wrong. This used
@@ -11430,6 +11542,20 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           await loadTCUsers();
                           setGuidedHighlight(null);
                           setShowOnboarding(true);
+                          if (USE_COGNITO) {
+                            try {
+                              const r = await sendInvite(addedEmail);
+                              setTcMgmtMsgType(r.status === 'exists' ? 'info' : 'success');
+                              setTcMgmtMsg(r.status === 'exists'
+                                ? `${addedName} was added to the team. ${addedEmail} already has a CadenceIQ login, so they can sign in now with their existing password and authenticator app.`
+                                : `✅ ${addedName} was added and an invite was emailed to ${addedEmail}.\n\nIt has a one-time password that works for 7 days. When they first sign in at ${APP_URL} they choose their own password and set up an authenticator app.`);
+                            } catch (e) {
+                              setTcMgmtMsgType('error');
+                              setTcMgmtMsg(`${addedName} was added to the team, but the invite email could not be sent (${e.message}). Use "Resend invite" on their row to try again.`);
+                            }
+                            setTimeout(() => setTcMgmtMsg(''), 60000);
+                            return;
+                          }
                           if (authExisted) {
                             setTcMgmtMsgType('error');
                             setTcMgmtMsg(`${addedName} was added to the team, but a login already existed for ${addedEmail} — so the password you just typed was NOT applied. Their previous password still works. To set a new one, use the "New password…" box on their row above.`);
