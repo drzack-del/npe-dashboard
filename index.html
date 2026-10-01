@@ -156,6 +156,11 @@
     .bar span { display: block; height: 100%; background: var(--green); border-radius: 999px; }
     .bar.warn span { background: #f59e0b; }
 
+    .compare { margin-top: 28px; background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--blue); border-radius: 14px; padding: 24px 28px; }
+    .compare-label { font-weight: 800; font-size: 17px; margin-bottom: 6px; letter-spacing: -0.01em; }
+    .compare p { margin: 0; color: var(--ink-2); font-size: 15.5px; max-width: 860px; }
+    .compare p.compare-fine { margin-top: 10px; font-size: 12px; color: #9ca3af; }
+
     /* ── Pricing ────────────────────────────────────── */
     .plans { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; max-width: 880px; margin: 0 auto; }
     .plan { border: 1px solid var(--line); border-radius: 18px; padding: 34px; position: relative; background: #fff; }
@@ -359,7 +364,7 @@
           <div class="kicker">Accountability</div>
           <h2>What gets monitored gets done.</h2>
           <p class="acc-lead">In an orthodontic practice, follow-up that nobody checks quietly stops happening. CadenceIQ checks it. Every touch is logged and compared against the cadence, so follow-up isn't something you hope happened. You can see it, and hold the team to it.</p>
-          <p class="acc-sigma">Think of it as <strong>Lean Six Sigma for the path from post-consult to start</strong>: one defined process, every step measured, and misses visible the same day, not at the end of the month.</p>
+          <p class="acc-sigma">Think of it as <strong>Lead Sigma for the path from post-consult to start</strong>: one defined process, every step measured, and misses visible the same day, not at the end of the month.</p>
           <ul class="demo-points">
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><strong>Every touch logged</strong> with the outcome and notes, on one patient history.</span></li>
             <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><strong>On-time follow-up rate by TC</strong>, so you know who is keeping up.</span></li>
@@ -432,6 +437,11 @@
             <h3>All your locations</h3>
             <p>See every office side by side, or the whole practice at once.</p>
           </div>
+        </div>
+        <div class="compare">
+          <div class="compare-label">Like Gaidge, for new patient follow-up</div>
+          <p>If you value how Gaidge turns your practice data into KPIs that are easy to digest, CadenceIQ brings that same clarity to the stretch between the consult and the start: conversion, case acceptance, follow-up and TC performance, laid out so the whole team understands them at a glance.</p>
+          <p class="compare-fine">Gaidge is a trademark of its owner. CadenceIQ is not affiliated with or endorsed by Gaidge.</p>
         </div>
       </div>
     </section>
