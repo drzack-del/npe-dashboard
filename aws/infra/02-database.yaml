@@ -17,6 +17,15 @@ Parameters:
     Type: Number
     Default: 1800
     Description: Idle time before the database pauses (and stops costing compute).
+  ImportRoleArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Role from 07-data-import that lets the database read the import drop box. Empty (the
+      default) when no import is planned; set it only for the duration of a data copy.
+
+Conditions:
+  HasImportRole: !Not [!Equals [!Ref ImportRoleArn, '']]
 
 Resources:
   DbSubnetGroup:
@@ -68,6 +77,10 @@ Resources:
       DeletionProtection: true
       EnableHttpEndpoint: true
       EnableCloudwatchLogsExports: [postgresql]
+      AssociatedRoles: !If
+        - HasImportRole
+        - [{ RoleArn: !Ref ImportRoleArn, FeatureName: s3Import }]
+        - !Ref AWS::NoValue
       ServerlessV2ScalingConfiguration:
         MinCapacity: 0
         MaxCapacity: !Ref MaxCapacity

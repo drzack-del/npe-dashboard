@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CadenceIQ data import drop box (Stage 3): a private, encrypted, HTTPS-only bucket that the
+  database reads the one-time copy of the practice data from (aws_s3.table_import_from_s3).
+  Files delete themselves after 1 day and are deleted by hand right after each import. The
+  database's private subnets get a gateway endpoint that can reach this bucket and nothing else.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: test
+    AllowedValues: [test, prod]
+  PrivateRouteTableId:
+    Type: String
+    Description: Route table of the database's private subnets (cadenceiq-<stage>-private-no-internet).
+
+Resources:
+  ImportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'cadenceiq-${Stage}-data-import-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      # No versioning: a deleted file is gone, not kept as an old version.
+      LifecycleConfiguration:
+        Rules:
+          - Id: delete-after-1-day
+            Status: Enabled
+            ExpirationInDays: 1
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+
+  ImportBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImportBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: HttpsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt ImportBucket.Arn, !Sub '${ImportBucket.Arn}/*']
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } }
+
+  # Lets the database cluster (and only it) read files from this bucket.
+  DatabaseImportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Fixed name so 02-database can reference it (ImportRoleArn) without a stack import.
+      RoleName: !Sub 'cadenceiq-${Stage}-db-import'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: rds.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'aws:SourceArn': !ImportValue { 'Fn::Sub': 'cadenceiq-${Stage}-db-cluster-arn' }
+      Policies:
+        - PolicyName: read-import-bucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:ListBucket]
+                Resource: [!GetAtt ImportBucket.Arn, !Sub '${ImportBucket.Arn}/*']
+
+  # The private subnets have no internet route; this gives them a path to S3 that is limited
+  # by its policy to reading this one bucket.
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !ImportValue { 'Fn::Sub': 'cadenceiq-${Stage}-vpc' }
+      RouteTableIds: [!Ref PrivateRouteTableId]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: [s3:GetObject, s3:ListBucket]
+            Resource: [!GetAtt ImportBucket.Arn, !Sub '${ImportBucket.Arn}/*']
+
+Outputs:
+  ImportBucketName:
+    Value: !Ref ImportBucket
+  DatabaseImportRoleArn:
+    Value: !GetAtt DatabaseImportRole.Arn
