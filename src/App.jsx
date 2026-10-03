@@ -3056,12 +3056,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // AWS only: asks the invite-user function to create the login for someone already on the
   // team list and email them a one-time password, or to resend it if they have not signed in
   // yet. Resolves to { status: 'invited' | 'resent' | 'exists' }. Throws on any error.
-  const sendInvite = async (email) => {
+  // With action 'reset-mfa' it instead resets a team member's two-step sign-in (lost phone).
+  const sendInvite = async (email, action) => {
     const token = await (await cognitoAuth).accessToken();
     const res = await fetch(`${SUPABASE_URL}/functions/v1/invite-user`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify(action ? { email, action } : { email }),
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
@@ -11400,6 +11401,28 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               <td style={{padding:'10px'}}>
                                 {u.email !== currentUser?.email && (
                                   <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
+                                    {USE_COGNITO && u.auth_user_id && currentUser?.role === 'admin' && (
+                                      <button
+                                        disabled={inviteStatus[u.id] === 'sending'}
+                                        onClick={async () => {
+                                          if (!window.confirm(`Reset two-step sign-in for ${u.name}?\n\nUse this if they lost or replaced their phone. They are signed out everywhere; their password stays the same, and at their next sign-in they scan a new code with their authenticator app.`)) return;
+                                          setInviteStatus(s => ({ ...s, [u.id]: 'sending' }));
+                                          try {
+                                            await sendInvite(u.email, 'reset-mfa');
+                                            setInviteStatus(s => ({ ...s, [u.id]: 'sent' }));
+                                            setTcMgmtMsgType('info');
+                                            setTcMgmtMsg(`Two-step sign-in reset for ${u.name}. At their next sign-in they will scan a new code with their authenticator app.`);
+                                          } catch (e) {
+                                            setInviteStatus(s => ({ ...s, [u.id]: 'error' }));
+                                            setTcMgmtMsgType('error');
+                                            setTcMgmtMsg(`Couldn't reset two-step sign-in for ${u.name}: ${e.message}`);
+                                          }
+                                          setTimeout(() => setInviteStatus(s => { const n = {...s}; delete n[u.id]; return n; }), 3000);
+                                        }}
+                                        style={{fontSize:'11px',padding:'4px 10px',border:'1px solid #d1d5db',borderRadius:'5px',cursor:'pointer',fontWeight:'600',backgroundColor: inviteStatus[u.id]==='sent'?'#16a34a':inviteStatus[u.id]==='error'?'#dc2626':'white',color: inviteStatus[u.id] ? 'white' : '#374151',opacity:inviteStatus[u.id]==='sending'?0.5:1}}>
+                                        {inviteStatus[u.id]==='sent'?'✓ Reset':inviteStatus[u.id]==='error'?'✗ Error':inviteStatus[u.id]==='sending'?'Resetting…':'Reset two-step'}
+                                      </button>
+                                    )}
                                     {USE_COGNITO && !u.auth_user_id && currentUser?.role === 'admin' && (
                                       <button
                                         disabled={inviteStatus[u.id] === 'sending'}
