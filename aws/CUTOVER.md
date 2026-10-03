@@ -1,6 +1,6 @@
 # CadenceIQ switch-over to AWS: plan (draft for Dr. Miller's review, 2026-10-03)
 
-Status: **draft, nothing scheduled.** Every step that changes something still gets a preview and his
+Status: **decisions 1-6 approved by Dr. Miller 2026-10-03 (all as recommended); nothing scheduled.** Every step that changes something still gets a preview and his
 yes at the time. Supabase stays untouched and available as the way back for at least 30 days.
 
 ## Where we are
@@ -10,7 +10,7 @@ yes at the time. Supabase stays untouched and available as the way back for at l
 - The app's AWS sign-in code is on branch `aws-cognito-login`, switched off by default; with it off,
   19/19 app checks pass (live behaviour unchanged).
 
-## Decisions for Dr. Miller (recommendations first)
+## Decisions (approved 2026-10-03, all as recommended)
 1. **Use the current AWS setup as the production one** (it is already hardened; stack names keep the
    word "test", which is cosmetic). Staff can then set up their logins on the test address *before*
    switch-over day and keep them afterwards. Alternative: build a second, separate production setup
