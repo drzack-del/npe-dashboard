@@ -96,8 +96,8 @@ All fake test users/rows were removed after each check.
   and shows as new in the test copy because localhost never marked it seen.
 - 2026-10-03: he invited a fake "Test TC" (zack.miller96+cadenceiq-tc2@gmail.com) from Settings -> Team on
   app-test; invite, first sign-in, authenticator setup all worked, and the TC saw no owner tabs.
-  **Cleanup pending**: delete that Cognito user, its tc_users row (name 'Test TC') and auth.users row
-  (the AWS connector expired before it ran). Office-network check still to do (open app-test from office).
+  Cleaned up 2026-10-03 (Cognito user, tc_users row, auth.users row): back to 12 team members, 697
+  patients, 1 login (his). Office-network check still to do (open app-test from office).
 - Hosted test address (2026-10-01): https://app-test.trycadenceiq.com/app = Vercel preview of branch
   `aws-cognito-login` (Vercel domain assigned to that git branch; 6 VITE_* preview env vars scoped to
   that branch only; production has none). Porkbun CNAME app-test -> cname.vercel-dns.com (he added it;
