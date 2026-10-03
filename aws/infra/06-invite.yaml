@@ -2,7 +2,8 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   CadenceIQ invite-user function (Stage 2, test) behind the API load balancer at
   /functions/v1/invite-user. A practice admin who has added someone to the team list calls it
-  to create that person's login and have Cognito email them a one-time password (or resend it).
+  to create that person's login and have Cognito email them a one-time password (or resend it),
+  or to reset a team member's two-step sign-in when they lose their phone.
   Code: aws/functions/invite-user, loaded from the function-code bucket.
 
 Parameters:
@@ -46,7 +47,7 @@ Resources:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
-                Action: [cognito-idp:AdminCreateUser, cognito-idp:AdminGetUser]
+                Action: [cognito-idp:AdminCreateUser, cognito-idp:AdminGetUser, cognito-idp:AdminSetUserMFAPreference, cognito-idp:AdminUserGlobalSignOut]
                 Resource: !Sub
                   - 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${PoolId}'
                   - PoolId: !ImportValue { 'Fn::Sub': 'cadenceiq-${Stage}-user-pool-id' }

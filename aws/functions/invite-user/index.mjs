@@ -3,6 +3,11 @@
 // (tc_users) and has Cognito email them a one-time password; resends it if they have not
 // signed in yet. Request: { email }. Response: { status: 'invited' | 'resent' | 'exists' }.
 //
+// Also resets someone's two-step sign-in when they lose their phone. Request:
+// { email, action: 'reset-mfa' }. Their authenticator is switched off and they are signed out
+// everywhere; at their next sign-in (password unchanged) Cognito asks them to scan a new code.
+// Response: { status: 'mfa-reset' }. Admins cannot reset their own (they could not use it).
+//
 // The caller must present a valid access token signed by the CadenceIQ Cognito pool and be an
 // ACTIVE, practice-wide (not location-scoped) admin. The person being invited must already have
 // an active, unlinked tc_users row that the caller can see through the database's own row-level
@@ -12,6 +17,7 @@
 import crypto from 'node:crypto';
 import {
   CognitoIdentityProviderClient, AdminCreateUserCommand, AdminGetUserCommand,
+  AdminSetUserMFAPreferenceCommand, AdminUserGlobalSignOutCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 
 const E = process.env;
@@ -80,7 +86,7 @@ export async function handler(event) {
 
   const [me] = await teamRows(token, `auth_user_id=eq.${claims.sub}`);
   if (!me || me.status !== 'active' || me.role !== 'admin' || me.location_scope) {
-    return reply(origin, 403, { error: 'Only a practice admin can send invites' });
+    return reply(origin, 403, { error: 'Only a practice admin can do this' });
   }
 
   let body = {};
@@ -94,6 +100,23 @@ export async function handler(event) {
   if (!target || !samePractice || target.status !== 'active') {
     return reply(origin, 404, { error: 'Add this person to your team first' });
   }
+  if (body.action === 'reset-mfa') {
+    if (!target.auth_user_id) return reply(origin, 409, { error: 'This person has not finished setting up their login yet. Use Resend invite instead.' });
+    if (target.auth_user_id === claims.sub) return reply(origin, 400, { error: 'You cannot reset your own two-step sign-in.' });
+    try {
+      if ((await cognitoStatus(email)) === null) return reply(origin, 404, { error: 'No login was found for this person.' });
+      await cognito.send(new AdminSetUserMFAPreferenceCommand({
+        UserPoolId: E.USER_POOL_ID, Username: email,
+        SoftwareTokenMfaSettings: { Enabled: false, PreferredMfa: false },
+      }));
+      await cognito.send(new AdminUserGlobalSignOutCommand({ UserPoolId: E.USER_POOL_ID, Username: email }));
+      return reply(origin, 200, { status: 'mfa-reset' });
+    } catch (err) {
+      console.error('mfa reset failed', err.name);
+      return reply(origin, 502, { error: 'The reset could not be completed. Try again shortly.' });
+    }
+  }
+  if (body.action !== undefined) return reply(origin, 400, { error: 'Unknown action' });
   if (target.auth_user_id) return reply(origin, 200, { status: 'exists' });
 
   try {
