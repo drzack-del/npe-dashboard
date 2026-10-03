@@ -37,7 +37,7 @@ yes at the time. Supabase stays untouched and available as the way back for at l
 | P3 | Admin "reset authenticator" button for a staff member who loses their phone (small function + Team-tab button, tested locally) | Claude |
 | P4 | Production settings: allow `https://trycadenceiq.com`, invite emails point to `https://trycadenceiq.com/app`, database always awake, 35-day backups, 2 copies of the data server, basic alerts (server errors, database health) emailed to him | Claude, his yes |
 | P5 | Greyfinch key entered into AWS (Secrets Manager) | Dr. Miller (Claude guides) |
-| P6 | Way back for data: a tested script that copies anything entered on AWS after switch-over back into Supabase | Claude |
+| P6 | ✅ Way back for data: `aws/infra/data-copy/copy-back-to-supabase.mjs`, 18/18 on fake data (plan + YES before writing, refuses tampered files and large deletions, keeps Supabase login links). Still needs the AWS export permission (in P4) and a real run in the P8 rehearsal | Claude |
 | P7 | ✅ Supabase write-lock and unlock scripts (`aws/infra/sql/supabase-write-lock.sql`, `-unlock.sql`): 15/15 local checks on production's structure; unlock restores today's exact permissions | Claude |
 | P8 | Full dress rehearsal on the test address: fresh copy, fingerprints, switch the test site, switch back, time every step | Claude + Dr. Miller |
 | P9 | Staff enroll: invite each team member to the test address a few days ahead; each sets a password and authenticator (orange banner says it is a test copy) | Dr. Miller sends invites |
