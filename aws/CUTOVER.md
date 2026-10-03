@@ -38,7 +38,7 @@ yes at the time. Supabase stays untouched and available as the way back for at l
 | P4 | Production settings: allow `https://trycadenceiq.com`, invite emails point to `https://trycadenceiq.com/app`, database always awake, 35-day backups, 2 copies of the data server, basic alerts (server errors, database health) emailed to him | Claude, his yes |
 | P5 | Greyfinch key entered into AWS (Secrets Manager) | Dr. Miller (Claude guides) |
 | P6 | Way back for data: a tested script that copies anything entered on AWS after switch-over back into Supabase | Claude |
-| P7 | Supabase write-lock and unlock scripts, rehearsed on the local copy of production's structure | Claude |
+| P7 | ✅ Supabase write-lock and unlock scripts (`aws/infra/sql/supabase-write-lock.sql`, `-unlock.sql`): 15/15 local checks on production's structure; unlock restores today's exact permissions | Claude |
 | P8 | Full dress rehearsal on the test address: fresh copy, fingerprints, switch the test site, switch back, time every step | Claude + Dr. Miller |
 | P9 | Staff enroll: invite each team member to the test address a few days ahead; each sets a password and authenticator (orange banner says it is a test copy) | Dr. Miller sends invites |
 
@@ -52,6 +52,8 @@ yes at the time. Supabase stays untouched and available as the way back for at l
    one harmless edit saves and shows in the database.
 6. Staff reload and sign in with the password and authenticator they set up in P9 (first sign-in on
    AWS re-links each person automatically).
+   Anyone who saved something in an old tab after step 2 sees "Cloud save failed ... Saved locally
+   only" (the lock refuses it; it is not queued); they reload and re-enter that change on AWS.
 
 ## Switching back (rehearsed in P8)
 1. Revert the switch commit and publish (~1 minute); the live site talks to Supabase again.
