@@ -94,6 +94,10 @@ All fake test users/rows were removed after each check.
   Notes: the KPI table defaults to the current month (empty on the 1st); the one copied feedback row is
   an old auto bug report (2026-09-24 16:24 UTC, fixed by the transfer_patient_flag migration 6 min later)
   and shows as new in the test copy because localhost never marked it seen.
+- 2026-10-03: he invited a fake "Test TC" (zack.miller96+cadenceiq-tc2@gmail.com) from Settings -> Team on
+  app-test; invite, first sign-in, authenticator setup all worked, and the TC saw no owner tabs.
+  **Cleanup pending**: delete that Cognito user, its tc_users row (name 'Test TC') and auth.users row
+  (the AWS connector expired before it ran). Office-network check still to do (open app-test from office).
 - Hosted test address (2026-10-01): https://app-test.trycadenceiq.com/app = Vercel preview of branch
   `aws-cognito-login` (Vercel domain assigned to that git branch; 6 VITE_* preview env vars scoped to
   that branch only; production has none). Porkbun CNAME app-test -> cname.vercel-dns.com (he added it;
@@ -103,6 +107,12 @@ All fake test users/rows were removed after each check.
   (repo template defaults still say localhost; pass these values on future updates).
 - Next: Stage 4 staff trial needs (a) hosted test URL + AllowedOrigins/AppUrl, (b) admin reset of a
   lost authenticator, (c) SES email (he will do later), (d) his yes before any invites.
+
+## Later fixes (not migration blockers; noted by Dr. Miller 2026-10-03)
+- **Team-member onboarding flow.** Adding a team member in Settings -> Team reopens the practice setup
+  checklist on the admin's screen (`setShowOnboarding(true)` in the Add handler, same on live). A new
+  team member should instead get their own first-sign-in welcome/orientation, and the whole "add a
+  team member" flow needs a redesign. He wants this after the migration, not now.
 
 ## Open items outside the migration
 - **Greyfinch exposure on live Supabase**: `greyfinch-sync` v11 returns Miller Ortho NPE PHI to
