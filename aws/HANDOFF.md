@@ -71,6 +71,11 @@ All fake test users/rows were removed after each check.
 4. Before Stage 3/prod: remove `ALLOW_ADMIN_USER_PASSWORD_AUTH` from the Cognito client, consider
    ALB access logs + WAF, Business Support+, refresh `prod-schema/production-schema.sql` and
    `APPLIED_THROUGH` if any migration is run in production meanwhile.
+5. **Right before cutover**: bring every AWS branch (`aws-infra`, `aws-local-testing`,
+   `aws-cognito-login`) up to date with `main` first — fixes keep shipping to the live site while
+   AWS work is in progress (e.g. 2026-10-04 `8c8cd22`, Mark Started defaults the start date to
+   today instead of the NPE date), and the AWS app must not go live without them. Then re-copy the
+   data (see Stage 3) so record corrections made on Supabase in the meantime come across too.
 
 ## Stage 3 done (2026-10-01): real data copied to AWS test
 - Snapshot of 2026-10-01 17:10 UTC (697 patients, 12 team members, 3 practices, ...); every table's
