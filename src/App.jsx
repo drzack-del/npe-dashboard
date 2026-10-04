@@ -2593,10 +2593,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   const handleMarkStarted = (patient) => {
     // Pre-populate: SCH patients default to their bond date (the day they actually
-    // started) so day-after confirmations attribute the start to the right day;
-    // SDS defaults to NPE date.
+    // started) so day-after confirmations attribute the start to the right day.
+    // Everyone else defaults to today — never the NPE date, or a pending/OBS patient
+    // who starts months later gets back-dated into their consult month as a phantom SDS.
     setStartedForm({
-      startDate: patient.SCH ? (patient.bondDate || localToday()) : patient.npeDate,
+      startDate: patient.SCH ? (patient.bondDate || localToday()) : localToday(),
       dp: patient.dp || '',
       contractAmount: patient.contractAmount || '',
       financedMonths: patient.financedMonths ?? '', treatmentMonths: patient.treatmentMonths ?? '',
@@ -2606,7 +2607,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       'R+': patient['R+'] || false, 'W+': patient['W+'] || false, PIF: patient.PIF || false,
       addonSkipReason: patient.addonSkipReason || '',
       recap: composeRecapDraft('start', {
-        dp: patient.dp, sameDay: patient.SCH ? false : true,
+        dp: patient.dp, sameDay: !patient.SCH && patient.npeDate === localToday(),
         'R+': patient['R+'], 'W+': patient['W+'], PIF: patient.PIF
       })
     });
