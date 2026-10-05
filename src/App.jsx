@@ -1021,11 +1021,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [newLocationName, setNewLocationName] = useState('');
   const [medicaidEnabled, setMedicaidEnabled] = useState(true);
   const [obsRecallMonths, setObsRecallMonths] = useState(4); // months BEFORE anticipated OBS date to schedule booking call
-  // End-of-Day consultant report recipients (editable in Settings). Primary → aliza, CC the rest.
-  const [consultantRecipients, setConsultantRecipients] = useState({
-    to: ['aliza@fishbeingroup.com'],
-    cc: ['drzack@northtampabraces.com', 'nicole@northtampabraces.com']
-  });
+  // End-of-Day consultant report recipients (editable in Settings). Empty until the practice
+  // saves its own — a new practice must never be shown another practice's addresses.
+  const [consultantRecipients, setConsultantRecipients] = useState({ to: [], cc: [] });
   const [recapEmailStatus, setRecapEmailStatus] = useState(''); // '' | 'sending' | 'sent' | 'error'
   // Which day the Today's Activity / End-of-Day report is showing (local date; defaults to today)
   const [activityDate, setActivityDate] = useState(localToday());
@@ -1571,8 +1569,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       if (cloudLocations && Array.isArray(cloudLocations)) { setLocations(cloudLocations); }
       if (cloudMedicaidEnabled !== null) setMedicaidEnabled(cloudMedicaidEnabled !== false);
       if (cloudObsRecall && typeof cloudObsRecall === 'number' && cloudObsRecall > 0) setObsRecallMonths(cloudObsRecall);
+      // Reset when the practice has none saved, so switching practices (platform owner) never
+      // carries one practice's recipients into another.
       if (cloudRecipients && (Array.isArray(cloudRecipients.to) || Array.isArray(cloudRecipients.cc))) {
         setConsultantRecipients({ to: cloudRecipients.to || [], cc: cloudRecipients.cc || [] });
+      } else {
+        setConsultantRecipients({ to: [], cc: [] });
       }
     };
     loadSettings();
@@ -11210,7 +11212,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           type="text"
                           value={recipientToStr}
                           onChange={e => setRecipientToStr(e.target.value)}
-                          placeholder="aliza@fishbeingroup.com"
+                          placeholder="consultant@example.com"
                           style={{width:'100%',padding:'8px 10px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px',boxSizing:'border-box'}}
                         />
                       </div>
@@ -11220,7 +11222,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           type="text"
                           value={recipientCcStr}
                           onChange={e => setRecipientCcStr(e.target.value)}
-                          placeholder="drzack@northtampabraces.com, nicole@northtampabraces.com"
+                          placeholder="doctor@example.com, manager@example.com"
                           style={{width:'100%',padding:'8px 10px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px',boxSizing:'border-box'}}
                         />
                       </div>
@@ -11267,7 +11269,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     )}
                     <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
                       <input id="guide-location-input" value={newLocationName} onChange={e => setNewLocationName(e.target.value)}
-                        placeholder="e.g. Carrollwood, Apollo Beach, Main Office"
+                        placeholder="e.g. Main Office, North Office"
                         onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.nextSibling?.click(); }}
                         style={{flex:1,padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}} />
                       <button onClick={async () => {
@@ -11596,7 +11598,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             </div>
                             <div style={{minWidth:'160px'}}>
                               <label style={{display:'block',fontSize:'11px',fontWeight:'600',color:'#6b7280',marginBottom:'4px'}}>Display Name</label>
-                              <input value={newTCLocationLabel} onChange={e => setNewTCLocationLabel(e.target.value)} placeholder="e.g. Apollo Beach"
+                              <input value={newTCLocationLabel} onChange={e => setNewTCLocationLabel(e.target.value)} placeholder="e.g. North Office"
                                 style={{width:'100%',padding:'9px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',boxSizing:'border-box'}} />
                             </div>
                           </>
