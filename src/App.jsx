@@ -29,7 +29,8 @@ class ErrorBoundary extends Component {
   }
 }
 import { createClient } from '@supabase/supabase-js';
-import GetStarted, { setupStepsDone } from './GetStarted.jsx';
+import GetStarted, { setupStepsDone, PRACTICE_SOFTWARE, cleanTiers, hasAnyBonus } from './GetStarted.jsx';
+import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals } from './goals.js';
 
 
         // ── FEATURE FLAGS ────────────────────────────────────────────────
@@ -914,7 +915,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // goal. The tier windows are adjustable per user: goalBelowRange = how many
   // starts under goal still pay the "under" tier; goalBeatMin = how many starts
   // over goal it takes to reach the "beat" tier (at-goal covers 0..goalBeatMin-1).
-  const ZERO_RATES = { sds: 0, ret: 0, white: 0, pif: 0, goalBelow: 0, goalMet: 0, goalBeat: 0, goalBelowRange: 5, goalBeatMin: 1 };
+  // caTiers: monthly Case Acceptance bonus, up to 3 levels [{ min: percent, amt: dollars }]
+  // (see caseAcceptanceBonusFor).
+  const ZERO_RATES = { sds: 0, ret: 0, white: 0, pif: 0, goalBelow: 0, goalMet: 0, goalBeat: 0, goalBelowRange: 5, goalBeatMin: 1, caTiers: [] };
   // Unsaved per-user rate edits in Settings, keyed by tc_users.id.
   const [userBonusDrafts, setUserBonusDrafts] = useState({});
   const [popupBonuses, setPopupBonuses] = useState([]);
@@ -986,6 +989,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [greyfinchDate, setGreyfinchDate] = useState(localDateStr(new Date()));
   // Monotonic id so out-of-order day fetches don't overwrite the latest selection.
   const greyfinchReqRef = useRef(0);
+  // The Greyfinch pull only works for Miller Ortho: greyfinch-sync serves only that practice's
+  // staff (its own membership gate). Another practice on Greyfinch sees "coming soon"; one on
+  // other software sees no NPE pull at all.
+  const greyfinchLive = currentUser?.practiceId === 'miller-ortho';
   // Testing aid: upcoming days that have NPEs booked ([{date,count}]).
   const [greyfinchScan, setGreyfinchScan] = useState(null);
   const [greyfinchScanning, setGreyfinchScanning] = useState(false);
@@ -1058,6 +1065,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [newTCLocationLabel, setNewTCLocationLabel] = useState('');
   const [tcMgmtMsg, setTcMgmtMsg] = useState('');
   const [tcMgmtMsgType, setTcMgmtMsgType] = useState('info');
+  const [teamAdding, setTeamAdding] = useState(false);
+  const teamAddingRef = useRef(false);
   const [tcSetPwInputs, setTcSetPwInputs] = useState({});
   const [tcSetPwStatus, setTcSetPwStatus] = useState({});
   const [changePwForm, setChangePwForm] = useState({ current: '', next: '', confirm: '' });
@@ -1067,6 +1076,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [locations, setLocations] = useState([]);
   const [newLocationName, setNewLocationName] = useState('');
   const [medicaidEnabled, setMedicaidEnabled] = useState(true);
+  // Every obstacle dropdown uses this, so a practice without Medicaid never sees the Medicaid one.
+  // (The Add NPE form also answers "Is this a Medicaid patient?" with No for them; see below.)
+  const obstacleOptions = medicaidEnabled ? OBSTACLE_OPTIONS : OBSTACLE_OPTIONS.filter(o => o !== 'Waiting to Hear from Medicaid');
+  // The rest of Add NPE stays hidden until that question is answered, so answer it for them.
+  useEffect(() => {
+    if (!medicaidEnabled && !newPatientForm.isMedicaid) setNewPatientForm(f => ({ ...f, isMedicaid: 'no' }));
+  }, [medicaidEnabled, newPatientForm.isMedicaid]);
+  // Practice management software (settings 'practice-software'): 'greyfinch', 'dolphin', ...
+  // null = not answered. Only decides whether the Greyfinch NPE pull shows on Add NPE.
+  const [practiceSoftware, setPracticeSoftware] = useState(null);
+  // settings 'bonuses-enabled' = false hides every bonus screen for the whole practice.
+  const [bonusesEnabled, setBonusesEnabled] = useState(true);
   const [obsRecallMonths, setObsRecallMonths] = useState(4); // months BEFORE anticipated OBS date to schedule booking call
   // End-of-Day consultant report recipients (editable in Settings). Empty until the practice
   // saves its own — a new practice must never be shown another practice's addresses.
@@ -1100,21 +1121,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [switchingToPractice, setSwitchingToPractice] = useState(null); // id of practice currently being switched to
   // ─────────────────────────────────────────────────────────────────────
 
-  // A practice with no saved goals has no goals: zeros hide the goal bars until the
-  // practice sets its own (Get Started or Settings). These used to be Miller Ortho's
-  // numbers, which new practices were then measured against.
-  const defaultGoalsData = {
-    overallMode: true,
-    monthly: Array.from({length: 12}, () => ({
-      carNPE: 0, carStarted: 0, apoNPE: 0, apoStarted: 0,
-      totalNPE: 0, totalStarted: 0, convGoal: 70,
-    })),
-    quarterly: [
-      { npe: 0, started: 0, conv: 70 }, { npe: 0, started: 0, conv: 70 },
-      { npe: 0, started: 0, conv: 70 }, { npe: 0, started: 0, conv: 70 },
-    ]
-  };
-  const [goals, setGoals] = useState(defaultGoalsData);
+  // Goals are kept per calendar year (src/goals.js). A year with nothing saved has no goals,
+  // so the goal bars hide instead of reusing another year's (or Miller Ortho's) numbers.
+  const [goalsStore, setGoalsStore] = useState(() => normalizeGoals(null));
+  // The year Settings → Goals is showing. `goals`/`setGoals` are that year's goals, so the
+  // editor reads like it did when goals had no year. Live screens read their own year.
+  const [goalsEditYear, setGoalsEditYear] = useState(() => new Date().getFullYear());
+  const goals = goalsForYear(goalsStore, goalsEditYear);
+  const setGoals = (yearGoals) => setGoalsStore(st => withYearGoals(st, goalsEditYear, yearGoals));
   const [goalsSaveMsg, setGoalsSaveMsg] = useState('');
 
   // ── Load patients from Supabase (or localStorage fallback) ──────────
@@ -1612,7 +1626,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   useEffect(() => {
     const loadSettings = async () => {
       if (currentUser?.id === 'demo') return;
-      const [cloudGoals, cloudAdminPw, cloudPopupBonuses, cloudLocations, cloudMedicaidEnabled, cloudObsRecall, cloudRecipients] = await Promise.all([
+      const [cloudGoals, cloudAdminPw, cloudPopupBonuses, cloudLocations, cloudMedicaidEnabled, cloudObsRecall, cloudRecipients, cloudSoftware, cloudBonusesEnabled] = await Promise.all([
         dbLoadSettings('goals'),
         dbLoadSettings('admin-password'),
         dbLoadSettings('popup-bonuses'),
@@ -1620,12 +1634,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         dbLoadSettings('medicaid-enabled'),
         dbLoadSettings('obs-recall-months'),
         dbLoadSettings('consultant-recipients'),
+        dbLoadSettings('practice-software'),
+        dbLoadSettings('bonuses-enabled'),
       ]);
-      if (cloudGoals) setGoals(cloudGoals);
+      setGoalsStore(normalizeGoals(cloudGoals));
       if (cloudAdminPw) localStorage.setItem(`npe-admin-password-${currentUser.practiceId}`, cloudAdminPw);
       if (cloudPopupBonuses && Array.isArray(cloudPopupBonuses)) setPopupBonuses(cloudPopupBonuses);
       if (cloudLocations && Array.isArray(cloudLocations)) { setLocations(cloudLocations); }
-      if (cloudMedicaidEnabled !== null) setMedicaidEnabled(cloudMedicaidEnabled !== false);
+      // Always set (not only when saved) so switching practices never carries one practice's
+      // switches into another. Unanswered = on, which is how every practice started out.
+      setMedicaidEnabled(cloudMedicaidEnabled !== false);
+      setPracticeSoftware(typeof cloudSoftware === 'string' ? cloudSoftware : null);
+      setBonusesEnabled(cloudBonusesEnabled !== false);
       if (cloudObsRecall && typeof cloudObsRecall === 'number' && cloudObsRecall > 0) setObsRecallMonths(cloudObsRecall);
       // Reset when the practice has none saved, so switching practices (platform owner) never
       // carries one practice's recipients into another.
@@ -1738,7 +1758,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       // Clear all practice-specific state before loading new practice — prevents
       // miller-ortho settings from leaking into OA when OA doesn't have them configured
       setPatients([]);
-      setGoals(goalsData?.data?.value || defaultGoalsData);
+      setGoalsStore(normalizeGoals(goalsData?.data?.value));
       setPopupBonuses((popupData?.data?.value && Array.isArray(popupData.data.value)) ? popupData.data.value : []);
       setLocations(locData?.data?.value || []);
       setTcUsers(usersData || []);
@@ -1770,7 +1790,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     ]);
     // Reset all practice-specific state before switching back
     setPatients([]);
-    setGoals(goalsData?.data?.value || defaultGoalsData);
+    setGoalsStore(normalizeGoals(goalsData?.data?.value));
     setPopupBonuses((popupData?.data?.value && Array.isArray(popupData.data.value)) ? popupData.data.value : []);
     setLocations(locData?.data?.value || []);
     setTcUsers(usersData || []);
@@ -1789,7 +1809,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   }, []);
 
   // ── Get Started (new-practice setup page) ─────────────────────────────
-  // settings 'setup' = { status: 'in-progress' | 'done', bonusSkipped, startedAt, finishedAt }.
+  // settings 'setup' = { status: 'in-progress' | 'done', medicaidAnswered, goalsSkipped, startedAt, finishedAt }.
   // undefined = not loaded yet (or the load failed), null = this practice has no setup row.
   const [setupState, setSetupState] = useState(undefined);
   const setupPracticeId = managedPracticeId || currentUser?.practiceId;
@@ -1851,9 +1871,27 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   }, [showGetStarted]);
   const setupTeamMembers = tcUsers.filter(u => (u.email || '').toLowerCase() !== (currentUser?.email || '').toLowerCase());
   const setupBonusUsers = tcUsers.filter(u => (u.role === 'tc' || u.role === 'manager') && u.status !== 'inactive');
-  const setupDone = setupStepsDone({ locations, goals, teamMembers: setupTeamMembers, bonusUsers: setupBonusUsers,
-    bonusSkipped: !!setupState?.bonusSkipped, patientCount: patients.length });
+  const setupDone = setupStepsDone({ locations, goalsStore, goalsSkipped: !!setupState?.goalsSkipped,
+    practiceSoftware, medicaidAnswered: !!setupState?.medicaidAnswered,
+    teamMembers: setupTeamMembers, bonusUsers: setupBonusUsers, bonusesEnabled, patientCount: patients.length });
   const setupDoneCount = Object.values(setupDone).filter(Boolean).length;
+  const setupStepCount = Object.keys(setupDone).length;
+  // The team form is shared with Settings, where Location Owner needs a location field
+  // Get Started doesn't have; start Get Started on TC.
+  useEffect(() => {
+    if (currentView === 'getstarted' && !['tc', 'manager', 'admin', 'consultant'].includes(newTCRole)) setNewTCRole('tc');
+  }, [currentView]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Medicaid can't be switched off while patients are waiting on Medicaid: with every Medicaid
+  // screen hidden they would sit in the queue with a status nobody can see. Null = saved.
+  const saveMedicaidSetting = async (on) => {
+    if (!on) {
+      const waiting = patients.filter(p => p.MP).length;
+      if (waiting > 0) return `${waiting} patient${waiting === 1 ? ' is' : 's are'} still Medicaid Pending. Change ${waiting === 1 ? 'their' : 'those patients\''} status first, then turn Medicaid off.`;
+    }
+    setMedicaidEnabled(on);
+    await dbSaveSettings('medicaid-enabled', on);
+    return null;
+  };
   // Each returns null on success or the error text.
   const saveLocationsList = async (updated) => {
     const { error } = await supabase.from('settings').upsert({ key: 'locations', value: updated, practice_id: setupPracticeId }, { onConflict: 'key,practice_id' });
@@ -1862,17 +1900,20 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     localStorage.setItem(`npe-locations-${currentUser?.practiceId}`, JSON.stringify(updated));
     return null;
   };
-  const saveGoalsFromSetup = async (newGoals) => {
-    const { error } = await supabase.from('settings').upsert({ key: 'goals', value: newGoals, practice_id: setupPracticeId }, { onConflict: 'key,practice_id' });
+  const saveGoalsStore = async (newStore) => {
+    const { error } = await supabase.from('settings').upsert({ key: 'goals', value: newStore, practice_id: setupPracticeId }, { onConflict: 'key,practice_id' });
     if (error) return error.message || 'unknown error';
-    setGoals(newGoals);
-    localStorage.setItem(`npe-goals-${currentUser?.practiceId}`, JSON.stringify(newGoals));
+    setGoalsStore(newStore);
     return null;
   };
+
   const saveBonusRatesFromSetup = async (drafts) => {
     for (const u of setupBonusUsers) {
       if (!drafts[u.id]) continue;
-      const { error } = await supabase.from('tc_users').update({ bonus_rates: { ...ZERO_RATES, ...(u.bonus_rates || {}), ...drafts[u.id] } }).eq('id', u.id);
+      // New team rows start with bonus_enabled off, which pays $0 and hides Bonus Audit from
+      // them. Setting rates here means "pay this person", so it switches them on too.
+      const rates = { ...ZERO_RATES, ...(u.bonus_rates || {}), ...drafts[u.id] };
+      const { error } = await supabase.from('tc_users').update({ bonus_rates: rates, ...(hasAnyBonus(rates) ? { bonus_enabled: true } : {}) }).eq('id', u.id);
       if (error) return error.message || 'unknown error';
     }
     await loadTCUsers();
@@ -1902,8 +1943,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
 
   // Settings → Team "Add" and the Get Started team step both use this.
+  // One add at a time: a double-click used to save twice and show a duplicate-key error.
   const handleAddTeamMember = async () => {
+    if (teamAddingRef.current) return;  // a ref, so a second click in the same instant sees it
+    teamAddingRef.current = true;
+    setTeamAdding(true);
+    try { await addTeamMember(); } finally { teamAddingRef.current = false; setTeamAdding(false); }
+  };
+  const addTeamMember = async () => {
     if (!newTCName.trim() || !newTCEmail.trim()) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Name and email are required.'); }
+    // Checked before saving: the team row can't be edited afterwards, only deleted and re-added.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(newTCEmail.trim())) { setTcMgmtMsgType('error'); return setTcMgmtMsg(`"${newTCEmail.trim()}" doesn't look like an email address. Check it and try again.`); }
     if (!USE_COGNITO && (!newTCPassword.trim() || newTCPassword.trim().length < 6)) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Password must be at least 6 characters.'); }
     const isLocationOwnerRole = newTCRole === 'location_owner';
     if (isLocationOwnerRole && !newTCLocationScope) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Pick a location for a Location Owner login.'); }
@@ -1939,7 +1989,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       location_scope: isLocationOwnerRole ? newTCLocationScope : null,
       location_label: isLocationOwnerRole ? (newTCLocationLabel.trim() || newTCLocationScope) : null,
     });
-    if (error) { setTcMgmtMsgType('error'); setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.')); return; }
+    if (error) {
+      setTcMgmtMsgType('error');
+      // tc_users.email is unique across every practice, so this is someone at another practice.
+      if (error.code === '23505' || /tc_users_email_key|duplicate key/i.test(error.message || '')) {
+        setTcMgmtMsg(`${addedEmail} is already used by another CadenceIQ practice. Each person needs their own email here; use a different one, or contact CadenceIQ support.`);
+      } else {
+        setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.'));
+      }
+      return;
+    }
     setNewTCName(''); setNewTCEmail(''); setNewTCPassword(''); setNewTCRole('tc'); setNewTCLocationScope(''); setNewTCLocationLabel('');
     await loadTCUsers();
     if (USE_COGNITO) {
@@ -1947,8 +2006,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         const r = await sendInvite(addedEmail);
         setTcMgmtMsgType('info');
         setTcMgmtMsg(r.status === 'exists'
-          ? `${addedName} was added to the team. ${addedEmail} already has a CadenceIQ login, so they can sign in now with their existing password and authenticator app.`
-          : `✅ ${addedName} was added and an invite was emailed to ${addedEmail}. Its one-time password works for 7 days; at first sign-in they choose their own password and set up an authenticator app.`);
+          ? `${addedName} was added to the team. ${addedEmail} already has a CadenceIQ login, so they can sign in now with their existing password and authenticator app. If they no longer have those, use "Reset login" on their row in Settings → Team.`
+          : `✅ ${addedName} was added and an invite was emailed to ${addedEmail}. Check that address is right. Its one-time password works for 7 days; at first sign-in they choose their own password and set up an authenticator app. If it doesn't arrive, ask them to check spam, then use "Resend invite".`);
       } catch (e) {
         setTcMgmtMsgType('error');
         setTcMgmtMsg(`${addedName} was added to the team, but the invite email could not be sent (${e.message}). Use "Resend invite" on their row to try again.`);
@@ -2194,14 +2253,37 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // The monthly starts goal for a "YYYY-MM" string, or 0 when none is set
   const startsGoalForMonth = (monthStr) => {
-    const mGoal = goals.monthly[Number(monthStr?.slice(5, 7)) - 1];
-    if (!mGoal) return 0;
-    return goals.overallMode ? (mGoal.totalStarted || 0) : (mGoal.carStarted || 0) + (mGoal.apoStarted || 0);
+    const y = Number(monthStr?.slice(0, 4)), m = Number(monthStr?.slice(5, 7)) - 1;
+    if (!y || m < 0 || m > 11) return 0;
+    return monthGoal(goalsStore, y, m).started;
   };
   const practiceStartsInMonth = (monthStr) => patients.filter(p => {
     const sd = effectiveStartDate(p);
     return sd && sd.startsWith(monthStr) && (isSDS(p) || p.ST);
   }).length;
+
+  // One TC's Case Acceptance for a month ("YYYY-MM"): their starts landing that month ÷ their
+  // exams held that month, not counting Observation. Same formula as the dashboard's Case
+  // Acceptance (calculateMetrics with separate exam and start lists), rounded the same way.
+  const tcCaseAcceptance = (name, monthStr) => {
+    const exams = patients.filter(p => p.tc === name && (p.npeDate || '').startsWith(monthStr) && p.OBS !== true).length;
+    const starts = patients.filter(p => {
+      const sd = effectiveStartDate(p);
+      return p.tc === name && sd && sd.startsWith(monthStr) && (isSDS(p) || p.ST);
+    }).length;
+    return { exams, starts, rate: exams > 0 ? Math.round(starts / exams * 100) : null };
+  };
+  // Monthly Case Acceptance bonus: the highest level the TC reached pays. Null when they
+  // have no levels set, held no exams, or didn't reach the lowest level.
+  const caseAcceptanceBonusFor = (name, monthStr) => {
+    const tiers = cleanTiers(ratesForTC(name).caTiers);
+    if (tiers.length === 0) return null;
+    const { exams, starts, rate } = tcCaseAcceptance(name, monthStr);
+    if (rate === null) return null;
+    const hit = tiers.filter(t => rate >= t.min).pop();
+    if (!hit) return null;
+    return { kind: 'ca', amount: hit.amt, label: `Case Acceptance ${rate}% (${starts}/${exams}), level ${hit.min}%+`, rate };
+  };
 
   // Practice-goal tier bonus for one user in one month ("YYYY-MM"), using that
   // user's tier windows. Null when the user has no tier amounts, the month has
@@ -2513,7 +2595,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // Auto-pull the day's scheduled NPEs the first time the Add view opens.
   useEffect(() => {
-    if (currentView === 'add' && !greyfinchLoaded && !greyfinchLoading) fetchGreyfinchNewPatients(greyfinchDate);
+    if (greyfinchLive && currentView === 'add' && !greyfinchLoaded && !greyfinchLoading) fetchGreyfinchNewPatients(greyfinchDate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentView]);
 
@@ -3360,7 +3442,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const handleAddPatient = async () => {
     setAddPatientError('');
     if (!newPatientForm.name.trim()) { setAddPatientError('Please enter a patient name.'); return; }
-    if (!newPatientForm.isMedicaid) { setAddPatientError('Please answer "Is this a Medicaid patient?" first.'); return; }
+    if (medicaidEnabled && !newPatientForm.isMedicaid) { setAddPatientError('Please answer "Is this a Medicaid patient?" first.'); return; }
     if (!newPatientForm.status) { setAddPatientError('Please select a status before saving.'); return; }
     const isSCH = newPatientForm.status === 'SCH';
     const isOBS = newPatientForm.status === 'OBS';
@@ -3480,10 +3562,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       NOTX: newPatientForm.status === 'NOTX',
       DBRETS: newPatientForm.status === 'DBRETS',
       // Medicaid segmentation — driven by the "Is this a Medicaid patient?" question
-      isMedicaid: newPatientForm.isMedicaid === 'yes',
+      isMedicaid: medicaidEnabled && newPatientForm.isMedicaid === 'yes',
       // A Medicaid patient who started before the decision (SDS/ST) keeps the start AND rides
       // the pipeline for claim tracking. MP-status patients enter the pipeline via MP itself.
-      medicaidPipeline: (newPatientForm.isMedicaid === 'yes' && (isSameDay || isST)),
+      medicaidPipeline: (medicaidEnabled && newPatientForm.isMedicaid === 'yes' && (isSameDay || isST)),
       obstacle: newPatientForm.obstacle,
       notes: combinedRecap,
       bondDate: newPatientForm.bondDate || '',
@@ -3499,7 +3581,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const saveOk = await dbUpsert(patient);
     const nextInfo = patient.nextTouchDate && patient.nextTouchDate !== '__MAX__'
       ? ` — first follow-up: ${new Date(patient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'numeric',day:'numeric'})}`
-      : (isSDS(patient) || patient.ST) ? ' — added to Bonus Audit' : patient.DBRETS ? ' — added to Bonus Audit' : '';
+      : !bonusesEnabled ? '' : (isSDS(patient) || patient.ST) ? ' — added to Bonus Audit' : patient.DBRETS ? ' — added to Bonus Audit' : '';
     setAddPatientError('');
     setShowAddonSkipPrompt(false);
     saveToastFor(saveOk, '✅ ' + patient.name + ' saved!' + nextInfo);
@@ -3724,12 +3806,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             // A consultant reads every number of one practice and changes nothing: no
             // data-entry tabs, and Settings is their account panel only.
             : currentUser?.role === 'consultant'
-            ? ['dashboard', 'patients', 'bonus', 'ontime', 'metrics', 'settings']
+            ? ['dashboard', 'patients', ...(bonusesEnabled ? ['bonus'] : []), 'ontime', 'metrics', 'settings']
             : currentUser?.role === 'tc'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
             : currentUser?.role === 'manager'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...((currentUser?.bonusEnabled || seesAllBonuses) ? ['bonus'] : []), 'ontime', 'today', 'settings']
-            : [...(showGetStarted ? ['getstarted'] : []), 'dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'ontime', 'today', 'metrics', 'settings',
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && (currentUser?.bonusEnabled || seesAllBonuses) ? ['bonus'] : []), 'ontime', 'today', 'settings']
+            : [...(showGetStarted ? ['getstarted'] : []), 'dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled ? ['bonus'] : []), 'ontime', 'today', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
             <button
@@ -3752,7 +3834,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 transition:'background-color 0.2s',
               }}
             >
-              {view === 'getstarted' && `🚀 Get Started (${setupDoneCount}/5)`}
+              {view === 'getstarted' && `🚀 Get Started (${setupDoneCount}/${setupStepCount})`}
               {view === 'dashboard' && '📊 Dashboard'}
               {view === 'followup' && '🔔 Follow-Up Queue'}
               {view === 'add' && '➕ Add NPE'}
@@ -3794,9 +3876,33 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             locations={locations}
             onAddLocation={name => saveLocationsList([...locations, name])}
             onRemoveLocation={name => saveLocationsList(locations.filter(l => l !== name))}
-            goals={goals}
-            onSaveGoals={saveGoalsFromSetup}
+            medicaidEnabled={medicaidEnabled}
+            medicaidAnswered={!!setupState?.medicaidAnswered}
+            onSetMedicaid={async on => {
+              const err = await saveMedicaidSetting(on);
+              if (err) return alert(err);
+              await saveSetupState({ ...setupState, medicaidAnswered: true });
+            }}
+            practiceSoftware={practiceSoftware}
+            onSetSoftware={async v => { setPracticeSoftware(v); await dbSaveSettings('practice-software', v); }}
+            goalsStore={goalsStore}
+            onSaveGoalsStore={saveGoalsStore}
+            goalsSkipped={!!setupState?.goalsSkipped}
+            onSkipGoals={() => saveSetupState({ ...setupState, goalsSkipped: true })}
             teamMembers={setupTeamMembers}
+            teamAdding={teamAdding}
+            inviteState={inviteStatus}
+            onResendInvite={USE_COGNITO ? async u => {
+              setInviteStatus(st => ({ ...st, [u.id]: 'sending' }));
+              try {
+                await sendInvite(u.email);
+                setInviteStatus(st => ({ ...st, [u.id]: 'sent' }));
+              } catch (e) {
+                setInviteStatus(st => { const n = { ...st }; delete n[u.id]; return n; });
+                setTcMgmtMsgType('error');
+                setTcMgmtMsg(`Couldn't send the invite to ${u.email}: ${e.message}`);
+              }
+            } : null}
             form={{ name: newTCName, setName: setNewTCName, email: newTCEmail, setEmail: setNewTCEmail,
               role: newTCRole, setRole: setNewTCRole, password: newTCPassword, setPassword: setNewTCPassword }}
             onAddTeamMember={handleAddTeamMember}
@@ -3804,11 +3910,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             teamMsgType={tcMgmtMsgType}
             showPassword={!USE_COGNITO}
             inviteHelp={USE_COGNITO
-              ? 'They get an invite email. At first sign-in they choose their own password and set up an authenticator app. The invite works for 7 days.'
+              ? 'They get an invite email with a one-time password (it works for 7 days). Tell them to expect it: it comes from a no-reply address and can land in spam. At first sign-in they choose their own password and set up an authenticator app (Google Authenticator or Microsoft Authenticator), so it is easiest on a computer with their phone nearby.'
               : 'You set a temporary password and give it to them. They can change it in Settings.'}
             bonusUsers={setupBonusUsers}
-            bonusSkipped={!!setupState?.bonusSkipped}
-            onSkipBonus={() => saveSetupState({ ...setupState, bonusSkipped: true })}
+            bonusesEnabled={bonusesEnabled}
+            onSetBonusesEnabled={async on => { setBonusesEnabled(on); await dbSaveSettings('bonuses-enabled', on); }}
             onSaveBonusRates={saveBonusRatesFromSetup}
             patientCount={patients.length}
             onLogFirstExam={showFirstExamGuide}
@@ -4381,9 +4487,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             // number — these patients can still convert — and the card says so rather than
             // letting a young month read as a bad one.
             const cohortUndecided = selNPEPts.filter(p => p.OBS !== true && !isSDS(p) && !p.ST && !p.NOTX).length;
-            const nmGoal = goals.monthly[dashMonth] || {};
-            const nmNPEGoal     = goals.overallMode ? (nmGoal.totalNPE||0) : (nmGoal.carNPE||0)+(nmGoal.apoNPE||0);
-            const nmStartedGoal = goals.overallMode ? (nmGoal.totalStarted||0) : (nmGoal.carStarted||0)+(nmGoal.apoStarted||0);
+            // The selected month's own year, and every office's goals (not only the first two).
+            const nmYearGoals   = goalsForYear(goalsStore, dashYear);
+            const nmGoal        = nmYearGoals.monthly[dashMonth] || {};
+            const { npe: nmNPEGoal, started: nmStartedGoal } = monthGoalTotals(nmYearGoals, nmGoal);
             const nmConvGoal    = nmGoal.convGoal || 70;
 
             // Per-TC data
@@ -5067,7 +5174,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     A location owner never sees this — it's staff pay, not a location
                     number, and bonusPerTC alone isn't a reliable gate since an admin
                     could still flip bonus_enabled on for this row later. */}
-                {!isLocationOwner && !isRangeMode && (() => {
+                {bonusesEnabled && !isLocationOwner && !isRangeMode && (() => {
                   // Compensation is need-to-know: the admin sees the whole team, while
                   // managers and TCs see only their own figure — and only when their own
                   // bonus display is enabled. Mirrors how the Bonus Audit view already
@@ -5176,7 +5283,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         {count:pm.scheduled,       label:'Scheduled',  sub:'Bond upcoming',     bg:'#eff6ff',border:'#bfdbfe',color:'#1d4ed8'},
                         {count:pm.observation,     label:'Observation',sub:'6-mo re-check',     bg:'#f0fdf4',border:'#bbf7d0',color:'#15803d',byLocation:pm.obsPerLocation,
                           onClick: pm.observation > 0 ? () => setShowObsList({ list: pipeNPEPts.filter(p => p.OBS === true), perLocation: pm.obsPerLocation || [], label: pipeRange.label, tcFilter: 'All' }) : null},
-                        {count:pm.medicaidPending, label:'Medicaid',   sub:'Awaiting approval', bg:'#fef3c7',border:'#fde68a',color:'#92400e'},
+                        ...(medicaidEnabled ? [{count:pm.medicaidPending, label:'Medicaid',   sub:'Awaiting approval', bg:'#fef3c7',border:'#fde68a',color:'#92400e'}] : []),
                         {count:pm.noTx,            label:'Declined',   sub:'No treatment',      bg:'#f9fafb',border:'#e5e7eb',color:'#6b7280'},
                       ].map(item => (
                         <div key={item.label} onClick={item.onClick || undefined}
@@ -5376,7 +5483,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             </div>
 
             {/* Active popup bonus banner */}
-            {(() => {
+            {bonusesEnabled && (() => {
               const todayStr = localToday();
               const myTC = currentUser?.role === 'tc' ? currentUser.name : null;
               const activeBonuses = popupBonuses.filter(b =>
@@ -5531,7 +5638,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   sub={currentUser?.role === 'tc' && trends ? trendLabel(trends.starts) : null}
                   onClick={() => setShowStartsByLocation({ perLocation: dash.perLocation || [], started: dash.started, label: dashTimeframe === 'month' ? monthLabel : 'All Time', tcFilter: effectiveTCFilter, list: periodStartsMine, allList: periodStartsAll })} />
                 <MetricCard label="Case Acceptance" value={`${dash.overallConv}%`} color="#2563EB"
-                  sub={`Private Pay: ${dash.privatePayConversion.rate ?? '—'}% · Medicaid: ${dash.medicaidConversion.rate ?? '—'}%`}
+                  sub={medicaidEnabled ? `Private Pay: ${dash.privatePayConversion.rate ?? '—'}% · Medicaid: ${dash.medicaidConversion.rate ?? '—'}%` : null}
                   goal={dashTimeframe === 'month' && convGoal > 0 ? `${convGoal}%` : null}
                   goalLabel={trends && trends.conv !== null
                     ? trendLabel(trends.conv)
@@ -5661,7 +5768,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     {count: dash.scheduled,        label:'Scheduled',   sub:'Bond upcoming',     bg:'#eff6ff', border:'#bfdbfe', color:'#1d4ed8'},
                     {count: dash.observation,      label:'Observation', sub:'6-mo re-check',     bg:'#f0fdf4', border:'#bbf7d0', color:'#15803d', byLocation: dash.obsPerLocation,
                       onClick: dash.observation > 0 ? () => setShowObsList({ list: dashPatients.filter(p => p.OBS === true), perLocation: dash.obsPerLocation || [], label: dashTimeframe === 'month' ? monthLabel : 'All Time', tcFilter: effectiveTCFilter }) : null},
-                    {count: dash.medicaidPending,  label:'Medicaid',    sub:'Awaiting approval', bg:'#fef3c7', border:'#fde68a', color:'#92400e'},
+                    ...(medicaidEnabled ? [{count: dash.medicaidPending,  label:'Medicaid',    sub:'Awaiting approval', bg:'#fef3c7', border:'#fde68a', color:'#92400e'}] : []),
                     {count: dash.noTx,             label:'Declined',    sub:'No treatment',      bg:'#f9fafb', border:'#e5e7eb', color:'#6b7280'},
                   ].map(item => (
                     <div key={item.label} onClick={item.onClick || undefined}
@@ -5731,7 +5838,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               const activePending = tcPts.filter(p => p.PEN || p.MP);
 
               // Win rate per obstacle: of everyone who ever had this obstacle, how many started?
-              const winRates = OBSTACLE_OPTIONS.map(obs => {
+              const winRates = obstacleOptions.map(obs => {
                 const withObs = tcPts.filter(p => p.obstacle === obs);
                 const started = withObs.filter(p => isSDS(p) || p.ST).length;
                 const total   = withObs.length;
@@ -6411,7 +6518,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             </div>
 
             {/* Active popup bonus banner */}
-            {(() => {
+            {bonusesEnabled && (() => {
               const todayStr = localToday();
               const myTC = currentUser?.role === 'tc' ? currentUser.name : null;
               const activeBonuses = popupBonuses.filter(b =>
@@ -6782,7 +6889,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               ? `OBS — Book call for ${new Date(patient.obsAnticipatedDate+'T12:00:00').toLocaleDateString('en-US',{month:'numeric',year:'2-digit'})}`
                               : `OBS — Pending schedule`}
                         </span>}
-                        {patient.MP && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#fef3c7',color:'#92400e',borderRadius:'4px',fontWeight:'600'}}>MEDICAID PENDING</span>}
+                        {medicaidEnabled && patient.MP && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#fef3c7',color:'#92400e',borderRadius:'4px',fontWeight:'600'}}>MEDICAID PENDING</span>}
                         {/* Treatment type badges */}
                         {[['BR','Braces'],['INV','Invisalign'],['PH1','Phase 1'],['PH2','Phase 2'],['LTD','Limited']].filter(([k]) => patient[k]).map(([k,l]) => (
                           <span key={k} style={{fontSize:'11px',padding:'2px 6px',backgroundColor:'#dbeafe',color:'#1e40af',borderRadius:'3px',fontWeight:'600'}}>{l}</span>
@@ -6894,7 +7001,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       {/* #2: relabeled to "Contact result:" */}
                       <div style={{marginBottom:'12px'}}>
                         <div style={{fontSize:'13px',fontWeight:'500',marginBottom:'8px'}}>Contact result:</div>
-                        {['Left voicemail', 'No answer', 'Spoke with patient', "Waiting on Medicaid — didn't call"].map(option => (
+                        {['Left voicemail', 'No answer', 'Spoke with patient', ...(medicaidEnabled ? ["Waiting on Medicaid — didn't call"] : [])].map(option => (
                           <label key={option} style={{display:'block',marginBottom:'4px',cursor:'pointer'}}>
                             <input
                               type="radio"
@@ -7115,7 +7222,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             style={{padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',width:'100%',fontSize:'13px'}}
                           >
                             <option value="">— Keep current: {patient.obstacle || 'None'} —</option>
-                            {OBSTACLE_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                            {obstacleOptions.map(o => <option key={o} value={o}>{o}</option>)}
                           </select>
                         </div>
                       )}
@@ -7332,6 +7439,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             {/* Greyfinch NPE pull — New-Patient-Exam appointments scheduled for the chosen
                 day, one per line. Clicking "Use" copies name/phone/age/location/date into the
                 form below so the TC doesn't retype. Status/obstacle/treatment stay with the TC. */}
+            {greyfinchLive ? (
             <div style={{backgroundColor:'white',padding:'16px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'16px'}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',marginBottom:'10px',flexWrap:'wrap'}}>
                 <div style={{display:'flex',alignItems:'baseline',gap:'8px'}}>
@@ -7413,6 +7521,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </>
               )}
             </div>
+            ) : practiceSoftware === 'greyfinch' ? (
+              <div style={{position:'relative',backgroundColor:'white',padding:'16px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'16px',overflow:'hidden'}}>
+                <div aria-hidden="true" style={{filter:'blur(3px)',opacity:0.45,pointerEvents:'none',userSelect:'none'}}>
+                  <div style={{fontSize:'15px',fontWeight:'700',color:'#202020',marginBottom:'10px'}}>Scheduled NPEs</div>
+                  {['9:00 AM', '10:30 AM', '1:15 PM'].map(t => (
+                    <div key={t} style={{display:'flex',justifyContent:'space-between',padding:'8px 4px',borderTop:'1px solid #f3f4f6',fontSize:'13px',color:'#374151'}}>
+                      <span>{t} · New patient exam</span><span style={{color:'#2563EB',fontWeight:600}}>Use</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',textAlign:'center',padding:'12px',backgroundColor:'rgba(255,255,255,0.7)'}}>
+                  <span style={{fontSize:'11px',fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',color:'#1d4ed8',backgroundColor:'#dbeafe',padding:'3px 10px',borderRadius:'12px'}}>Coming soon</span>
+                  <div style={{fontSize:'14px',fontWeight:700,color:'#202020',marginTop:'8px'}}>Today's new patient exams from Greyfinch</div>
+                  <div style={{fontSize:'12px',color:'#6b7280',marginTop:'4px',maxWidth:'420px'}}>Soon your scheduled exams will show here, so you can fill this form in one click instead of retyping.</div>
+                </div>
+              </div>
+            ) : null}
 
             <div id="guide-npe-form" style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}}>
 
@@ -7476,6 +7601,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
               {/* Gating question — a Medicaid patient runs a different intake path. Everything
                   below stays hidden until this is answered, then the Status options branch on it. */}
+              {medicaidEnabled && (
               <div style={{marginBottom:'16px',padding:'14px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                 <label style={{display:'block',fontSize:'14px',fontWeight:'600',marginBottom:'8px'}}>Is this a Medicaid patient? *</label>
                 <div style={{display:'flex',gap:'10px'}}>
@@ -7502,15 +7628,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   ))}
                 </div>
               </div>
+              )}
 
               {newPatientForm.isMedicaid && (<>
 
               {/* Status */}
               <div style={{marginBottom:'16px'}}>
-                <label style={{display:'flex',alignItems:'center',fontSize:'14px',fontWeight:'500',marginBottom:'8px'}}>Status * <HelpTip id="add-status" tip={"SDS — Same Day Start: Patient started treatment today. Earns a bonus.\n\nSCH — Scheduled: Bond appointment is booked. System will check in the day after.\n\nPEN — Pending: Patient needs more time. System auto-schedules follow-up calls based on their obstacle.\n\nOBS — Observation: Not ready for treatment yet. Auto-schedules a 6-month re-check.\n\nMP — Medicaid Pending: Waiting on Medicaid approval. 14-day follow-up auto-schedules.\n\nNOTX — No Treatment: Patient declined. Removed from all queues.\n\nDB/RETS — Finishing: Debond, retainer, or whitening visit. Eligible for R+ and W+ bonuses.\n\nNote: ST (Started on a different day) isn't a starting status — patients reach it by converting from Pending through their follow-ups."} /></label>
+                <label style={{display:'flex',alignItems:'center',fontSize:'14px',fontWeight:'500',marginBottom:'8px'}}>Status * <HelpTip id="add-status" tip={medicaidEnabled ? "SDS — Same Day Start: Patient started treatment today. Earns a bonus.\n\nSCH — Scheduled: Bond appointment is booked. System will check in the day after.\n\nPEN — Pending: Patient needs more time. System auto-schedules follow-up calls based on their obstacle.\n\nOBS — Observation: Not ready for treatment yet. Auto-schedules a 6-month re-check.\n\nMP — Medicaid Pending: Waiting on Medicaid approval. 14-day follow-up auto-schedules.\n\nNOTX — No Treatment: Patient declined. Removed from all queues.\n\nDB/RETS — Finishing: Debond, retainer, or whitening visit. Eligible for R+ and W+ bonuses.\n\nNote: ST (Started on a different day) isn't a starting status — patients reach it by converting from Pending through their follow-ups." : "SDS — Same Day Start: Patient started treatment today. Earns a bonus.\n\nSCH — Scheduled: Bond appointment is booked. System will check in the day after.\n\nPEN — Pending: Patient needs more time. System auto-schedules follow-up calls based on their obstacle.\n\nOBS — Observation: Not ready for treatment yet. Auto-schedules a 6-month re-check.\n\nNOTX — No Treatment: Patient declined. Removed from all queues.\n\nDB/RETS — Finishing: Debond, retainer, or whitening visit. Eligible for R+ and W+ bonuses.\n\nNote: ST (Started on a different day) isn't a starting status — patients reach it by converting from Pending through their follow-ups."} /></label>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(2, 1fr)',gap:'8px'}}>
                   {(newPatientForm.isMedicaid === 'yes' ? [
-                    {value:'SDS', label:'SDS - Started before hearing back from Medicaid', sub:'Counts as a start + bonus · tracked in the Medicaid Pipeline', bg:'#fef3c7', border:'#fbbf24', subColor:'#92400e'},
+                    {value:'SDS', label:'SDS - Started before hearing back from Medicaid', sub: bonusesEnabled ? 'Counts as a start + bonus · tracked in the Medicaid Pipeline' : 'Counts as a start · tracked in the Medicaid Pipeline', bg:'#fef3c7', border:'#fbbf24', subColor:'#92400e'},
                     {value:'MP',  label:'MP - Medicaid Pending', sub:'14-day follow-up auto-schedules', bg:'#fef3c7', border:'#fbbf24', subColor:'#92400e'},
                     {value:'SCH', label:'SCH - Scheduled',       sub:'Enter bond date below', subColor:'#1e40af'},
                     {value:'OBS', label:'OBS - Observation',     sub:'6-month re-check auto-schedules', subColor:'#6b7280'},
@@ -7683,12 +7810,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {/* PEN: Obstacle */}
               {newPatientForm.status === 'PEN' && (
                 <div style={{marginBottom:'16px'}}>
-                  <label style={{display:'flex',alignItems:'center',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Obstacle * <HelpTip id="add-obstacle" tip={"The obstacle is WHY the patient didn't start today. It drives the entire follow-up schedule.\n\nExamples:\n• Price / Down Payment → calls at 1, 3, 7, 14 days\n• Spouse / Partner → calls at 1, 4, 10 days\n• Getting a Second Opinion → calls at 2, 7, 21, 45 days\n• Medicaid Pending → calls every 14 days\n\nChoose the most accurate obstacle and the system handles the rest."} /></label>
+                  <label style={{display:'flex',alignItems:'center',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Obstacle * <HelpTip id="add-obstacle" tip={medicaidEnabled ? "The obstacle is WHY the patient didn't start today. It drives the entire follow-up schedule.\n\nExamples:\n• Price / Down Payment → calls at 1, 3, 7, 14 days\n• Spouse / Partner → calls at 1, 4, 10 days\n• Getting a Second Opinion → calls at 2, 7, 21, 45 days\n• Medicaid Pending → calls every 14 days\n\nChoose the most accurate obstacle and the system handles the rest." : "The obstacle is WHY the patient didn't start today. It drives the entire follow-up schedule.\n\nExamples:\n• Price / Down Payment → calls at 1, 3, 7, 14 days\n• Spouse / Partner → calls at 1, 4, 10 days\n• Getting a Second Opinion → calls at 2, 7, 21, 45 days\n\nChoose the most accurate obstacle and the system handles the rest."} /></label>
                   <select value={newPatientForm.obstacle}
                     onChange={e => setNewPatientForm({...newPatientForm, obstacle: e.target.value})}
                     style={{width:'100%',padding:'8px',border:`1px solid ${!newPatientForm.obstacle ? '#f87171' : '#d1d5db'}`,borderRadius:'4px'}}>
                     <option value="">— Select an obstacle —</option>
-                    {OBSTACLE_OPTIONS.map(o => <option key={o}>{o}</option>)}
+                    {obstacleOptions.map(o => <option key={o}>{o}</option>)}
                   </select>
                 </div>
               )}
@@ -7712,9 +7839,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <div style={{padding:'12px 16px',backgroundColor:'#dcfce7',borderRadius:'8px',border:'1px solid #86efac',marginBottom:'16px',display:'flex',alignItems:'center',gap:'12px'}}>
                     <span style={{fontSize:'22px'}}>✅</span>
                     <div>
-                      <div style={{fontWeight:'700',color:'#166534'}}>{newPatientForm.isMedicaid === 'yes' ? 'Started before Medicaid decision — counts as a start' : 'Same Day Start — will appear in Bonus Audit'}</div>
+                      <div style={{fontWeight:'700',color:'#166534'}}>{newPatientForm.isMedicaid === 'yes' ? 'Started before Medicaid decision — counts as a start' : bonusesEnabled ? 'Same Day Start — will appear in Bonus Audit' : 'Same Day Start — counts as a start'}</div>
                       <div style={{fontSize:'12px',color:'#166534',marginTop:'2px'}}>
-                        Adds to Bonus Audit{newPatientForm['R+'] ? ' + Retainers' : ''}{newPatientForm['W+'] ? ' + Whitening' : ''}{newPatientForm.isMedicaid === 'yes' ? ' · tracked in the Medicaid Pipeline' : ''}
+                        {bonusesEnabled ? 'Adds to Bonus Audit' : 'Counts toward your starts'}{newPatientForm['R+'] ? ' + Retainers' : ''}{newPatientForm['W+'] ? ' + Whitening' : ''}{newPatientForm.isMedicaid === 'yes' ? ' · tracked in the Medicaid Pipeline' : ''}
                       </div>
                     </div>
                   </div>
@@ -8002,7 +8129,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         {patient.OBS && (
                           <span style={{fontSize:'11px',padding:'3px 8px',backgroundColor:'#F5F5F5',color:'#374151',borderRadius:'4px',fontWeight:'600'}}>OBSERVATION</span>
                         )}
-                        {patient.MP && (
+                        {medicaidEnabled && patient.MP && (
                           <span style={{fontSize:'11px',padding:'3px 8px',backgroundColor:'#fef3c7',color:'#92400e',borderRadius:'4px',fontWeight:'600'}}>MEDICAID PENDING</span>
                         )}
                         {patient.NOTX && (
@@ -8860,15 +8987,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         })()}
 
         {/* BONUS AUDIT */}
-        {currentView === 'bonus' && ((currentUser?.role !== 'tc' && currentUser?.role !== 'manager') || currentUser?.bonusEnabled || seesAllBonuses) && (() => {
+        {currentView === 'bonus' && bonusesEnabled && ((currentUser?.role !== 'tc' && currentUser?.role !== 'manager') || currentUser?.bonusEnabled || seesAllBonuses) && (() => {
           // TCs, and Office Managers without "see all bonuses", see only their own. The
           // database only hands them their own rates anyway (team_bonus_rates).
           const bonusTCFilter = !seesAllBonuses ? currentUser.name : (bonusTCSelect !== 'All' ? bonusTCSelect : null);
           // Practice-goal tier payouts for the selected month, one per user with
           // tier amounts configured (respects the per-user bonus on/off switch)
+          // Monthly payouts (starts-goal tiers and Case Acceptance levels), one entry each.
           const monthGoalBonuses = (bonusTCFilter ? [bonusTCFilter] : bonusEligibleNames)
             .filter(n => { const u = tcUsers.find(x => x.name === n); return !u || u.bonus_enabled !== false; })
-            .map(n => ({ name: n, ...(goalTierBonusFor(n, bonusMonthFilter) || {}) }))
+            .flatMap(n => [goalTierBonusFor(n, bonusMonthFilter), caseAcceptanceBonusFor(n, bonusMonthFilter)]
+              .filter(Boolean).map(b => ({ name: n, kind: 'goal', ...b })))
             .filter(x => x.amount > 0);
           return (
           <div>
@@ -8932,7 +9061,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           </div>
                           {monthGoalBonuses.length > 0 && (
                             <div style={{fontSize:'13px',color:'#166534',marginTop:'4px'}}>
-                              🎯 {monthGoalBonuses.map(g => `${bonusTCFilter ? '' : g.name + ': '}${g.label} — $${g.amount}`).join(' · ')}
+                              {monthGoalBonuses.map(g => `${g.kind === 'ca' ? '📈' : '🎯'} ${bonusTCFilter ? '' : g.name + ': '}${g.label} — $${g.amount}`).join(' · ')}
                             </div>
                           )}
                         </div>
@@ -9144,7 +9273,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   // Goal-tier payouts — users can earn these even with no patient rows
                   monthGoalBonuses.forEach(g => {
                     if (!perTC[g.name]) perTC[g.name] = { sds: 0, ret: 0, white: 0, pif: 0, sdsAmt: 0, retAmt: 0, whiteAmt: 0, pifAmt: 0, total: 0 };
-                    perTC[g.name].goal = g;
+                    perTC[g.name].goals = [...(perTC[g.name].goals || []), g];
                     perTC[g.name].total += g.amount;
                   });
                   const entries = Object.entries(perTC).filter(([, v]) => v.total > 0);
@@ -9165,7 +9294,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               {d.ret > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.ret} Retainer{d.ret > 1 ? 's' : ''} — <strong style={{color:'#374151'}}>${d.retAmt}</strong></div>}
                               {d.white > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.white} Whitening — <strong style={{color:'#374151'}}>${d.whiteAmt}</strong></div>}
                               {d.pif > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.pif} PIF — <strong style={{color:'#374151'}}>${d.pifAmt}</strong></div>}
-                              {d.goal && <div style={{fontSize:'12px',color:'#6b7280'}}>• 🎯 {d.goal.label} — <strong style={{color:'#374151'}}>${d.goal.amount}</strong></div>}
+                              {(d.goals || []).map((g, gi) => <div key={gi} style={{fontSize:'12px',color:'#6b7280'}}>• {g.kind === 'ca' ? '📈' : '🎯'} {g.label} — <strong style={{color:'#374151'}}>${g.amount}</strong></div>)}
                             </div>
                           </div>
                         ))}
@@ -9220,7 +9349,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         });
                         // Goal-tier payouts land at month end (already filtered per user)
                         monthGoalBonuses.forEach(g => {
-                          bonusItems.push({date: `${bonusMonthFilter}-31`, patient: g.label, tc: g.name, type: 'Goal', amount: g.amount, isGoal: true});
+                          bonusItems.push({date: `${bonusMonthFilter}-31`, patient: g.label, tc: g.name, type: g.kind === 'ca' ? 'Case Acceptance' : 'Goal', amount: g.amount, isGoal: true});
                         });
                         bonusItems.sort((a,b) => a.date.localeCompare(b.date));
                         const filteredTotal = bonusItems.reduce((sum, item) => sum + item.amount, 0);
@@ -9233,8 +9362,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             <td style={{padding:'12px',fontSize:'14px'}}>
                               <span style={{
                                 padding:'2px 8px',
-                                backgroundColor: item.type==='SDS' ? '#fef3c7' : item.type==='Retainer' ? '#dbeafe' : item.type==='Whitening' ? '#e0e7ff' : item.type==='Goal' ? '#dcfce7' : '#fce7f3',
-                                color: item.type==='SDS' ? '#92400e' : item.type==='Retainer' ? '#1e40af' : item.type==='Whitening' ? '#3730a3' : item.type==='Goal' ? '#166534' : '#831843',
+                                backgroundColor: item.type==='SDS' ? '#fef3c7' : item.type==='Retainer' ? '#dbeafe' : item.type==='Whitening' ? '#e0e7ff' : item.isGoal ? '#dcfce7' : '#fce7f3',
+                                color: item.type==='SDS' ? '#92400e' : item.type==='Retainer' ? '#1e40af' : item.type==='Whitening' ? '#3730a3' : item.isGoal ? '#166534' : '#831843',
                                 borderRadius:'4px',fontSize:'12px',fontWeight:'600'
                               }}>
                                 {item.type}
@@ -9298,7 +9427,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         }
                       });
                       monthGoalBonuses.forEach(g => {
-                        rows.push([bonusMonthFilter, g.label, g.name, 'Practice Goal Bonus', g.amount]);
+                        rows.push([bonusMonthFilter, g.label, g.name, g.kind === 'ca' ? 'Case Acceptance Bonus' : 'Practice Goal Bonus', g.amount]);
                       });
                       const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
                       const a = document.createElement('a');
@@ -11417,14 +11546,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Turn features on or off for your practice.</p>
                     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 16px',backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'8px',marginBottom:'10px'}}>
                       <div>
-                        <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>🏥 Medicaid Pipeline</div>
-                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>Kanban board for tracking patients waiting on Medicaid approval.</div>
+                        <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>🏥 We take Medicaid</div>
+                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>Off hides everything Medicaid: the Medicaid Pipeline, Medicaid numbers on the dashboard, and the Medicaid question when adding a patient.</div>
                       </div>
                       <button
                         onClick={async () => {
-                          const next = !medicaidEnabled;
-                          setMedicaidEnabled(next);
-                          await dbSaveSettings('medicaid-enabled', next);
+                          const err = await saveMedicaidSetting(!medicaidEnabled);
+                          if (err) alert(err);
                         }}
                         style={{
                           padding:'7px 18px',
@@ -11443,6 +11571,38 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         {medicaidEnabled ? 'ON' : 'OFF'}
                       </button>
                     </div>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',flexWrap:'wrap',padding:'12px 16px',backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'8px',marginBottom:'10px'}}>
+                      <div>
+                        <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>🖥️ Practice management software</div>
+                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>The system you schedule patients in. Decides whether today's scheduled exams can be pulled into Add NPE.</div>
+                      </div>
+                      <select value={practiceSoftware || ''} onChange={async e => {
+                          const v = e.target.value || null;
+                          setPracticeSoftware(v);
+                          await dbSaveSettings('practice-software', v);
+                        }}
+                        style={{padding:'7px 10px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}}>
+                        <option value="">Not set</option>
+                        {PRACTICE_SOFTWARE.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                    </div>
+                    {myRole === 'admin' && (
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 16px',backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'8px',marginBottom:'10px'}}>
+                      <div>
+                        <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>💰 We pay TC bonuses</div>
+                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>Off hides Bonus Audit, bonus cards and bonus rates for everyone in the practice. Rates you've saved are kept.</div>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          const next = !bonusesEnabled;
+                          setBonusesEnabled(next);
+                          await dbSaveSettings('bonuses-enabled', next);
+                        }}
+                        style={{padding:'7px 18px',backgroundColor: bonusesEnabled ? '#16a34a' : '#6b7280',color:'white',border:'none',borderRadius:'20px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap',flexShrink:0,marginLeft:'16px'}}>
+                        {bonusesEnabled ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+                    )}
                     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 16px',backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'8px'}}>
                       <div>
                         <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>🔄 OBS Booking Call Lead Time</div>
@@ -11581,7 +11741,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <table style={{width:'100%',borderCollapse:'collapse',marginBottom:'20px',fontSize:'13px'}}>
                         <thead>
                           <tr style={{borderBottom:'2px solid #e5e7eb'}}>
-                            {['Name','Email','Role','Status','Bonus',''].map(h => (
+                            {['Name','Email','Role','Status',...(bonusesEnabled ? ['Bonus'] : []),''].map(h => (
                               <th key={h} style={{padding:'8px 10px',textAlign:'left',fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.04em'}}>{h}</th>
                             ))}
                           </tr>
@@ -11649,7 +11809,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   {u.status==='inactive' ? 'Inactive' : u.auth_user_id ? 'Active' : 'Pending Setup'}
                                 </span>
                               </td>
-                              <td style={{padding:'10px'}}>
+                              {bonusesEnabled && <td style={{padding:'10px'}}>
                                 {(u.role === 'tc' || u.role === 'manager') && currentUser?.role === 'admin' ? (
                                   <label style={{display:'flex',alignItems:'center',gap:'6px',cursor:'pointer',userSelect:'none'}}>
                                     {(() => { const bOn = u.bonus_enabled !== false; return (<>
@@ -11671,7 +11831,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 ) : (
                                   <span style={{fontSize:'11px',color:'#d1d5db'}}>—</span>
                                 )}
-                              </td>
+                              </td>}
                               <td style={{padding:'10px'}}>
                                 {u.email !== currentUser?.email && (
                                   <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
@@ -11889,7 +12049,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>What Office Managers in this practice may do. Office Managers always work patients and never see production dollars.</p>
                     {[
                       ['manager_delete_patients', 'Delete patients', 'Remove patient records for good.'],
-                      ['manager_see_all_bonuses', "See every team member's bonus", 'Otherwise they see only their own.'],
+                      ...(bonusesEnabled ? [['manager_see_all_bonuses', "See every team member's bonus", 'Otherwise they see only their own.']] : []),
                       ['manager_edit_goals_settings', 'Edit goals and settings', 'Goals, locations, features and report recipients.'],
                       ['manager_manage_tcs', 'Manage TC logins', 'Add, invite, reset, deactivate and remove TCs (never admins or managers).'],
                     ].map(([key, title, desc]) => (
@@ -11918,7 +12078,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   )}
 
                   {/* Bonus Rate Editor — pay; full admins only */}
-                  {currentUser?.role === 'admin' && (
+                  {bonusesEnabled && currentUser?.role === 'admin' && (
                   <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'16px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>💰 Bonus Rates</h4>
                     <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Every TC and Office Manager has their own rates, calculated per qualifying patient in the Bonus Audit tab. Use the toggle to turn a person's bonuses on or off. SDS = same-day start · Retainer = R+ add-on · Whitening = W+ add-on · PIF = paid in full. The 🎯 starts goal bonus pays a flat monthly amount based on the practice's total starts vs. that month's starts goal, with tier thresholds you set per person.</p>
@@ -12053,6 +12213,45 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     );
                                   })()}
                                 </div>
+
+                                {/* Monthly Case Acceptance bonus — up to 3 levels, highest reached pays */}
+                                <div style={{marginTop:'12px',paddingTop:'12px',borderTop:'1px dashed #e5e7eb'}}>
+                                  <div style={{fontSize:'11px',fontWeight:'700',color:'#7c3aed',marginBottom:'2px'}}>📈 CASE ACCEPTANCE BONUS</div>
+                                  <div style={{fontSize:'11px',color:'#9ca3af',marginBottom:'8px'}}>Paid once a month on {u.name}'s own Case Acceptance: their starts that month ÷ their exams that month (Observation not counted). The highest level reached pays. Fill one level for a single target, or up to three.</div>
+                                  <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                                    {[0, 1, 2].map(ti => {
+                                      const tier = (effective.caTiers || [])[ti] || { min: '', amt: '' };
+                                      const setTier = (key) => (e) => {
+                                        const v = e.target.value === '' ? '' : Math.max(0, Number(e.target.value));
+                                        const tiers = [0, 1, 2].map(k => ({ ...((effective.caTiers || [])[k] || { min: '', amt: '' }) }));
+                                        tiers[ti][key] = v;
+                                        setUserBonusDrafts(prev => ({ ...prev, [u.id]: { ...effective, caTiers: tiers } }));
+                                      };
+                                      return (
+                                        <div key={ti} style={{display:'flex',alignItems:'center',gap:'6px',flexWrap:'wrap',fontSize:'12px',color:'#6b7280'}}>
+                                          <span style={{width:'50px'}}>Level {ti + 1}</span>
+                                          <span>at least</span>
+                                          <input type="number" min="0" max="100" value={tier.min} disabled={!enabled} onChange={setTier('min')} placeholder={['60','70','80'][ti]}
+                                            style={{padding:'6px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px',fontWeight:'600',width:'56px',backgroundColor: enabled ? 'white' : '#f3f4f6'}} />
+                                          <span>% →</span>
+                                          <span style={{fontSize:'13px',fontWeight:'600',color: enabled ? '#6b7280' : '#d1d5db'}}>$</span>
+                                          <input type="number" min="0" value={tier.amt} disabled={!enabled} onChange={setTier('amt')} placeholder={['100','200','300'][ti]}
+                                            style={{padding:'6px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'14px',fontWeight:'600',width:'64px',backgroundColor: enabled ? 'white' : '#f3f4f6'}} />
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                  {enabled && cleanTiers(effective.caTiers).length > 0 && (() => {
+                                    const thisMonth = localToday().slice(0, 7);
+                                    const ca = tcCaseAcceptance(u.name, thisMonth);
+                                    const b = caseAcceptanceBonusFor(u.name, thisMonth);
+                                    return (
+                                      <div style={{fontSize:'11px',color:'#6d28d9',marginTop:'8px'}}>
+                                        This month so far: {ca.rate === null ? 'no exams yet' : `${ca.rate}% (${ca.starts} starts / ${ca.exams} exams)`}{b ? ` → earning $${b.amount} (saved levels)` : ''}
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
                               </div>
                             );
                           })}
@@ -12067,7 +12266,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         const eligible = tcUsers.filter(u => (u.role === 'tc' || u.role === 'manager') && u.status !== 'inactive');
                         let userError = null;
                         for (const u of eligible) {
-                          const effective = userBonusDrafts[u.id] || { ...ZERO_RATES, ...(u.bonus_rates || {}) };
+                          const draft = userBonusDrafts[u.id] || { ...ZERO_RATES, ...(u.bonus_rates || {}) };
+                          const effective = { ...draft, caTiers: cleanTiers(draft.caTiers) };
                           const { error: uErr } = await supabase.from('tc_users').update({ bonus_rates: effective }).eq('id', u.id);
                           if (uErr) userError = uErr;
                         }
@@ -12092,6 +12292,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             {/* Bonus Campaigns + Supabase status — full admins only */}
             {currentUser?.role === 'admin' && (<>
             {/* Popup Bonus Campaigns */}
+            {bonusesEnabled && (
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',border:'1px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.06)',marginBottom:'24px'}}>
               <div style={{marginBottom:'20px',paddingBottom:'14px',borderBottom:'2px solid #f3f4f6'}}>
                 <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:'0 0 4px 0'}}>🎯 Bonus Campaigns</h3>
@@ -12323,6 +12524,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               )}
             </div>
+            )}
 
 
 
@@ -12373,15 +12575,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',border:'1px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.06)',marginBottom:'24px'}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'20px',paddingBottom:'14px',borderBottom:'2px solid #f3f4f6',flexWrap:'wrap',gap:'12px'}}>
                 <div>
-                  <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:0}}>📊 Annual Goals — {new Date().getFullYear()}</h3>
-                  <p style={{fontSize:'13px',color:'#9ca3af',marginTop:'4px'}}>Set monthly and quarterly targets. Past months are locked.</p>
+                  <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',margin:0,display:'flex',alignItems:'center',gap:'8px'}}>
+                    📊 Annual Goals —
+                    <button aria-label="Previous year" onClick={() => setGoalsEditYear(y => y - 1)} style={{border:'1px solid #d1d5db',background:'white',borderRadius:'6px',cursor:'pointer',padding:'2px 8px',fontSize:'14px'}}>◀</button>
+                    {goalsEditYear}
+                    <button aria-label="Next year" onClick={() => setGoalsEditYear(y => y + 1)} disabled={goalsEditYear >= new Date().getFullYear() + 1} style={{border:'1px solid #d1d5db',background:'white',borderRadius:'6px',cursor:'pointer',padding:'2px 8px',fontSize:'14px',opacity: goalsEditYear >= new Date().getFullYear() + 1 ? 0.4 : 1}}>▶</button>
+                  </h3>
+                  <p style={{fontSize:'13px',color:'#9ca3af',marginTop:'4px'}}>Set monthly and quarterly targets for each year. Past months are locked. Each year starts with no goals until you set them.</p>
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:'12px'}}>
                   {goalsSaveMsg && <span style={{color:'#10b981',fontWeight:'600',fontSize:'15px'}}>{goalsSaveMsg}</span>}
                   <button
                     onClick={async () => {
-                      localStorage.setItem(`npe-goals-${currentUser?.practiceId}`, JSON.stringify(goals));
-                      await dbSaveSettings('goals', goals);
+                      await dbSaveSettings('goals', goalsStore);
                       setGoalsSaveMsg('✅ Goals saved!');
                       setTimeout(() => setGoalsSaveMsg(''), 3000);
                     }}
@@ -12395,7 +12601,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {(() => {
                 const curMonth = new Date().getMonth();
                 const curYear = new Date().getFullYear();
-                const isGoalYear = curYear === new Date().getFullYear();
+                const isGoalYear = goalsEditYear === curYear;
+                const isPastYear = goalsEditYear < curYear;
                 const locs = locations.length > 0 ? locations : ['Loc 1', 'Loc 2'];
                 // helpers: read/write per-location goal values (backwards-compatible with carNPE/apoNPE keys)
                 const npeKey = (li) => li === 0 ? 'carNPE' : li === 1 ? 'apoNPE' : `loc${li}NPE`;
@@ -12413,7 +12620,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 return (
                   <div id="guide-goals-section" style={{marginBottom:'32px'}}>
                     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px',flexWrap:'wrap',gap:'8px'}}>
-                      <h4 style={{fontSize:'18px',fontWeight:'bold',color:'#202020',margin:0}}>📅 Monthly Goals - {new Date().getFullYear()}</h4>
+                      <h4 style={{fontSize:'18px',fontWeight:'bold',color:'#202020',margin:0}}>📅 Monthly Goals - {goalsEditYear}</h4>
                       <div style={{display:'flex',alignItems:'center',gap:'10px',backgroundColor:'#f3f4f6',padding:'6px 12px',borderRadius:'8px'}}>
                         <span style={{fontSize:'13px',color:'#6b7280',fontWeight:'500'}}>Mode:</span>
                         <button onClick={() => setGoals({...goals, overallMode: false})}
@@ -12447,7 +12654,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </thead>
                         <tbody>
                           {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map((month, i) => {
-                            const isPast = isGoalYear && i < curMonth;
+                            const isPast = isPastYear || (isGoalYear && i < curMonth);
                             const isCurrent = isGoalYear && i === curMonth;
                             return (
                               <tr key={month} style={{borderBottom:'1px solid #F5F5F5',backgroundColor: isPast ? '#f9fafb' : isCurrent ? '#fffbeb' : 'white',opacity: isPast ? 0.7 : 1}}>
@@ -12516,7 +12723,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
               {/* Quarterly Goals — with monthly sum check (#5) */}
               <div>
-                <h4 style={{fontSize:'18px',fontWeight:'bold',marginBottom:'16px',color:'#202020'}}>📊 Quarterly Goals - {new Date().getFullYear()} (Combined Locations)</h4>
+                <h4 style={{fontSize:'18px',fontWeight:'bold',marginBottom:'16px',color:'#202020'}}>📊 Quarterly Goals - {goalsEditYear} (Combined Locations)</h4>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(250px, 1fr))',gap:'16px'}}>
                   {[
                     {q: 'Q1', months: 'Jan-Mar', qi: 0, mRange: [0,1,2]},
@@ -12570,8 +12777,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <div style={{marginTop:'24px',paddingTop:'24px',borderTop:'1px solid #e5e7eb',display:'flex',alignItems:'center',gap:'16px'}}>
                 <button
                   onClick={async () => {
-                    localStorage.setItem(`npe-goals-${currentUser?.practiceId}`, JSON.stringify(goals));
-                    await dbSaveSettings('goals', goals);
+                    await dbSaveSettings('goals', goalsStore);
                     setGoalsSaveMsg('✅ Goals saved!');
                     setTimeout(() => setGoalsSaveMsg(''), 3000);
                   }}
@@ -12961,12 +13167,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         // Breakdown by obstacle for non-Medicaid non-started
         const obstacleMap = {};
         convPool.forEach(p => {
-          if (isMedicaid(p)) return;
+          if (medicaidEnabled && isMedicaid(p)) return;
           const obs = p.obstacle || 'No obstacle recorded';
           if (!obstacleMap[obs]) obstacleMap[obs] = { npe: 0, started: 0 };
           obstacleMap[obs].npe++;
         });
-        allStarted.filter(p => !isMedicaid(p)).forEach(p => {
+        allStarted.filter(p => !medicaidEnabled || !isMedicaid(p)).forEach(p => {
           const obs = p.obstacle || 'No obstacle recorded';
           if (!obstacleMap[obs]) obstacleMap[obs] = { npe: 0, started: 0 };
           obstacleMap[obs].started++;
@@ -12994,6 +13200,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
 
               {/* Private vs Medicaid split */}
+              {medicaidEnabled && (
               <div style={{marginBottom:'20px'}}>
                 <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>By Insurance Type</div>
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'12px'}}>
@@ -13013,11 +13220,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   ))}
                 </div>
               </div>
+              )}
 
               {/* Private pay obstacle breakdown */}
               {obstacleRows.length > 0 && (
                 <div>
-                  <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>Private Pay — By Obstacle</div>
+                  <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'10px'}}>{medicaidEnabled ? 'Private Pay — By Obstacle' : 'By Obstacle'}</div>
                   <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                     {obstacleRows.map(([obs, {npe, started}]) => {
                       const conv = npe > 0 ? Math.round((started / npe) * 100) : null;
@@ -13973,7 +14181,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   {value: 'SCH',    label: 'SCH — Scheduled'},
                   {value: 'PEN',    label: 'PEN — Pending'},
                   {value: 'OBS',    label: 'OBS — Observation'},
-                  {value: 'MP',     label: 'MP — Medicaid'},
+                  ...(medicaidEnabled ? [{value: 'MP',     label: 'MP — Medicaid'}] : []),
                   {value: 'NOTX',   label: 'NOTX — No TX'},
                   {value: 'DBRETS', label: 'DB/RETS'},
                 ].map(status => {
@@ -14165,7 +14373,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
               >
                 <option value="">None</option>
-                {OBSTACLE_OPTIONS.map(o => <option key={o}>{o}</option>)}
+                {obstacleOptions.map(o => <option key={o}>{o}</option>)}
               </select>
             </div>
 
