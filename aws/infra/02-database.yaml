@@ -44,6 +44,8 @@ Conditions:
   HasImportRole: !Not [!Equals [!Ref ImportRoleArn, '']]
   HasExportRole: !Not [!Equals [!Ref ExportRoleArn, '']]
   HasAnyRole: !Or [!Condition HasImportRole, !Condition HasExportRole]
+  # Aurora accepts an auto-pause delay only when the minimum capacity is 0.
+  CanPause: !Equals [!Ref MinCapacity, '0']
 
 Resources:
   DbSubnetGroup:
@@ -103,7 +105,7 @@ Resources:
       ServerlessV2ScalingConfiguration:
         MinCapacity: !Ref MinCapacity
         MaxCapacity: !Ref MaxCapacity
-        SecondsUntilAutoPause: !Ref SecondsUntilAutoPause
+        SecondsUntilAutoPause: !If [CanPause, !Ref SecondsUntilAutoPause, !Ref AWS::NoValue]
       Tags: [{ Key: Name, Value: !Sub 'cadenceiq-${Stage}' }]
 
   DbInstance:
