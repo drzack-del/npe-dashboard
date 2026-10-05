@@ -796,7 +796,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [editForm, setEditForm] = useState({});
   const [showStartedModal, setShowStartedModal] = useState(null);
   const [showScheduleBondModal, setShowScheduleBondModal] = useState(null);
-  const [scheduleBondForm, setScheduleBondForm] = useState({ bondDate: '', notes: '' });
+  const [scheduleBondForm, setScheduleBondForm] = useState({ bondDate: '', notes: '', dpCollected: '' });
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedWeekDay, setSelectedWeekDay] = useState(localDateStr(new Date()));
   const [weekOffset, setWeekOffset] = useState(0);
@@ -2592,12 +2592,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
 
   const handleMarkStarted = (patient) => {
-    // Pre-populate: SCH patients default to their bond date (the day they actually
-    // started) so day-after confirmations attribute the start to the right day.
-    // Everyone else defaults to today — never the NPE date, or a pending/OBS patient
-    // who starts months later gets back-dated into their consult month as a phantom SDS.
+    // A start is dated by the day the down payment was paid, not the bond date and
+    // not the NPE date. Clicking Mark Started means the DP came in, so default to
+    // today for everyone; staff back-date it for a late entry. Defaulting SCH patients
+    // to their bond date pushed DP-paid-in-August starts into September (Aiden Bridgers).
     setStartedForm({
-      startDate: patient.SCH ? (patient.bondDate || localToday()) : localToday(),
+      startDate: localToday(),
       dp: patient.dp || '',
       contractAmount: patient.contractAmount || '',
       financedMonths: patient.financedMonths ?? '', treatmentMonths: patient.treatmentMonths ?? '',
@@ -2608,6 +2608,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       addonSkipReason: patient.addonSkipReason || '',
       recap: composeRecapDraft('start', {
         dp: patient.dp, sameDay: !patient.SCH && patient.npeDate === localToday(),
+        bondDate: patient.SCH && patient.bondDate > localToday() ? patient.bondDate : '',
         'R+': patient['R+'], 'W+': patient['W+'], PIF: patient.PIF
       })
     });
@@ -2641,8 +2642,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       alert('No whitening or retainers were added — please note why before saving.');
       return;
     }
-    const isSameDay = startedForm.startDate === patient.npeDate;
     const todayStr = localToday();
+    if (!startedForm.startDate) { alert('Please enter the date the down payment was paid.'); return; }
+    if (startedForm.startDate > todayStr) { alert('The start date is the day the down payment was paid — it can\'t be in the future.'); return; }
+    const isSameDay = startedForm.startDate === patient.npeDate;
     // Record a metric-neutral start entry so the recap surfaces in the End-of-Day report.
     // noCount + empty time/scheduledDate keep it out of every contact/on-time counter.
     const startLog = {
@@ -2735,7 +2738,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // Quick action for when a patient calls back to schedule their initial bond,
   // without going through the full Log Contact flow.
   const handleOpenScheduleBond = (patient) => {
-    setScheduleBondForm({ bondDate: patient.bondDate || '', notes: '' });
+    setScheduleBondForm({ bondDate: patient.bondDate || '', notes: '', dpCollected: '' });
     setShowScheduleBondModal(patient);
   };
 
@@ -2747,6 +2750,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       alert('Please enter the bond date before saving.');
       return;
     }
+    // Asked every time: a DP collected now is a start today, even though the bond is
+    // later. Without this question the patient sat as "Scheduled" and the start landed
+    // on the bond date instead of the DP date.
+    const dpCollected = scheduleBondForm.dpCollected;
+    if (!dpCollected) {
+      alert('Please answer whether a down payment was collected.');
+      return;
+    }
     const todayStr = localToday();
     const checkDate = getBondCheckDate({ SCH: true, bondDate });
     const logEntry = {
@@ -2754,7 +2765,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
       scheduledDate: (patient.nextTouchDate && patient.nextTouchDate !== '__MAX__') ? patient.nextTouchDate : '',
       reachedPatient: 'Yes',
-      outcome: `Patient called back — scheduled initial bond appointment for ${new Date(bondDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+      outcome: `Patient called back — scheduled initial bond appointment for ${new Date(bondDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}${dpCollected === 'yes' ? ' — down payment collected' : ''}`,
       sentText: false,
       notes: scheduleBondForm.notes || '',
       logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
@@ -2779,8 +2790,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setPatients(prev => prev.map(p => p.id === patientId ? updatedPatient : p));
     const saveOk = await dbUpsert(updatedPatient);
     setShowScheduleBondModal(null);
-    setScheduleBondForm({ bondDate: '', notes: '' });
+    setScheduleBondForm({ bondDate: '', notes: '', dpCollected: '' });
     saveToastFor(saveOk, `📅 ${updatedPatient.name} scheduled for bond on ${new Date(bondDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`);
+    // DP collected → the start happens today; go straight to Mark Started to capture it.
+    if (dpCollected === 'yes') handleMarkStarted(updatedPatient);
   };
 
   const handleMissedBond = async (patient, notes = '') => {
@@ -13262,15 +13275,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           <div style={{backgroundColor:'white',padding:'32px',borderRadius:'12px',maxWidth:'500px',width:'90%',boxShadow:'0 20px 25px -5px rgba(0,0,0,0.3)'}}>
             <h3 style={{fontSize:'22px',fontWeight:'bold',marginBottom:'4px',color:'#202020'}}>Mark {showStartedModal.name} as STARTED</h3>
             <p style={{fontSize:'13px',color:'#6b7280',marginBottom:'20px'}}>
-              {showStartedModal.SCH ? '📅 Confirming scheduled bond appointment' : `NPE was ${new Date(showStartedModal.npeDate + 'T12:00:00').toLocaleDateString()} — SDS if start date matches`}
+              {showStartedModal.SCH && showStartedModal.bondDate
+                ? `💵 Down payment received · bond ${showStartedModal.bondDate > localToday() ? 'scheduled for' : 'was'} ${new Date(showStartedModal.bondDate + 'T12:00:00').toLocaleDateString()}`
+                : `NPE was ${new Date(showStartedModal.npeDate + 'T12:00:00').toLocaleDateString()} — SDS if the down payment was paid that day`}
             </p>
 
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'16px',marginBottom:'16px'}}>
               <div>
                 <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>
-                  Start Date {startedForm.startDate === showStartedModal.npeDate && <span style={{color:'#2563EB',fontWeight:'600'}}>(SDS!)</span>}
+                  Date Down Payment Paid {startedForm.startDate === showStartedModal.npeDate && <span style={{color:'#2563EB',fontWeight:'600'}}>(SDS!)</span>}
                 </label>
                 <input type="date"
+                  max={localToday()}
                   value={startedForm.startDate}
                   onChange={e => setStartedForm({...startedForm, startDate: e.target.value})}
                   style={{width:'100%',padding:'8px',border:'2px solid ' + (startedForm.startDate === showStartedModal.npeDate ? '#2563EB' : '#d1d5db'),borderRadius:'4px'}} />
@@ -13442,6 +13458,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 rows={2} />
             </div>
 
+            <div style={{marginBottom:'24px'}}>
+              <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'6px'}}>Down payment collected? *</label>
+              <div style={{display:'flex',gap:'8px'}}>
+                {[{v:'yes',l:'💵 Yes — counts as a start today'},{v:'no',l:'No — not yet'}].map(o => (
+                  <button key={o.v} type="button"
+                    onClick={() => setScheduleBondForm({...scheduleBondForm, dpCollected: o.v})}
+                    style={{flex:1,padding:'10px',borderRadius:'6px',cursor:'pointer',fontSize:'13px',fontWeight:'600',
+                      border:'2px solid ' + (scheduleBondForm.dpCollected === o.v ? '#10b981' : '#d1d5db'),
+                      backgroundColor: scheduleBondForm.dpCollected === o.v ? '#ecfdf5' : 'white',color:'#374151'}}>
+                    {o.l}
+                  </button>
+                ))}
+              </div>
+              {scheduleBondForm.dpCollected === 'yes' && (
+                <div style={{fontSize:'12px',color:'#166534',marginTop:'6px'}}>After saving, you'll enter the start details.</div>
+              )}
+            </div>
+
             <div style={{display:'flex',gap:'12px'}}>
               <button
                 onClick={() => confirmScheduleBond(showScheduleBondModal.id)}
@@ -13450,7 +13484,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 📅 Confirm Bond Scheduled
               </button>
               <button
-                onClick={() => { setShowScheduleBondModal(null); setScheduleBondForm({ bondDate: '', notes: '' }); }}
+                onClick={() => { setShowScheduleBondModal(null); setScheduleBondForm({ bondDate: '', notes: '', dpCollected: '' }); }}
                 style={{padding:'12px 24px',backgroundColor:'#e5e7eb',color:'#374151',border:'none',borderRadius:'6px',cursor:'pointer'}}
               >
                 Cancel
