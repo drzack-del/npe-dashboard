@@ -1,4 +1,39 @@
-# Supabase → AWS migration: handoff (2026-10-01)
+# Supabase → AWS migration: handoff (updated 2026-10-05)
+
+Read this first in a new session, then `aws/CUTOVER.md` (the switch-over plan with every prep task's
+status and the dress-rehearsal results).
+
+## START HERE (state at 2026-10-05 ~02:25 UTC)
+- Stages 1-3 done; Stage 4 trial done by Dr. Miller himself (plus a fake TC); **dress rehearsal done**
+  (data steps < 5 min). Live site = `main` = 6e302bd: the AWS login code is published but switched OFF.
+- **Next task: rebuild "Reset two-step" as "Reset login"** (the rehearsal showed Cognito keeps a verified
+  TOTP device when pool MFA is ON; AdminSetUserMFAPreference(Enabled=false) does not force re-setup).
+  Design agreed in chat: admin clicks Reset login on a linked team member -> invite-user `action:
+  'reset-login'` (same admin/practice checks, not self) -> (1) unlink in the AWS DB: set
+  tc_users.auth_user_id = NULL and delete the old auth.users row; the guard trigger only allows this when
+  auth.uid() IS NULL, so do it through the Data API with a dedicated least-privilege DB role whose only
+  right is EXECUTE on one SECURITY DEFINER function, password in its own secret, Lambda IAM limited to
+  rds-data:ExecuteStatement on the cluster + that secret; (2) AdminDeleteUser + AdminCreateUser
+  (DesiredDeliveryMediums EMAIL) so they get a fresh invite; first sign-in re-links via link_my_login.
+  Update the button label/confirm text on branch `aws-cognito-login`, local checks
+  (`bash aws/functions/invite-user/test/run.sh`), deploy (code zip to the code bucket + 06-invite
+  stack), then Dr. Miller re-tests on fake "Test TC" (zack.miller96+cadenceiq-tc3@gmail.com, exists on
+  AWS only; delete it and its tc_users/auth.users rows afterwards). Publishing the App.jsx change to
+  main needs his yes, and he must run the push himself (see below).
+- Then remaining before switch-over: office Wi-Fi check (Dr. Miller opens app-test from the office),
+  staff enrollment invites to app-test (his yes; P9), schedule the switch-over (his yes).
+  Greyfinch key deferred until after switch-over (his decision).
+- **Approval rule (agreed 2026-10-04, memory `aws-approval-gates`):** test-environment AWS work, tests,
+  fake accounts: just do it and report. His explicit yes for: publishing to main, any Supabase change,
+  emails to real staff, the switch-over, >$25/month.
+- **Publishing:** Claude Code's auto-mode blocks Claude from pushing `main`. Give him, run in the main
+  folder: `git merge --ff-only <branch>` then `git push origin main`; then verify origin/main, the Vercel
+  production deployment READY, and that the live bundle filename matches the locally checked build.
+- Branches: `aws-infra` (this file, templates, scripts; pushed only as needed), `aws-cognito-login`
+  (app code, == main + nothing new right now), `cutover-switch` (local only: the one-file flip
+  `.env.production`; do NOT push to GitHub except for a rehearsal, never merge before switch-over day).
+
+Older context below.
 
 Read this first in a new session. Full transcript of the session that produced it:
 `~/Downloads/session-export-1790852921248.zip`.
