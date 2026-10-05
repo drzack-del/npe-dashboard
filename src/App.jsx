@@ -2595,7 +2595,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // day the app saw them un-started (their latest contact-log entry, else the NPE),
   // and no later than today. If every date in that window lands in the same month and
   // the same side of every bonus campaign's start/end, the exact day can't change any
-  // count, so "today" is safe. Otherwise staff must look the date up in Greyfinch —
+  // count, so "today" is safe. Otherwise staff must look the date up in their PMS —
   // Noah Batista paid 8/31, was confirmed at his 9/1 bond, and moved to September.
   const dpDateWindow = (patient) => {
     const today = localToday();
@@ -13313,7 +13313,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
             {startedForm.dpAsk && (
               <div style={{marginBottom:'16px',padding:'10px 12px',backgroundColor:'#fef3c7',border:'1px solid #fbbf24',borderRadius:'8px',fontSize:'13px',color:'#92400e'}}>
-                ⚠️ <strong>When was the down payment paid?</strong> We last saw {showStartedModal.name} un-started on {new Date(startedForm.dpAsk.from + 'T12:00:00').toLocaleDateString()} and today is {new Date(startedForm.dpAsk.to + 'T12:00:00').toLocaleDateString()}, so {startedForm.dpAsk.reason}. Check the Greyfinch ledger and enter the exact date.
+                ⚠️ <strong>When was the down payment paid?</strong> We last saw {showStartedModal.name} un-started on {new Date(startedForm.dpAsk.from + 'T12:00:00').toLocaleDateString()} and today is {new Date(startedForm.dpAsk.to + 'T12:00:00').toLocaleDateString()}, so {startedForm.dpAsk.reason}. Check the patient's ledger in your practice management software and enter the exact date.
               </div>
             )}
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'16px',marginBottom:'16px'}}>
