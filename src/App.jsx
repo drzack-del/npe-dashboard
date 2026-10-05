@@ -2591,13 +2591,44 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     saveToastFor(saveOk, `📅 Follow-up pushed to ${new Date(safeDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`, 3000);
   };
 
+  // When could this patient's down payment have been paid? No earlier than the last
+  // day the app saw them un-started (their latest contact-log entry, else the NPE),
+  // and no later than today. If every date in that window lands in the same month and
+  // the same side of every bonus campaign's start/end, the exact day can't change any
+  // count, so "today" is safe. Otherwise staff must look the date up in Greyfinch —
+  // Noah Batista paid 8/31, was confirmed at his 9/1 bond, and moved to September.
+  const dpDateWindow = (patient) => {
+    const today = localToday();
+    const logDates = (patient.contact_log || []).map(e => e.date).filter(d => d && d <= today);
+    const from = [patient.npeDate, ...logDates].filter(Boolean).sort().pop() || today;
+    if (from >= today) return null;
+    const monthName = d => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'long' });
+    const months = [];
+    for (let d = new Date(from.slice(0, 7) + '-01T12:00:00'); d.toISOString().slice(0, 7) <= today.slice(0, 7); d.setMonth(d.getMonth() + 1)) {
+      months.push(monthName(d.toISOString().slice(0, 10)));
+    }
+    const campaign = popupBonuses.find(b =>
+      (b.tcFilter === 'All' || b.tcFilter === patient.tc) &&
+      ((b.startDate > from && b.startDate <= today) || (b.endDate >= from && b.endDate < today)));
+    if (months.length < 2 && !campaign) return null;
+    return {
+      from, to: today,
+      reason: months.length >= 2
+        ? `it could count in ${months.slice(0, -1).join(', ')} or ${months[months.length - 1]}`
+        : `the "${campaign.name}" bonus campaign ${campaign.startDate > from ? 'started' : 'ended'} in between`
+    };
+  };
+
   const handleMarkStarted = (patient) => {
     // A start is dated by the day the down payment was paid, not the bond date and
     // not the NPE date. Clicking Mark Started means the DP came in, so default to
-    // today for everyone; staff back-date it for a late entry. Defaulting SCH patients
-    // to their bond date pushed DP-paid-in-August starts into September (Aiden Bridgers).
+    // today; when the exact day could move the start between months or bonus
+    // campaigns (dpDateWindow), leave it blank so staff must enter the real date.
+    // Defaulting SCH patients to their bond date pushed Aiden Bridgers into September.
+    const dpAsk = dpDateWindow(patient);
     setStartedForm({
-      startDate: localToday(),
+      startDate: dpAsk ? '' : localToday(),
+      dpAsk,
       dp: patient.dp || '',
       contractAmount: patient.contractAmount || '',
       financedMonths: patient.financedMonths ?? '', treatmentMonths: patient.treatmentMonths ?? '',
@@ -13280,6 +13311,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 : `NPE was ${new Date(showStartedModal.npeDate + 'T12:00:00').toLocaleDateString()} — SDS if the down payment was paid that day`}
             </p>
 
+            {startedForm.dpAsk && (
+              <div style={{marginBottom:'16px',padding:'10px 12px',backgroundColor:'#fef3c7',border:'1px solid #fbbf24',borderRadius:'8px',fontSize:'13px',color:'#92400e'}}>
+                ⚠️ <strong>When was the down payment paid?</strong> We last saw {showStartedModal.name} un-started on {new Date(startedForm.dpAsk.from + 'T12:00:00').toLocaleDateString()} and today is {new Date(startedForm.dpAsk.to + 'T12:00:00').toLocaleDateString()}, so {startedForm.dpAsk.reason}. Check the Greyfinch ledger and enter the exact date.
+              </div>
+            )}
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'16px',marginBottom:'16px'}}>
               <div>
                 <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>
@@ -13289,7 +13325,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   max={localToday()}
                   value={startedForm.startDate}
                   onChange={e => setStartedForm({...startedForm, startDate: e.target.value})}
-                  style={{width:'100%',padding:'8px',border:'2px solid ' + (startedForm.startDate === showStartedModal.npeDate ? '#2563EB' : '#d1d5db'),borderRadius:'4px'}} />
+                  style={{width:'100%',padding:'8px',border:'2px solid ' + (!startedForm.startDate ? '#f59e0b' : startedForm.startDate === showStartedModal.npeDate ? '#2563EB' : '#d1d5db'),borderRadius:'4px'}} />
               </div>
               <div>
                 <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Down Payment *</label>
