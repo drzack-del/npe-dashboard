@@ -47,7 +47,10 @@ yes at the time. Supabase stays untouched and available as the way back for at l
 2. Lock Supabase writes (decision 4).
 3. Final copy: export over HTTPS (same script as Stage 3), empty the AWS tables, load, and require every
    table's fingerprint to match Supabase. If anything differs: stop, unlock Supabase, nothing else changed.
-4. Publish the switch (decision 2); Vercel builds in ~1 minute.
+4. Publish the switch (decision 2): the prepared commit on branch `cutover-switch` (one file,
+   `.env.production`; verified to build the AWS version with no test banner). Fast-forward `main` to
+   it after `aws-cognito-login` is on `main`, push; Vercel builds in ~1 minute. Same day: set the
+   login stack's `AppUrl` to `https://trycadenceiq.com/app` so invite emails point at the live app.
 5. Check on https://trycadenceiq.com/app as Dr. Miller: sign-in works, patient count and dashboard match,
    one harmless edit saves and shows in the database.
 6. Staff reload and sign in with the password and authenticator they set up in P9 (first sign-in on
