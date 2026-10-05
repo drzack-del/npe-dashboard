@@ -383,6 +383,12 @@ import { createClient } from '@supabase/supabase-js';
             const [signUpDone, setSignUpDone] = useState(false);
             const [forgotPwSent, setForgotPwSent] = useState(false);
 
+            // Browser tab: "CadenceIQ — <practice>" once signed in, plain "CadenceIQ" before.
+            // Follows the platform owner into whichever practice they are managing.
+            useEffect(() => {
+                document.title = currentUser?.practiceName ? `CadenceIQ — ${currentUser.practiceName}` : 'CadenceIQ';
+            }, [currentUser?.practiceName]);
+
             const fetchProfile = async (userId, userEmail) => {
                 if (!supabase) return { id: userId, name: userEmail, role: 'admin', email: userEmail };
                 const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000));
