@@ -3056,7 +3056,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // AWS only: asks the invite-user function to create the login for someone already on the
   // team list and email them a one-time password, or to resend it if they have not signed in
   // yet. Resolves to { status: 'invited' | 'resent' | 'exists' }. Throws on any error.
-  // With action 'reset-mfa' it instead resets a team member's two-step sign-in (lost phone).
+  // With action 'reset-login' it instead replaces a team member's login (lost phone): they get a
+  // fresh invite email and set a new password and authenticator.
   const sendInvite = async (email, action) => {
     const token = await (await cognitoAuth).accessToken();
     const res = await fetch(`${SUPABASE_URL}/functions/v1/invite-user`, {
@@ -11405,22 +11406,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                       <button
                                         disabled={inviteStatus[u.id] === 'sending'}
                                         onClick={async () => {
-                                          if (!window.confirm(`Reset two-step sign-in for ${u.name}?\n\nUse this if they lost or replaced their phone. They are signed out everywhere; their password stays the same, and at their next sign-in they scan a new code with their authenticator app.`)) return;
+                                          if (!window.confirm(`Reset login for ${u.name}?\n\nUse this if they lost or replaced their phone. They are signed out everywhere and their current password stops working. They get a new invite email and set up a new password and authenticator app, like the first time. Their patients and settings are not affected.`)) return;
                                           setInviteStatus(s => ({ ...s, [u.id]: 'sending' }));
                                           try {
-                                            await sendInvite(u.email, 'reset-mfa');
+                                            await sendInvite(u.email, 'reset-login');
                                             setInviteStatus(s => ({ ...s, [u.id]: 'sent' }));
                                             setTcMgmtMsgType('info');
-                                            setTcMgmtMsg(`Two-step sign-in reset for ${u.name}. At their next sign-in they will scan a new code with their authenticator app.`);
+                                            setTcMgmtMsg(`Login reset for ${u.name}. They have been emailed a new invite; they set up a new password and authenticator from it.`);
                                           } catch (e) {
                                             setInviteStatus(s => ({ ...s, [u.id]: 'error' }));
                                             setTcMgmtMsgType('error');
-                                            setTcMgmtMsg(`Couldn't reset two-step sign-in for ${u.name}: ${e.message}`);
+                                            setTcMgmtMsg(`Couldn't reset the login for ${u.name}: ${e.message}`);
                                           }
                                           setTimeout(() => setInviteStatus(s => { const n = {...s}; delete n[u.id]; return n; }), 3000);
                                         }}
                                         style={{fontSize:'11px',padding:'4px 10px',border:'1px solid #d1d5db',borderRadius:'5px',cursor:'pointer',fontWeight:'600',backgroundColor: inviteStatus[u.id]==='sent'?'#16a34a':inviteStatus[u.id]==='error'?'#dc2626':'white',color: inviteStatus[u.id] ? 'white' : '#374151',opacity:inviteStatus[u.id]==='sending'?0.5:1}}>
-                                        {inviteStatus[u.id]==='sent'?'✓ Reset':inviteStatus[u.id]==='error'?'✗ Error':inviteStatus[u.id]==='sending'?'Resetting…':'Reset two-step'}
+                                        {inviteStatus[u.id]==='sent'?'✓ Reset':inviteStatus[u.id]==='error'?'✗ Error':inviteStatus[u.id]==='sending'?'Resetting…':'Reset login'}
                                       </button>
                                     )}
                                     {USE_COGNITO && !u.auth_user_id && currentUser?.role === 'admin' && (
