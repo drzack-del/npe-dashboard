@@ -33,7 +33,7 @@ yes at the time. Supabase stays untouched and available as the way back for at l
 | # | Task | Who |
 |---|---|---|
 | P1 | Office network check: open the test address once from the office Wi-Fi | Dr. Miller |
-| P2 | Publish the switched-off AWS sign-in code to `main` (no visible change; re-run the 19 checks first) | Claude, his yes |
+| P2 | ✅ published 2026-10-04 (main = 6e302bd, Dr. Miller ran the push; Claude Code's auto-mode blocks Claude from pushing main). 19/19 checks with AWS off; live serves the same bundle that was checked (app-C693zE7X.js), normal Supabase sign-in, no banner, no errors | Claude, his yes |
 | P3 | ✅ built, not deployed: "Reset two-step" button on the Team tab (branch `aws-cognito-login`) + `reset-mfa` action in invite-user (30/30 local checks). Deploy with P4 (new Cognito permissions + code upload), then a real test on a fake account | Claude |
 | P4 | ✅ applied 2026-10-04 (invite emails stay on the test address until switch-over day; alert email confirmation pending) — Production settings: allow `https://trycadenceiq.com`, invite emails point to `https://trycadenceiq.com/app`, database always awake, 35-day backups, 2 copies of the data server, basic alerts (server errors, database health) emailed to him | Claude, his yes |
 | P5 | Deferred by Dr. Miller (2026-10-04): switch over without the Greyfinch key; Add NPE shows "Greyfinch is not connected yet" until the key is pasted into Secrets Manager (no redeploy needed) | Dr. Miller, after switch-over |
@@ -62,6 +62,13 @@ yes at the time. Supabase stays untouched and available as the way back for at l
 1. Revert the switch commit and publish (~1 minute); the live site talks to Supabase again.
 2. Copy anything entered on AWS since switch-over back to Supabase (P6), then unlock Supabase writes.
 3. Staff reload; they sign in with their Supabase passwords as before.
+
+## Rules that change at switch-over (update AGENTS.md the same day)
+- Database changes (migrations) run on the **AWS** database (Data API, as cadenceiq_owner, then
+  `NOTIFY pgrst, 'reload schema'`), not in the Supabase SQL Editor.
+- Unpublished branches at the time of writing: `wip/unsaved-work-2026-09-28` (security update +
+  office onboarding, 2 migrations not yet run anywhere: they must go on AWS once switched),
+  `claude/gracious-boyd-9ff7ee` (dead-code removal), `hero-queue-mockup` (superseded homepage draft).
 
 ## After switch-over
 - Watch errors and the budget daily for the first week.
