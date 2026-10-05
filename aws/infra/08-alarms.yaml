@@ -1,0 +1,143 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CadenceIQ alerts: email Dr. Miller when the data server fails or returns errors, when the
+  database is overloaded, or when a CadenceIQ function crashes. Holds no patient data; alerts carry
+  only metric names and numbers. Each alarm also emails when it clears.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: test
+    AllowedValues: [test, prod]
+  AlertEmail:
+    Type: String
+    Default: drzack@northtampabraces.com
+    Description: Receives the alerts (AWS first emails a confirmation link that must be clicked).
+  LoadBalancerDimension:
+    Type: String
+    Description: The API load balancer as CloudWatch names it (app/<name>/<id>).
+  DataLayerTargetGroupDimension:
+    Type: String
+    Description: The data layer's target group as CloudWatch names it (targetgroup/<name>/<id>).
+
+Resources:
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'cadenceiq-${Stage}-alerts'
+      DisplayName: CadenceIQ alerts
+      Subscription: [{ Protocol: email, Endpoint: !Ref AlertEmail }]
+
+  # The data server (PostgREST) is not answering its health check on any copy.
+  DataLayerDown:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'cadenceiq-${Stage}-data-server-down'
+      AlarmDescription: No healthy copy of the CadenceIQ data server for 2 minutes. The app cannot load or save data.
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Dimensions:
+        - { Name: LoadBalancer, Value: !Ref LoadBalancerDimension }
+        - { Name: TargetGroup, Value: !Ref DataLayerTargetGroupDimension }
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  # The data server answers with server errors (5xx). Function responses (for example Greyfinch's
+  # "not connected yet") are on other target groups and are not counted here.
+  DataLayerErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'cadenceiq-${Stage}-data-server-errors'
+      AlarmDescription: The CadenceIQ data server returned 5 or more server errors in 5 minutes.
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - { Name: LoadBalancer, Value: !Ref LoadBalancerDimension }
+        - { Name: TargetGroup, Value: !Ref DataLayerTargetGroupDimension }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  # The load balancer itself could not reach anything behind it (for example during an outage).
+  LoadBalancerErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'cadenceiq-${Stage}-load-balancer-errors'
+      AlarmDescription: The CadenceIQ API front door returned 5 or more of its own errors in 5 minutes.
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_ELB_5XX_Count
+      Dimensions: [{ Name: LoadBalancer, Value: !Ref LoadBalancerDimension }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  DatabaseBusy:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'cadenceiq-${Stage}-database-busy'
+      AlarmDescription: The CadenceIQ database has been above 80% CPU for 15 minutes.
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions: [{ Name: DBClusterIdentifier, Value: !Sub 'cadenceiq-${Stage}' }]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  GreyfinchFunctionCrashes:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'cadenceiq-${Stage}-greyfinch-function-crashes'
+      AlarmDescription: The greyfinch-sync function crashed (not a normal "not connected" or "staff only" answer).
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Sub 'cadenceiq-${Stage}-greyfinch-sync' }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  InviteFunctionCrashes:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'cadenceiq-${Stage}-invite-function-crashes'
+      AlarmDescription: The invite / reset-two-step function crashed.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Sub 'cadenceiq-${Stage}-invite-user' }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+Outputs:
+  AlertTopicArn:
+    Value: !Ref AlertTopic

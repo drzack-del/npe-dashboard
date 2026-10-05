@@ -17,6 +17,22 @@ Parameters:
     Type: Number
     Default: 1800
     Description: Idle time before the database pauses (and stops costing compute).
+  MinCapacity:
+    Type: Number
+    Default: 0
+    Description: >-
+      Lower limit in Aurora capacity units. 0 lets the database pause when idle (cheapest, but the
+      first request after a pause waits ~15-30 s); 0.5 keeps it awake (production).
+  BackupDays:
+    Type: Number
+    Default: 7
+    Description: Days of point-in-time restore (35 is the maximum).
+  ExportRoleArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Role from 07-data-import that lets the database write a copy-back export to the drop box.
+      Empty (the default); set it only for the duration of a copy-back.
   ImportRoleArn:
     Type: String
     Default: ''
@@ -26,6 +42,8 @@ Parameters:
 
 Conditions:
   HasImportRole: !Not [!Equals [!Ref ImportRoleArn, '']]
+  HasExportRole: !Not [!Equals [!Ref ExportRoleArn, '']]
+  HasAnyRole: !Or [!Condition HasImportRole, !Condition HasExportRole]
 
 Resources:
   DbSubnetGroup:
@@ -70,7 +88,7 @@ Resources:
       VpcSecurityGroupIds: [!Ref DbSecurityGroup]
       DBClusterParameterGroupName: !Ref DbClusterParameters
       StorageEncrypted: true
-      BackupRetentionPeriod: 7
+      BackupRetentionPeriod: !Ref BackupDays
       PreferredBackupWindow: '07:00-08:00'
       PreferredMaintenanceWindow: 'sun:08:30-sun:09:30'
       CopyTagsToSnapshot: true
@@ -78,11 +96,12 @@ Resources:
       EnableHttpEndpoint: true
       EnableCloudwatchLogsExports: [postgresql]
       AssociatedRoles: !If
-        - HasImportRole
-        - [{ RoleArn: !Ref ImportRoleArn, FeatureName: s3Import }]
+        - HasAnyRole
+        - - !If [HasImportRole, { RoleArn: !Ref ImportRoleArn, FeatureName: s3Import }, !Ref AWS::NoValue]
+          - !If [HasExportRole, { RoleArn: !Ref ExportRoleArn, FeatureName: s3Export }, !Ref AWS::NoValue]
         - !Ref AWS::NoValue
       ServerlessV2ScalingConfiguration:
-        MinCapacity: 0
+        MinCapacity: !Ref MinCapacity
         MaxCapacity: !Ref MaxCapacity
         SecondsUntilAutoPause: !Ref SecondsUntilAutoPause
       Tags: [{ Key: Name, Value: !Sub 'cadenceiq-${Stage}' }]

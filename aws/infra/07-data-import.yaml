@@ -75,8 +75,32 @@ Resources:
                 Action: [s3:GetObject, s3:ListBucket]
                 Resource: [!GetAtt ImportBucket.Arn, !Sub '${ImportBucket.Arn}/*']
 
+  # Lets the database cluster (and only it) write a copy-back export (switching back to Supabase)
+  # into the copy-back/ folder of this bucket, and nothing else.
+  DatabaseExportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'cadenceiq-${Stage}-db-export'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: rds.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'aws:SourceArn': !ImportValue { 'Fn::Sub': 'cadenceiq-${Stage}-db-cluster-arn' }
+      Policies:
+        - PolicyName: write-copy-back-folder
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:AbortMultipartUpload]
+                Resource: !Sub '${ImportBucket.Arn}/copy-back/*'
+
   # The private subnets have no internet route; this gives them a path to S3 that is limited
-  # by its policy to reading this one bucket.
+  # by its policy to reading this one bucket and writing its copy-back/ folder.
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -91,9 +115,15 @@ Resources:
             Principal: '*'
             Action: [s3:GetObject, s3:ListBucket]
             Resource: [!GetAtt ImportBucket.Arn, !Sub '${ImportBucket.Arn}/*']
+          - Effect: Allow
+            Principal: '*'
+            Action: [s3:PutObject, s3:AbortMultipartUpload]
+            Resource: !Sub '${ImportBucket.Arn}/copy-back/*'
 
 Outputs:
   ImportBucketName:
     Value: !Ref ImportBucket
   DatabaseImportRoleArn:
     Value: !GetAtt DatabaseImportRole.Arn
+  DatabaseExportRoleArn:
+    Value: !GetAtt DatabaseExportRole.Arn
