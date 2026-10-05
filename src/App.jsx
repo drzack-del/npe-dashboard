@@ -244,6 +244,25 @@ import GetStarted, { setupStepsDone } from './GetStarted.jsx';
           try { await supabase.from('settings').upsert({ key, value }); } catch {}
         };
 
+        // tc_users columns the app reads. bonus_rates is deliberately not here: the database
+        // only hands rates out through team_bonus_rates() (aws/infra/sql/08_roles.sql), which
+        // returns every rate to admins, consultants and "see all bonuses" managers and only
+        // their own to everyone else. Never select('*') on tc_users -- once
+        // 09_hide_bonus_rates.sql runs, that request is refused outright.
+        const TEAM_COLS = 'id, auth_user_id, name, email, role, practice_id, status, created_at, bonus_enabled, location_scope, location_label';
+
+        // A practice's team list with the bonus rates this viewer may see merged in as
+        // bonus_rates (null where they may not), so rate code downstream is unchanged.
+        const fetchTeam = async (practiceId) => {
+          const [{ data, error }, { data: rates }] = await Promise.all([
+            supabase.from('tc_users').select(TEAM_COLS).eq('practice_id', practiceId).order('created_at', { ascending: true }),
+            supabase.rpc('team_bonus_rates', { p_practice_id: practiceId }),
+          ]);
+          if (error || !data) return null;
+          const byId = new Map((rates || []).map(r => [r.id, r.bonus_rates]));
+          return data.map(u => ({ ...u, bonus_rates: byId.get(u.id) ?? null }));
+        };
+
         const generateId = () => crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); });
 
         const generateDemoPatients = () => {
@@ -396,7 +415,7 @@ import GetStarted, { setupStepsDone } from './GetStarted.jsx';
                 let data;
                 try {
                     const result = await Promise.race([
-                        supabase.from('tc_users').select('*').eq('email', userEmail).single(),
+                        supabase.from('tc_users').select(TEAM_COLS).eq('email', userEmail).single(),
                         timeout
                     ]);
                     data = result.data;
@@ -416,10 +435,17 @@ import GetStarted, { setupStepsDone } from './GetStarted.jsx';
                     const { data: practiceData } = await supabase.from('practices').select('name').eq('id', practiceId).maybeSingle();
                     if (practiceData?.name) practiceName = practiceData.name;
                 } catch {}
+                // Platform owner = named in the database (platform_owners, 08_roles.sql), never
+                // "an admin at Miller Ortho".
+                let isPlatformOwner = false;
+                try {
+                    const { data: po } = await supabase.rpc('is_superadmin');
+                    isPlatformOwner = po === true;
+                } catch {}
                 // A location-scoped login (see 20260818_location_scope.sql) sees one
                 // location and nothing else. null for everyone else, which is the
                 // unscoped behaviour every existing role already has.
-                return { id: userId, name: data.name, role: data.role, email: userEmail, practiceId, practiceName, bonusEnabled: data.bonus_enabled !== false, locationScope: data.location_scope || null, locationLabel: data.location_label || data.location_scope || null };
+                return { id: userId, name: data.name, role: data.role, isPlatformOwner, email: userEmail, practiceId, practiceName, bonusEnabled: data.bonus_enabled !== false, locationScope: data.location_scope || null, locationLabel: data.location_label || data.location_scope || null };
             };
 
             useEffect(() => {
@@ -1388,6 +1414,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
    */
   const dbUpsert = async (patient) => {
     if (!supabase || currentUser?.id === 'demo') return true;
+    // Consultants and location owners read only; the database would refuse the write and the
+    // offline queue would retry it forever, so it is never sent.
+    if (isViewOnly) { setSaveToast('👀 View-only login: changes are not saved'); setTimeout(() => setSaveToast(''), 3000); return true; }
     const row = buildPatientRow(patient);
 
     const backoffs = [400, 1200, 3000];
@@ -1511,9 +1540,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     };
   }, [currentUser?.practiceId, managedPracticeId]);
 
+  // Returns null when the patient was deleted, otherwise the reason (shown to the user, and the
+  // patient stays on screen). Only admins, and Office Managers with the "delete patients"
+  // switch, may delete; the database refuses everyone else (aws/infra/sql/08_roles.sql).
   const dbDelete = async (id) => {
-    if (!supabase || currentUser?.id === 'demo') return;
-    await supabase.from('patients').delete().eq('id', id).eq('practice_id', managedPracticeId || currentUser.practiceId);
+    if (!supabase || currentUser?.id === 'demo') return null;
+    const { data, error } = await supabase.from('patients').delete().eq('id', id).eq('practice_id', managedPracticeId || currentUser.practiceId).select('id');
+    if (error) return error.message || 'unknown error';
+    if (!data || data.length === 0) return 'you do not have permission to delete patients';
+    return null;
   };
 
   // ── Feedback / Support ───────────────────────────────────────────────
@@ -1553,6 +1588,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // ── Settings (goals, bonus rates, TC list) ───────────────────────────
   const dbSaveSettings = async (key, value) => {
+    if (isViewOnly) return;
     if (!supabase || currentUser?.id === 'demo') return;
     const { error } = await supabase.from('settings').upsert(
       { key, value, practice_id: managedPracticeId || currentUser.practiceId },
@@ -1607,13 +1643,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const loadTCUsers = async (overridePracticeId) => {
     if (!supabase) return;
     const pid = overridePracticeId || managedPracticeId || currentUser.practiceId;
-    const { data } = await supabase.from('tc_users').select('*').eq('practice_id', pid).order('created_at', { ascending: true });
+    const data = await fetchTeam(pid);
     if (data) setTcUsers(data);
   };
   useEffect(() => { if (currentUser?.role) loadTCUsers(); }, [currentUser, managedPracticeId]);
 
   useEffect(() => {
-    if (!supabase || currentUser?.practiceId !== 'miller-ortho' || currentUser?.role !== 'admin') return;
+    if (!supabase || !currentUser?.isPlatformOwner) return;
     const lastChecked = localStorage.getItem('feedbackLastChecked') || '1970-01-01T00:00:00.000Z';
     supabase.from('feedback').select('id', { count: 'exact' }).gt('created_at', lastChecked).then(({ count }) => {
       if (count > 0) { setNewFeedbackCount(count); setShowFeedbackAlert(true); }
@@ -1685,17 +1721,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // Superadmin: load all practices when viewing settings
   useEffect(() => {
-    if (currentUser?.practiceId === 'miller-ortho' && currentView === 'settings') {
+    if (currentUser?.isPlatformOwner && currentView === 'settings') {
       fetchAllPractices();
     }
-  }, [currentUser?.practiceId, currentView]);
+  }, [currentUser?.isPlatformOwner, currentView]);
 
   const switchToPractice = async (practice) => {
     setSwitchingToPractice(practice.id);
     try {
       const [locData, usersData, goalsData, popupData] = await Promise.all([
         supabase.from('settings').select('value').eq('key','locations').eq('practice_id', practice.id).maybeSingle(),
-        supabase.from('tc_users').select('*').eq('practice_id', practice.id).order('created_at', { ascending: true }),
+        fetchTeam(practice.id),
         supabase.from('settings').select('value').eq('key','goals').eq('practice_id', practice.id).maybeSingle(),
         supabase.from('settings').select('value').eq('key','popup-bonuses').eq('practice_id', practice.id).maybeSingle(),
       ]);
@@ -1705,7 +1741,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       setGoals(goalsData?.data?.value || defaultGoalsData);
       setPopupBonuses((popupData?.data?.value && Array.isArray(popupData.data.value)) ? popupData.data.value : []);
       setLocations(locData?.data?.value || []);
-      setTcUsers(usersData?.data || []);
+      setTcUsers(usersData || []);
       const owner = practice.admins[0];
       setSuperadminOriginalUser(currentUser);
       setManagedPracticeId(practice.id); // explicit override — used by all write operations
@@ -1728,7 +1764,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const orig = superadminOriginalUser;
     const [locData, usersData, goalsData, popupData] = await Promise.all([
       supabase.from('settings').select('value').eq('key','locations').eq('practice_id', orig.practiceId).maybeSingle(),
-      supabase.from('tc_users').select('*').eq('practice_id', orig.practiceId).order('created_at', { ascending: true }),
+      fetchTeam(orig.practiceId),
       supabase.from('settings').select('value').eq('key','goals').eq('practice_id', orig.practiceId).maybeSingle(),
       supabase.from('settings').select('value').eq('key','popup-bonuses').eq('practice_id', orig.practiceId).maybeSingle(),
     ]);
@@ -1737,7 +1773,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setGoals(goalsData?.data?.value || defaultGoalsData);
     setPopupBonuses((popupData?.data?.value && Array.isArray(popupData.data.value)) ? popupData.data.value : []);
     setLocations(locData?.data?.value || []);
-    setTcUsers(usersData?.data || []);
+    setTcUsers(usersData || []);
     setSuperadminOriginalUser(null);
     setManagedPracticeId(null);
     onUserChange(orig);
@@ -1771,6 +1807,31 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
   // Admins only: TCs, managers and location owners never see setup.
   const isPracticeAdmin = currentUser?.role === 'admin' && !currentUser?.locationScope && currentUser?.id !== 'demo';
+
+  // ── Roles (aws/infra/sql/08_roles.sql) ─────────────────────────────────
+  // Office Manager switches for this practice (practice_permissions). A practice without a
+  // row gets these defaults, the same as the database's.
+  const PERM_DEFAULTS = { manager_delete_patients: true, manager_see_all_bonuses: true, manager_edit_goals_settings: false, manager_manage_tcs: true };
+  const [practicePerms, setPracticePerms] = useState(PERM_DEFAULTS);
+  const loadPracticePerms = async () => {
+    if (!supabase || !currentUser?.practiceId || currentUser.id === 'demo') return;
+    const { data } = await supabase.from('practice_permissions')
+      .select('manager_delete_patients, manager_see_all_bonuses, manager_edit_goals_settings, manager_manage_tcs')
+      .eq('practice_id', managedPracticeId || currentUser.practiceId).maybeSingle();
+    setPracticePerms({ ...PERM_DEFAULTS, ...(data || {}) });
+  };
+  useEffect(() => { loadPracticePerms(); }, [currentUser?.practiceId, managedPracticeId]);
+  // What this viewer may do. The database enforces the same rules; these only decide which
+  // buttons show. Consultants and location owners read only.
+  const myRole = currentUser?.role;
+  const isViewOnly = !!currentUser?.locationScope || myRole === 'consultant';
+  const canDeletePatients = !isViewOnly && (myRole === 'admin' || (myRole === 'manager' && practicePerms.manager_delete_patients));
+  const canEditSetup = !isViewOnly && (myRole === 'admin' || (myRole === 'manager' && practicePerms.manager_edit_goals_settings));
+  const canManageTCs = !isViewOnly && (myRole === 'admin' || (myRole === 'manager' && practicePerms.manager_manage_tcs));
+  const seesAllBonuses = myRole === 'admin' || myRole === 'consultant' || (myRole === 'manager' && practicePerms.manager_see_all_bonuses);
+  // Team rows this viewer may invite, reset, (de)activate or remove: anyone for an admin,
+  // TCs only for an Office Manager with the "manage TCs" switch.
+  const mayManageMember = (u) => myRole === 'admin' || (canManageTCs && u.role === 'tc');
   // Setup starts only for a brand-new practice (no setup row and no patients), so practices
   // that were running before this page existed never see it. A failed patient load never
   // counts as "no patients", and a platform owner managing another practice never starts it.
@@ -3579,7 +3640,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           {/* Practice / Client info */}
           <div>
             <p style={{fontSize:'15px',fontWeight:'700',color:'white',margin:0}}>{currentUser?.locationLabel || currentUser?.practiceName || 'Practice'}</p>
-            <p style={{fontSize:'11px',color:'rgba(255,255,255,0.45)',margin:'2px 0 0 0',letterSpacing:'0.03em'}}>{currentUser?.locationScope ? 'Owner Portal' : currentUser?.role === 'tc' ? 'Treatment Coordinator Portal' : 'Practice Owner Portal'}</p>
+            <p style={{fontSize:'11px',color:'rgba(255,255,255,0.45)',margin:'2px 0 0 0',letterSpacing:'0.03em'}}>{currentUser?.locationScope ? 'Owner Portal' : currentUser?.role === 'tc' ? 'Treatment Coordinator Portal' : currentUser?.role === 'consultant' ? 'Consultant Portal' : currentUser?.role === 'manager' ? 'Office Manager Portal' : 'Practice Owner Portal'}</p>
           </div>
 
           {/* Save-failure warning chip — sits in the empty header space */}
@@ -3641,7 +3702,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             )}
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:'13px',fontWeight:'700',color:'white'}}>{currentUser?.name}</div>
-              <div style={{fontSize:'10px',color:'rgba(255,255,255,0.4)',textTransform:'uppercase',letterSpacing:'0.06em',marginTop:'1px'}}>{currentUser?.locationScope ? `${currentUser.locationLabel} Owner` : currentUser?.role === 'admin' ? 'Practice Owner' : 'Treatment Coordinator'}</div>
+              <div style={{fontSize:'10px',color:'rgba(255,255,255,0.4)',textTransform:'uppercase',letterSpacing:'0.06em',marginTop:'1px'}}>{currentUser?.locationScope ? `${currentUser.locationLabel} Owner` : currentUser?.role === 'admin' ? 'Practice Owner' : currentUser?.role === 'consultant' ? 'Consultant' : currentUser?.role === 'manager' ? 'Office Manager' : 'Treatment Coordinator'}</div>
             </div>
             <button onClick={onSignOut}
               style={{padding:'7px 14px',backgroundColor:'rgba(255,255,255,0.1)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:'7px',color:'rgba(255,255,255,0.7)',fontSize:'12px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap'}}>
@@ -3660,10 +3721,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             // which for this role is the account panel only, so they can change
             // their own password. Everything else is practice-wide or data entry.
             ? ['dashboard', 'patients', 'settings']
+            // A consultant reads every number of one practice and changes nothing: no
+            // data-entry tabs, and Settings is their account panel only.
+            : currentUser?.role === 'consultant'
+            ? ['dashboard', 'patients', 'bonus', 'ontime', 'metrics', 'settings']
             : currentUser?.role === 'tc'
             ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
             : currentUser?.role === 'manager'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...((currentUser?.bonusEnabled || seesAllBonuses) ? ['bonus'] : []), 'ontime', 'today', 'settings']
             : [...(showGetStarted ? ['getstarted'] : []), 'dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'ontime', 'today', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
@@ -4465,7 +4530,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             //
             // Revenue is owner-level information: TCs and managers share this layout
             // (see the bonus card below), so the whole column is admin-only.
-            const showProduction = currentUser?.role === 'admin' || isLocationOwner;
+            const showProduction = currentUser?.role === 'admin' || currentUser?.role === 'consultant' || isLocationOwner;
             const feeOf = p => parseFloat((p.contractAmount || '').toString().replace(/[^0-9.]/g, '')) || 0;
             const prodStartPts   = selStartPts.filter(p => isSDS(p) || p.ST);
             const prodFees       = prodStartPts.map(p => ({ p, fee: feeOf(p) }));
@@ -5007,7 +5072,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   // managers and TCs see only their own figure — and only when their own
                   // bonus display is enabled. Mirrors how the Bonus Audit view already
                   // scopes itself, so neither route exposes a colleague's pay.
-                  const isAdmin = currentUser?.role === 'admin';
+                  // Everyone's bonus for admins, consultants and "see all bonuses" managers;
+                  // otherwise only the viewer's own (the only rates they are given).
+                  const isAdmin = seesAllBonuses;
                   const bonusPerTC = (isAdmin || currentUser?.bonusEnabled)
                     ? perTCNew.filter(tc => {
                         const u = tcUsers.find(u => u.name === tc.name);
@@ -5925,7 +5992,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             )}
 
             {/* ── Bonus mini-card (admin/manager) — TCs get it as a metric card instead ── */}
-            {showBonus && currentUser?.role !== 'tc' && (
+            {showBonus && seesAllBonuses && (
             <div style={{backgroundColor:'white',borderRadius:'10px',padding:'18px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'16px'}}>
               <div>
                 <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'2px'}}>
@@ -7998,7 +8065,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         <span style={{fontSize:'13px',color:'#374151',fontWeight:'500'}}>📅 Next Touch:</span>
                         <input
                           type="date"
-                          disabled={!!currentUser?.locationScope}
+                          disabled={isViewOnly}
                           value={patient.nextTouchDate === '__MAX__' ? '' : (patient.nextTouchDate || '')}
                           onChange={async (e) => {
                             const val = e.target.value;
@@ -8009,7 +8076,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             await dbUpsert({...patient, nextTouchDate: skipped});
                           }}
                           style={{padding:'4px 8px',border:'1px solid #d1d5db',borderRadius:'4px',fontSize:'13px',
-                            backgroundColor: currentUser?.locationScope ? '#f3f4f6' : 'white', color: currentUser?.locationScope ? '#9ca3af' : 'inherit'}}
+                            backgroundColor: isViewOnly ? '#f3f4f6' : 'white', color: isViewOnly ? '#9ca3af' : 'inherit'}}
                         />
                         {patient.contactAttempts > 0 && (
                           <span style={{fontSize:'12px',color:'#6b7280'}}>({patient.contactAttempts} contact{patient.contactAttempts > 1 ? 's' : ''} logged)</span>
@@ -8024,7 +8091,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         <span style={{fontSize:'13px',color:'#1e40af',fontWeight:'500'}}>🦷 Bond Date:</span>
                         <input
                           type="date"
-                          disabled={!!currentUser?.locationScope}
+                          disabled={isViewOnly}
                           value={patient.bondDate || ''}
                           onChange={async (e) => {
                             const val = e.target.value;
@@ -8035,7 +8102,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             await dbUpsert(updatedPat);
                           }}
                           style={{padding:'4px 8px',border:'1px solid #bfdbfe',borderRadius:'4px',fontSize:'13px',
-                            backgroundColor: currentUser?.locationScope ? '#f3f4f6' : '#eff6ff', color: currentUser?.locationScope ? '#9ca3af' : 'inherit'}}
+                            backgroundColor: isViewOnly ? '#f3f4f6' : '#eff6ff', color: isViewOnly ? '#9ca3af' : 'inherit'}}
                         />
                         {patient.bondDate && <span style={{fontSize:'12px',color:'#6b7280'}}>Check-in: {getBondCheckDate(patient) || '—'}</span>}
                       </div>
@@ -8044,7 +8111,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   {/* A location owner's login is read-only (RLS enforces this too —
                       patients_update/delete require an unscoped user), so the whole
                       write-action column is gone rather than disabled piecemeal. */}
-                  {!currentUser?.locationScope && (
+                  {!isViewOnly && (
                   <div style={{display:'flex',gap:'8px',flexDirection:'column'}}>
                     {(patient.PEN || patient.SCH || patient.MP) && (
                       <button
@@ -8071,17 +8138,20 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     >
                       ✏️ Edit
                     </button>
+                    {canDeletePatients && (
                     <button
                       onClick={async () => {
                         if (confirm('Delete ' + patient.name + '?')) {
+                          const err = await dbDelete(patient.id);
+                          if (err) { alert(`Couldn't delete ${patient.name}: ${err}`); return; }
                           setPatients(prev => prev.filter(p => p.id !== patient.id));
-                          await dbDelete(patient.id);
                         }
                       }}
                       style={{padding:'8px 16px',backgroundColor:'#ef4444',color:'white',border:'none',borderRadius:'6px',cursor:'pointer',fontSize:'14px',fontWeight:'500',whiteSpace:'nowrap'}}
                     >
                       🗑️ Delete
                     </button>
+                    )}
                   </div>
                   )}
                 </div>
@@ -8790,8 +8860,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         })()}
 
         {/* BONUS AUDIT */}
-        {currentView === 'bonus' && ((currentUser?.role !== 'tc' && currentUser?.role !== 'manager') || currentUser?.bonusEnabled) && (() => {
-          const bonusTCFilter = (currentUser?.role === 'tc' || currentUser?.role === 'manager') ? currentUser.name : (bonusTCSelect !== 'All' ? bonusTCSelect : null);
+        {currentView === 'bonus' && ((currentUser?.role !== 'tc' && currentUser?.role !== 'manager') || currentUser?.bonusEnabled || seesAllBonuses) && (() => {
+          // TCs, and Office Managers without "see all bonuses", see only their own. The
+          // database only hands them their own rates anyway (team_bonus_rates).
+          const bonusTCFilter = !seesAllBonuses ? currentUser.name : (bonusTCSelect !== 'All' ? bonusTCSelect : null);
           // Practice-goal tier payouts for the selected month, one per user with
           // tier amounts configured (respects the per-user bonus on/off switch)
           const monthGoalBonuses = (bonusTCFilter ? [bonusTCFilter] : bonusEligibleNames)
@@ -8806,7 +8878,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   {bonusTCFilter ? `${bonusTCFilter}'s Bonus` : 'TC Bonus Audit Trail'}
                   <HelpTip id="bonus-audit" tip={"Bonuses are calculated automatically from your patient activity.\n\nBonus types:\n• SDS = Same-day start (base amount per patient)\n• R+ = Retainer add-on\n• W+ = Whitening add-on\n• PIF = Paid in full add-on\n• DB/RETS = Finishing visit (R+ and W+ bonuses apply)\n\nBonus rates are set by your practice owner in Settings."} />
                 </h2>
-                {bonusTCFilter && <div style={{fontSize:'13px',color:'#6b7280',marginTop:'3px'}}>Your personal bonus summary — only you can see this</div>}
+                {!seesAllBonuses && <div style={{fontSize:'13px',color:'#6b7280',marginTop:'3px'}}>Your personal bonus summary — only you can see this</div>}
               </div>
               <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
                 <label style={{fontSize:'14px',fontWeight:'500'}}>Month:</label>
@@ -8814,7 +8886,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   value={bonusMonthFilter}
                   onChange={e => setBonusMonthFilter(e.target.value)}
                   style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px'}} />
-                {currentUser?.role === 'admin' && bonusEligibleNames.length > 1 && (
+                {seesAllBonuses && bonusEligibleNames.length > 1 && (
                   <select value={bonusTCSelect} onChange={e => setBonusTCSelect(e.target.value)}
                     style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',color:'#374151',backgroundColor:'white'}}>
                     <option value="All">Everyone</option>
@@ -9208,10 +9280,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     onClick={() => {
                       const started = patients.filter(p => isSDS(p) || p.ST);
                       const rows = [['Start Date','Patient','TC','Type','Amount']];
+                      // Same people as on screen: a TC (or a manager without "see all
+                      // bonuses") exports only their own rows.
                       patients.forEach(p => {
                         const sd = effectiveStartDate(p);
                         if (!sd || !sd.startsWith(bonusMonthFilter)) return;
-                        const replacing = getReplacingCampaign(p, null);
+                        if (bonusTCFilter && p.tc !== bonusTCFilter) return;
+                        const replacing = getReplacingCampaign(p, bonusTCFilter || null);
                         if (!replacing) {
                           const pr = ratesForTC(p.tc);
                           if (isSDS(p)) rows.push([sd, p.name, p.tc||'', 'SDS', pr.sds]);
@@ -9219,7 +9294,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) rows.push([sd, p.name, p.tc||'', 'Whitening', pr.white]);
                           if (started.find(s=>s.id===p.id) && p.PIF) rows.push([sd, p.name, p.tc||'', 'PIF', pr.pif]);
                         } else {
-                          if (isSDS(p) || p.ST) rows.push([sd, p.name, p.tc||'', `Goal Bonus (${replacing.name})`, popupBonusEarnings(p, replacing, null)]);
+                          if (isSDS(p) || p.ST) rows.push([sd, p.name, p.tc||'', `Goal Bonus (${replacing.name})`, popupBonusEarnings(p, replacing, bonusTCFilter || null)]);
                         }
                       });
                       monthGoalBonuses.forEach(g => {
@@ -10253,7 +10328,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </button>
                     ))}
                   </div>
-                  <button onClick={() => {
+                  {!isViewOnly && <button onClick={() => {
                     const dash = getDashboardMonthData(metricsYear, new Date().getMonth()+1);
                     const curGoal = getGoal(new Date().getMonth()+1);
                     setMetricsForm({ year: metricsYear, month: new Date().getMonth()+1, net_production: '', collections: '', npe_scheduled: '',
@@ -10264,7 +10339,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     setShowMetricsEntry(true);
                   }} style={{padding:'9px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
                     + Enter Monthly Data
-                  </button>
+                  </button>}
                   <button onClick={exportCSV}
                     style={{padding:'9px 12px',backgroundColor:'#f9fafb',border:'1px solid #e5e7eb',borderRadius:'8px',fontSize:'12px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>
                     Export CSV
@@ -10321,7 +10396,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </button>
                   </div>
                   {/* Quick Adjust Goals bar */}
-                  {yearGoals.length > 0 && (
+                  {yearGoals.length > 0 && !isViewOnly && (
                     <div style={{display:'flex',alignItems:'center',gap:'8px',padding:'8px 14px',borderBottom:'1px solid #f3f4f6',backgroundColor:'#fafafa',flexWrap:'wrap'}}>
                       <span style={{fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em'}}>Adjust All Goals:</span>
                       {[-10, -5, 5, 10].map(pct => (
@@ -10401,7 +10476,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   if (g?.production_goal) return (
                                     <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
-                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:String(g.production_goal)})}>
+                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:String(g.production_goal)})}>
                                       <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{fmt$(g.production_goal)}</strong>
                                       {m ? <span style={{fontWeight:'700',color:vsColor(m.net_production,g.production_goal)}}>{Math.round(m.net_production/g.production_goal*100)}%</span> : null}
                                       <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
@@ -10410,7 +10485,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   return (
                                     <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
-                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:''})}>
+                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:''})}>
                                       ＋ Set goal
                                     </div>
                                   );
@@ -10437,7 +10512,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   if (g?.npe_goal) return (
                                     <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
-                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:String(g.npe_goal)})}>
+                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:String(g.npe_goal)})}>
                                       <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{g.npe_goal}</strong>
                                       {m?.npe_showed!=null ? <span style={{fontWeight:'700',color:vsColor(m.npe_showed,g.npe_goal)}}>{Math.round(m.npe_showed/g.npe_goal*100)}%</span> : null}
                                       <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
@@ -10446,7 +10521,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   return (
                                     <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
-                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:''})}>
+                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:''})}>
                                       ＋ Set goal
                                     </div>
                                   );
@@ -10474,7 +10549,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   if (g?.start_goal) return (
                                     <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
-                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:String(g.start_goal)})}>
+                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:String(g.start_goal)})}>
                                       <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{g.start_goal}</strong>
                                       {m?.starts!=null ? <span style={{fontWeight:'700',color:vsColor(m.starts,g.start_goal)}}>{Math.round(m.starts/g.start_goal*100)}%</span> : null}
                                       <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
@@ -10483,7 +10558,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   return (
                                     <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
-                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:''})}>
+                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:''})}>
                                       ＋ Set goal
                                     </div>
                                   );
@@ -10506,7 +10581,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   if (g?.conversion_goal) return (
                                     <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
-                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:String(Math.round(g.conversion_goal*100))})}>
+                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:String(Math.round(g.conversion_goal*100))})}>
                                       <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{fmtPct(g.conversion_goal)}</strong>
                                       {m?.conversion_rate!=null ? <span style={{fontWeight:'700',color:vsColor(m.conversion_rate,g.conversion_goal)}}>{Math.round(m.conversion_rate/g.conversion_goal*100)}%</span> : null}
                                       <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
@@ -10515,7 +10590,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   return (
                                     <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
-                                      onClick={() => setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:''})}>
+                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:''})}>
                                       ＋ Set goal
                                     </div>
                                   );
@@ -10542,7 +10617,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 })()}
                               </td>
                               <td style={{padding:'10px 13px'}}>
-                                <button onClick={() => {
+                                {!isViewOnly && <button onClick={() => {
                                   const dash = getDashboardMonthData(metricsYear, mo);
                                   const rowGoal = yearGoals.find(g => g.month === mo);
                                   setMetricsForm({
@@ -10561,7 +10636,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   setShowMetricsEntry(true);
                                 }} style={{padding:'5px 10px',border:'1px solid #e5e7eb',borderRadius:'6px',backgroundColor:'white',fontSize:'12px',cursor:'pointer',color:'#374151',whiteSpace:'nowrap'}}>
                                   {m?'Edit':'Enter'}
-                                </button>
+                                </button>}
                               </td>
                             </tr>
                           );
@@ -10718,10 +10793,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',margin:0}}>Smart Goal Builder</h3>
                     <div style={{fontSize:'12px',color:'#9ca3af',marginTop:'2px'}}>Trend-based projections using your historical data with seasonal patterns</div>
                   </div>
-                  <button onClick={() => setShowAIGoals(!showAIGoals)}
+                  {!isViewOnly && <button onClick={() => setShowAIGoals(!showAIGoals)}
                     style={{padding:'9px 16px',backgroundColor:showAIGoals?'#f3f4f6':'#202020',color:showAIGoals?'#374151':'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
                     {showAIGoals ? 'Hide' : 'Build Goal Projections'}
-                  </button>
+                  </button>}
                 </div>
 
                 {showAIGoals && aiSuggestions && (
@@ -11048,7 +11123,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         {/* SETTINGS */}
         {currentView === 'settings' && (
           <div style={{maxWidth:'1200px'}}>
-            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>{currentUser?.locationScope ? 'My Account' : currentUser?.role === 'tc' ? 'My Account' : currentUser?.role === 'manager' ? 'Team & Account' : 'Goals & Settings'}</h2>
+            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>{currentUser?.locationScope ? 'My Account' : (currentUser?.role === 'tc' || currentUser?.role === 'consultant') ? 'My Account' : currentUser?.role === 'manager' ? 'Team & Account' : 'Goals & Settings'}</h2>
 
             {/* ── Change My Password — visible to all users ── */}
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',marginBottom:'24px',maxWidth:'420px'}}>
@@ -11107,8 +11182,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
             </div>
 
-            {/* ── SUPER-ADMIN: Add New Practice ── only visible to miller-ortho admin */}
-            {currentUser?.practiceId === 'miller-ortho' && currentUser?.role === 'admin' && (
+            {/* ── PLATFORM OWNER: Add New Practice ── only visible to the platform owner (platform_owners) */}
+            {currentUser?.isPlatformOwner && (
               <div style={{backgroundColor:'#0f172a',border:'2px solid #334155',padding:'24px',borderRadius:'10px',marginBottom:'24px'}}>
                 <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px',marginBottom:'20px',flexWrap:'wrap'}}>
                   <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
@@ -11325,7 +11400,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 this one card. A location owner gets none of it -- it's practice-wide
                 configuration and the staff directory, neither of which is "their
                 account" -- so the gate excludes locationScope alongside 'tc'. */}
-            {currentUser?.role !== 'tc' && !currentUser?.locationScope && (<><div style={{backgroundColor:'white',border:'1px solid #e5e7eb',padding:'24px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.06)',marginBottom:'24px'}}>
+            {currentUser?.role !== 'tc' && !isViewOnly && (<><div style={{backgroundColor:'white',border:'1px solid #e5e7eb',padding:'24px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.06)',marginBottom:'24px'}}>
               <h3 style={{fontSize:'18px',fontWeight:'800',color:'#202020',marginBottom:'20px',paddingBottom:'14px',borderBottom:'2px solid #f3f4f6'}}>⚙️ Practice Settings</h3>
                 <div style={{display:'flex',flexDirection:'column',gap:'20px'}}>
                   {adminMsg && (
@@ -11334,8 +11409,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </div>
                   )}
 
-                  {/* Feature Toggles + Recipients + Locations — full admins only (Office Managers skip to Team) */}
-                  {currentUser?.role === 'admin' && (<>
+                  {/* Feature Toggles + Recipients + Locations — admins, and Office Managers with "edit goals and settings" */}
+                  {canEditSetup && (<>
                   {/* Feature Toggles */}
                   <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'15px',fontWeight:'700',marginBottom:'4px',color:'#202020'}}>🔧 Features</h4>
@@ -11523,24 +11598,26 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   // offers tc/manager/admin and doesn't clear location_scope, so routing one
                                   // through it would silently leave a 'tc' user filtered to one location.
                                   <span style={{padding:'2px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',
-                                    backgroundColor: u.role==='admin'?'#fef3c7':u.role==='manager'?'#f3e8ff':u.role==='location_owner'?'#ecfdf5':'#eff6ff',
-                                    color: u.role==='admin'?'#92400e':u.role==='manager'?'#6b21a8':u.role==='location_owner'?'#047857':'#1e40af'}}>
-                                    {u.role === 'admin' ? 'Admin' : u.role === 'manager' ? 'Office Mgr' : u.role === 'location_owner' ? `Location Owner · ${u.location_label || u.location_scope}` : 'TC'}
+                                    backgroundColor: u.role==='admin'?'#fef3c7':u.role==='manager'?'#f3e8ff':u.role==='location_owner'?'#ecfdf5':u.role==='consultant'?'#f1f5f9':'#eff6ff',
+                                    color: u.role==='admin'?'#92400e':u.role==='manager'?'#6b21a8':u.role==='location_owner'?'#047857':u.role==='consultant'?'#334155':'#1e40af'}}>
+                                    {u.role === 'admin' ? 'Admin' : u.role === 'manager' ? 'Office Mgr' : u.role === 'location_owner' ? `Location Owner · ${u.location_label || u.location_scope}` : u.role === 'consultant' ? 'Consultant' : 'TC'}
                                   </span>
                                 ) : (
                                   <select
-                                    value={u.role === 'admin' ? 'admin' : u.role === 'manager' ? 'manager' : 'tc'}
+                                    value={u.role === 'admin' ? 'admin' : u.role === 'manager' ? 'manager' : u.role === 'consultant' ? 'consultant' : 'tc'}
                                     onChange={async (e) => {
                                       const newRole = e.target.value;
                                       if (newRole === u.role) return;
-                                      const label = newRole === 'admin' ? 'a full Admin' : newRole === 'manager' ? 'an Office Manager' : 'a TC';
-                                      const msg = newRole === 'admin'
+                                      const label = newRole === 'admin' ? 'a full Admin' : newRole === 'manager' ? 'an Office Manager' : newRole === 'consultant' ? 'a Consultant' : 'a TC';
+                                      const msg = newRole === 'consultant'
+                                        ? `Make ${u.name} a Consultant? They'll see every number for this practice (production, conversion, every bonus) but can't change anything.`
+                                        : newRole === 'admin'
                                         ? `Make ${u.name} a full Admin? They'll gain complete access — practice metrics, bonuses, pay, and every setting. Patients already assigned to ${u.name} stay assigned until you reassign them.`
                                         : newRole === 'manager'
                                         ? `Make ${u.name} an Office Manager? They'll see the dashboard, follow-ups, on-time performance, and can manage TC logins — but NOT practice metrics, the bonus tabs, or pay settings. They're removed from the assignable-TC list; reassign any patients still under them.`
                                         : `Change ${u.name} to a TC? They'll appear as an assignable TC and lose admin/manager access.`;
                                       if (!window.confirm(msg)) return;
-                                      const { data: roleUpdated, error: roleErr } = await supabase.from('tc_users').update({ role: newRole }).eq('id', u.id).select();
+                                      const { data: roleUpdated, error: roleErr } = await supabase.from('tc_users').update({ role: newRole }).eq('id', u.id).select(TEAM_COLS);
                                       if (roleErr) {
                                         setTcMgmtMsgType('error');
                                         setTcMgmtMsg(`Couldn't change ${u.name}'s role — the database rejected it: ${roleErr.message}. If that mentions "enum" or "check constraint", the role column doesn't allow "manager" yet.`);
@@ -11557,9 +11634,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                       setTimeout(() => setTcMgmtMsg(''), 4000);
                                     }}
                                     style={{padding:'3px 8px',borderRadius:'10px',fontSize:'11px',fontWeight:'700',border:'1px solid #e5e7eb',cursor:'pointer',
-                                      backgroundColor: u.role==='admin'?'#fef3c7':u.role==='manager'?'#f3e8ff':'#eff6ff',color: u.role==='admin'?'#92400e':u.role==='manager'?'#6b21a8':'#1e40af'}}>
+                                      backgroundColor: u.role==='admin'?'#fef3c7':u.role==='manager'?'#f3e8ff':u.role==='consultant'?'#f1f5f9':'#eff6ff',color: u.role==='admin'?'#92400e':u.role==='manager'?'#6b21a8':u.role==='consultant'?'#334155':'#1e40af'}}>
                                     <option value="tc">TC</option>
                                     <option value="manager">Office Manager</option>
+                                    <option value="consultant">Consultant</option>
                                     <option value="admin">Admin</option>
                                   </select>
                                 )}
@@ -11576,7 +11654,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   <label style={{display:'flex',alignItems:'center',gap:'6px',cursor:'pointer',userSelect:'none'}}>
                                     {(() => { const bOn = u.bonus_enabled !== false; return (<>
                                     <div style={{position:'relative',display:'inline-block',width:'34px',height:'18px'}} onClick={async () => {
-                                      const { data: rows, error } = await supabase.from('tc_users').update({ bonus_enabled: !bOn }).eq('id', u.id).select();
+                                      const { data: rows, error } = await supabase.from('tc_users').update({ bonus_enabled: !bOn }).eq('id', u.id).select(TEAM_COLS);
                                       if (error || !rows || rows.length === 0) {
                                         setTcMgmtMsgType('error');
                                         setTcMgmtMsg(`Couldn't change ${u.name}'s bonus access${error ? ': ' + error.message : ' — permissions (RLS) blocked the write. Nothing was saved.'}`);
@@ -11597,7 +11675,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               <td style={{padding:'10px'}}>
                                 {u.email !== currentUser?.email && (
                                   <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
-                                    {USE_COGNITO && u.auth_user_id && currentUser?.role === 'admin' && (
+                                    {USE_COGNITO && u.auth_user_id && mayManageMember(u) && (
                                       <button
                                         disabled={inviteStatus[u.id] === 'sending'}
                                         onClick={async () => {
@@ -11619,7 +11697,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                         {inviteStatus[u.id]==='sent'?'✓ Reset':inviteStatus[u.id]==='error'?'✗ Error':inviteStatus[u.id]==='sending'?'Resetting…':'Reset login'}
                                       </button>
                                     )}
-                                    {USE_COGNITO && !u.auth_user_id && currentUser?.role === 'admin' && (
+                                    {USE_COGNITO && !u.auth_user_id && mayManageMember(u) && (
                                       <button
                                         disabled={inviteStatus[u.id] === 'sending'}
                                         onClick={async () => {
@@ -11679,15 +11757,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                         {tcSetPwStatus[u.id]==='saved'?'✓ Saved':tcSetPwStatus[u.id]==='error'?'✗ Error':tcSetPwStatus[u.id]==='saving'?'Saving…':'Set Password'}
                                       </button>
                                     </>)}
-                                    {(currentUser?.role === 'admin' || u.role !== 'admin') && (
+                                    {mayManageMember(u) && (
                                     <button onClick={async () => {
                                       const newStatus = u.status === 'active' ? 'inactive' : 'active';
-                                      const { data: rows, error } = await supabase.from('tc_users').update({ status: newStatus }).eq('id', u.id).select();
+                                      const { data: rows, error } = await supabase.from('tc_users').update({ status: newStatus }).eq('id', u.id).select(TEAM_COLS);
                                       if (error || !rows || rows.length === 0) {
                                         setTcMgmtMsgType('error');
                                         setTcMgmtMsg(error
                                           ? `Couldn't update ${u.name}: ${error.message}`
-                                          : `Couldn't update ${u.name} — the write touched 0 rows, which means permissions (RLS) blocked it. Only a full Admin can change team members. Nothing was saved.`);
+                                          : `Couldn't update ${u.name} — the write touched 0 rows, which means permissions (RLS) blocked it. Only an admin, or an Office Manager allowed to manage TCs, can change team members. Nothing was saved.`);
                                         return;
                                       }
                                       await loadTCUsers();
@@ -11698,17 +11776,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                       {u.status === 'active' ? 'Deactivate' : 'Reactivate'}
                                     </button>
                                     )}
-                                    {currentUser?.role === 'admin' && (
+                                    {mayManageMember(u) && (
                                     <button onClick={async () => {
                                       if (!window.confirm(USE_COGNITO
                                         ? `Remove ${u.name} from the team?\n\nThis deletes their team row so they can no longer sign in to this practice. If you add ${u.email} again later, their existing password and authenticator app still work.`
                                         : `Remove ${u.name} from the team?\n\nThis deletes their team row so they can no longer sign in to this practice. Their login itself is NOT deleted — if you add ${u.email} again later, the ORIGINAL password still applies and any new password you type on the add form will be ignored. Use Set Password instead in that case.`)) return;
-                                      const { data: rows, error } = await supabase.from('tc_users').delete().eq('id', u.id).select();
+                                      const { data: rows, error } = await supabase.from('tc_users').delete().eq('id', u.id).select(TEAM_COLS);
                                       if (error || !rows || rows.length === 0) {
                                         setTcMgmtMsgType('error');
                                         setTcMgmtMsg(error
                                           ? `Couldn't delete ${u.name}: ${error.message}`
-                                          : `Couldn't delete ${u.name} — the write touched 0 rows, which means permissions (RLS) blocked it. Only a full Admin can remove team members. Nothing was saved.`);
+                                          : `Couldn't delete ${u.name} — the write touched 0 rows, which means permissions (RLS) blocked it. Only an admin, or an Office Manager allowed to manage TCs, can remove team members. Nothing was saved.`);
                                         return;
                                       }
                                       await loadTCUsers();
@@ -11728,8 +11806,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </table>
                     )}
 
-                    {/* Add TC form */}
-                    <div id="guide-team-form" style={{borderTop: tcUsers.length > 0 ? '1px solid #e5e7eb' : 'none', paddingTop: tcUsers.length > 0 ? '16px' : '0'}}>
+                    {/* Add TC form — admins, and Office Managers allowed to manage TCs (they add TCs only) */}
+                    {canManageTCs && (<div id="guide-team-form" style={{borderTop: tcUsers.length > 0 ? '1px solid #e5e7eb' : 'none', paddingTop: tcUsers.length > 0 ? '16px' : '0'}}>
                       <div style={{fontSize:'12px',fontWeight:'700',color:'#374151',marginBottom:'10px'}}>Add a Team Member</div>
                       <div style={{display:'flex',flexWrap:'wrap',gap:'8px',alignItems:'end'}}>
                         <div>
@@ -11763,6 +11841,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             <option value="tc">TC</option>
                             <option value="manager">Office Manager</option>
                             <option value="admin">Admin</option>
+                            <option value="consultant">Consultant</option>
                             <option value="location_owner">Location Owner</option>
                           </select>
                         </div>
@@ -11799,8 +11878,44 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           ? 'They get an email invite with a one-time password, then choose their own password and set up an authenticator app at first sign-in.'
                           : "You set the password — they log in immediately. They can change it themselves from Settings once they're in."}
                       </div>
-                    </div>
+                    </div>)}
                   </div>
+
+                  {/* Office Manager permissions — four per-practice switches (practice_permissions,
+                      aws/infra/sql/08_roles.sql); the database enforces them. Admins only. */}
+                  {currentUser?.role === 'admin' && (
+                  <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
+                    <h4 style={{fontSize:'15px',fontWeight:'700',marginBottom:'4px',color:'#202020'}}>🔐 Office Manager Permissions</h4>
+                    <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>What Office Managers in this practice may do. Office Managers always work patients and never see production dollars.</p>
+                    {[
+                      ['manager_delete_patients', 'Delete patients', 'Remove patient records for good.'],
+                      ['manager_see_all_bonuses', "See every team member's bonus", 'Otherwise they see only their own.'],
+                      ['manager_edit_goals_settings', 'Edit goals and settings', 'Goals, locations, features and report recipients.'],
+                      ['manager_manage_tcs', 'Manage TC logins', 'Add, invite, reset, deactivate and remove TCs (never admins or managers).'],
+                    ].map(([key, title, desc]) => (
+                      <div key={key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',padding:'12px 16px',backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'8px',marginBottom:'8px'}}>
+                        <div>
+                          <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>{title}</div>
+                          <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>{desc}</div>
+                        </div>
+                        <button
+                          role="switch"
+                          aria-checked={!!practicePerms[key]}
+                          aria-label={title}
+                          onClick={async () => {
+                            const next = { ...practicePerms, [key]: !practicePerms[key] };
+                            const { error } = await supabase.from('practice_permissions')
+                              .upsert({ practice_id: managedPracticeId || currentUser.practiceId, ...next, updated_at: new Date().toISOString() }, { onConflict: 'practice_id' });
+                            if (error) { setTcMgmtMsgType('error'); setTcMgmtMsg(`Couldn't save the Office Manager permissions: ${error.message}`); return; }
+                            setPracticePerms(next);
+                          }}
+                          style={{flexShrink:0,width:'44px',height:'24px',borderRadius:'12px',border:'none',cursor:'pointer',position:'relative',backgroundColor: practicePerms[key] ? '#10b981' : '#d1d5db',transition:'background-color 0.15s'}}>
+                          <span style={{position:'absolute',top:'3px',left: practicePerms[key] ? '23px' : '3px',width:'18px',height:'18px',borderRadius:'50%',backgroundColor:'white',transition:'left 0.15s'}} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  )}
 
                   {/* Bonus Rate Editor — pay; full admins only */}
                   {currentUser?.role === 'admin' && (
@@ -11974,7 +12089,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
             </div>
 
-            {/* Bonus Campaigns + Supabase status + Monthly/Quarterly Goals — full admins only */}
+            {/* Bonus Campaigns + Supabase status — full admins only */}
             {currentUser?.role === 'admin' && (<>
             {/* Popup Bonus Campaigns */}
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',border:'1px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.06)',marginBottom:'24px'}}>
@@ -12251,6 +12366,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
             </div>
 
+            </>)}
+
+            {/* Goals — admins, and Office Managers with "edit goals and settings" */}
+            {canEditSetup && (<>
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',border:'1px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.06)',marginBottom:'24px'}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'20px',paddingBottom:'14px',borderBottom:'2px solid #f3f4f6',flexWrap:'wrap',gap:'12px'}}>
                 <div>
@@ -12464,7 +12583,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             </div></>)}</>)}
 
             {/* ── Support Inbox (superadmin only) ── */}
-            {currentUser?.practiceId === 'miller-ortho' && currentUser?.role === 'admin' && (
+            {currentUser?.isPlatformOwner && (
               <div style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'24px'}}>
                 <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px',flexWrap:'wrap',gap:'10px'}}>
                   <div>
