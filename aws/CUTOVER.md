@@ -39,8 +39,23 @@ yes at the time. Supabase stays untouched and available as the way back for at l
 | P5 | Deferred by Dr. Miller (2026-10-04): switch over without the Greyfinch key; Add NPE shows "Greyfinch is not connected yet" until the key is pasted into Secrets Manager (no redeploy needed) | Dr. Miller, after switch-over |
 | P6 | ✅ Way back for data: `aws/infra/data-copy/copy-back-to-supabase.mjs`, 18/18 on fake data (plan + YES before writing, refuses tampered files and large deletions, keeps Supabase login links). Still needs the AWS export permission (in P4) and a real run in the P8 rehearsal | Claude |
 | P7 | ✅ Supabase write-lock and unlock scripts (`aws/infra/sql/supabase-write-lock.sql`, `-unlock.sql`): 15/15 local checks on production's structure; unlock restores today's exact permissions | Claude |
-| P8 | Full dress rehearsal on the test address: fresh copy, fingerprints, switch the test site, switch back (incl. a real copy-back), time every step; plus a real test of Reset two-step on a fake TC (needs Dr. Miller: admin-password sign-in was removed before real data) | Claude + Dr. Miller |
+| P8 | ✅ rehearsed 2026-10-05 02:01-02:20 UTC (see "Rehearsal results") except the reset button, which failed and is being rebuilt as Reset login — Full dress rehearsal on the test address: fresh copy, fingerprints, switch the test site, switch back (incl. a real copy-back), time every step; plus a real test of Reset two-step on a fake TC (needs Dr. Miller: admin-password sign-in was removed before real data) | Claude + Dr. Miller |
 | P9 | Staff enroll: invite each team member to the test address a few days ahead; each sets a password and authenticator (orange banner says it is a test copy) | Dr. Miller sends invites |
+
+## Rehearsal results (2026-10-05, test setup only; live site and Supabase only read)
+| Step | Result | Time |
+|---|---|---|
+| Export from Supabase over HTTPS (Dr. Miller) | 7 tables, read twice, consistent | ~1 min |
+| Upload to drop box | 7 files | 2 s |
+| Empty AWS tables + load + fingerprint check (one transaction) | 7/7 MATCH, committed | 12 s |
+| Dr. Miller signs in on app-test | re-linked automatically (link_my_login), 697 patients | ~1 min |
+| Flip: Vercel builds `cutover-switch` (as a hidden preview) | identical bundle to local build (app-7QQNfx6Y.js), AWS address, no banner | 10 s build |
+| Copy-back: AWS export (query_export_to_s3 + manifest) | 7 tables | 10 s |
+| Copy-back: script vs real Supabase, answered "no" | files verified; plan = only Test TC to add; nothing written | ~1 min |
+| Reset two-step on a fake TC | FAILED: Cognito keeps a verified authenticator when MFA is required; AdminSetUserMFAPreference(Enabled=false) does not force re-setup. Replacing with "Reset login" (delete + re-invite, DB unlink) | - |
+
+Lessons: the data steps take well under 5 minutes; the human steps (export, sign-ins) dominate.
+Make sure the Mac is on a network without SSL inspection (not airport/office Wi-Fi with FortiGate).
 
 ## Switch-over day (target ~45 minutes)
 1. Staff stop using CadenceIQ and close it.
