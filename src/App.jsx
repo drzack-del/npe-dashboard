@@ -1,5 +1,5 @@
 import './case-economics.css';
-import React, { useState, useEffect, useRef, Component, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, Component, lazy, Suspense } from 'react';
 
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -29,6 +29,7 @@ class ErrorBoundary extends Component {
   }
 }
 import { createClient } from '@supabase/supabase-js';
+import GetStarted, { setupStepsDone } from './GetStarted.jsx';
 
 
         // ── FEATURE FLAGS ────────────────────────────────────────────────
@@ -733,44 +734,63 @@ import { createClient } from '@supabase/supabase-js';
 // ── Guided Spotlight Highlight ───────────────────────────────────────────
 const GuidedHighlight = ({ highlight, onDismiss, onComplete }) => {
   const [rect, setRect] = useState(null);
+  const [tipH, setTipH] = useState(320);
+  const tipRef = useRef(null);
 
   useEffect(() => {
     if (!highlight) { setRect(null); return; }
-    let cancelled = false;
+    let cancelled = false, el = null;
+    // Re-measure on scroll and resize so the ring stays on the element.
+    const measure = () => { if (!cancelled && el) setRect(el.getBoundingClientRect()); };
     const tryFind = (attempts) => {
       if (cancelled) return;
-      const el = document.getElementById(highlight.elementId);
+      el = document.getElementById(highlight.elementId);
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        setTimeout(() => {
-          if (!cancelled) setRect(el.getBoundingClientRect());
-        }, 450);
+        setTimeout(measure, 450);
       } else if (attempts > 0) {
         setTimeout(() => tryFind(attempts - 1), 200);
       }
     };
     tryFind(10);
-    return () => { cancelled = true; };
+    window.addEventListener('scroll', measure, true);
+    window.addEventListener('resize', measure);
+    return () => { cancelled = true; window.removeEventListener('scroll', measure, true); window.removeEventListener('resize', measure); };
   }, [highlight?.elementId]);
+
+  // The hint's real height decides where it fits.
+  useLayoutEffect(() => {
+    if (tipRef.current && Math.abs(tipRef.current.offsetHeight - tipH) > 2) setTipH(tipRef.current.offsetHeight);
+  });
+
+  useEffect(() => {
+    if (!highlight) return;
+    const onKey = e => { if (e.key === 'Escape') { onDismiss(null); onComplete?.(); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [highlight]);
 
   if (!highlight || !rect) return null;
 
+  const vw = window.innerWidth, vh = window.innerHeight, tipW = 340, gap = 14, margin = 12;
   const pad = 14;
   const t = Math.max(0, rect.top - pad);
   const l = Math.max(0, rect.left - pad);
-  const w = rect.width + pad * 2;
+  const w = Math.min(rect.width + pad * 2, vw - l);
   const h = rect.height + pad * 2;
-  const spaceBelow = window.innerHeight - (t + h);
-  const spaceRight = window.innerWidth - (l + w);
-  const useRight = highlight.tooltipSide === 'right' && spaceRight > 340;
-
-  // Tooltip position
-  const tipTop = useRight
-    ? Math.min(Math.max(t, 12), window.innerHeight - 320)
-    : (spaceBelow > 160 ? t + h + 14 : t - 14 - 160);
-  const tipLeft = useRight
-    ? l + w + 16
-    : Math.min(Math.max(l, 12), window.innerWidth - 360);
+  // Right of the element, below it, above it, or (when none fits) pinned to the
+  // bottom-right corner of the screen, scrolling inside itself if it must.
+  const place = (highlight.tooltipSide === 'right' && vw - (l + w) >= tipW + gap + margin) ? 'right'
+    : vh - (t + h) >= tipH + gap + margin ? 'below'
+    : t >= tipH + gap + margin ? 'above'
+    : 'corner';
+  const tipTop = place === 'right' ? Math.min(Math.max(t, margin), Math.max(margin, vh - tipH - margin))
+    : place === 'below' ? t + h + gap
+    : place === 'above' ? t - gap - tipH
+    : Math.max(margin, vh - tipH - margin);
+  const tipLeft = place === 'right' ? l + w + gap
+    : place === 'corner' ? Math.max(margin, vw - tipW - margin)
+    : Math.min(Math.max(l, margin), vw - tipW - margin);
 
   return (
     // pointerEvents:none on outer so clicks in the spotlight pass through to the page
@@ -782,14 +802,14 @@ const GuidedHighlight = ({ highlight, onDismiss, onComplete }) => {
       <div style={{ position:'absolute', top:t, left:l+w, right:0, height:h, backgroundColor:'rgba(0,0,0,0.72)' }} />
       {/* Blue ring around target */}
       <div style={{ position:'absolute', top:t, left:l, width:w, height:h, border:'3px solid #2563EB', borderRadius:'12px', boxShadow:'0 0 0 5px rgba(37,99,235,0.25), 0 0 30px rgba(37,99,235,0.3)' }} />
-      {/* Arrow — below element (default) or pointing left (right-side tooltip) */}
-      {useRight ? (
+      {/* Arrow — pointing left (right-side hint) or up (hint below) */}
+      {place === 'right' ? (
         <div style={{ position:'absolute', top:tipTop+20, left:l+w+4, width:0, height:0, borderTop:'10px solid transparent', borderBottom:'10px solid transparent', borderRight:'12px solid #0f172a' }} />
-      ) : spaceBelow > 160 ? (
+      ) : place === 'below' ? (
         <div style={{ position:'absolute', top:t+h+2, left:l+w/2-10, width:0, height:0, borderLeft:'10px solid transparent', borderRight:'10px solid transparent', borderBottom:'12px solid #0f172a' }} />
       ) : null}
       {/* Tooltip — re-enable pointer events so buttons are clickable */}
-      <div style={{ position:'absolute', top:tipTop, left:tipLeft, backgroundColor:'#0f172a', color:'white', padding:'18px 20px', borderRadius:'14px', boxShadow:'0 16px 48px rgba(0,0,0,0.5)', maxWidth:'340px', zIndex:8600, pointerEvents:'auto' }}>
+      <div ref={tipRef} style={{ position:'absolute', top:tipTop, left:tipLeft, backgroundColor:'#0f172a', color:'white', padding:'18px 20px', borderRadius:'14px', boxShadow:'0 16px 48px rgba(0,0,0,0.5)', width:`min(${tipW}px, calc(100vw - ${margin * 2}px))`, boxSizing:'border-box', maxHeight:`calc(100vh - ${margin * 2}px)`, overflowY:'auto', zIndex:8600, pointerEvents:'auto' }}>
         <div style={{ fontSize:'15px', fontWeight:'800', color:'white', marginBottom:'7px', lineHeight:1.2 }}>{highlight.title}</div>
         <div style={{ fontSize:'13px', color:'#94a3b8', lineHeight:'1.6', marginBottom:'16px', whiteSpace:'pre-line' }}>{highlight.message}</div>
         {highlight.subSteps && (
@@ -814,9 +834,11 @@ const GuidedHighlight = ({ highlight, onDismiss, onComplete }) => {
             {highlight.nextHighlight ? 'Skip' : 'Got it ✓'}
           </button>
         </div>
-        <div style={{ fontSize:'11px', color:'#475569', marginTop:'10px' }}>
-          Fill in the field above, then click Next → to continue
-        </div>
+        {highlight.nextHighlight && (
+          <div style={{ fontSize:'11px', color:'#475569', marginTop:'10px' }}>
+            Fill in the highlighted part, then click Next →. Esc closes this.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1016,7 +1038,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [changePwMsg, setChangePwMsg] = useState('');
   const [changePwLoading, setChangePwLoading] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState('');
-  const [showOnboarding, setShowOnboarding] = useState(false);
   const [locations, setLocations] = useState([]);
   const [newLocationName, setNewLocationName] = useState('');
   const [medicaidEnabled, setMedicaidEnabled] = useState(true);
@@ -1053,17 +1074,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [switchingToPractice, setSwitchingToPractice] = useState(null); // id of practice currently being switched to
   // ─────────────────────────────────────────────────────────────────────
 
+  // A practice with no saved goals has no goals: zeros hide the goal bars until the
+  // practice sets its own (Get Started or Settings). These used to be Miller Ortho's
+  // numbers, which new practices were then measured against.
   const defaultGoalsData = {
-    overallMode: false,
-    monthly: Array.from({length: 12}, (_, i) => ({
-      carNPE: i === 1 ? 40 : 35, carStarted: i === 1 ? 20 : 18,
-      apoNPE: i === 1 ? 15 : 12, apoStarted: i === 1 ? 8 : 6,
-      totalNPE: i === 1 ? 55 : 47, totalStarted: i === 1 ? 28 : 24,
-      convGoal: 70,
+    overallMode: true,
+    monthly: Array.from({length: 12}, () => ({
+      carNPE: 0, carStarted: 0, apoNPE: 0, apoStarted: 0,
+      totalNPE: 0, totalStarted: 0, convGoal: 70,
     })),
     quarterly: [
-      { npe: 150, started: 75, conv: 70 }, { npe: 165, started: 85, conv: 70 },
-      { npe: 180, started: 90, conv: 70 }, { npe: 200, started: 100, conv: 70 },
+      { npe: 0, started: 0, conv: 70 }, { npe: 0, started: 0, conv: 70 },
+      { npe: 0, started: 0, conv: 70 }, { npe: 0, started: 0, conv: 70 },
     ]
   };
   const [goals, setGoals] = useState(defaultGoalsData);
@@ -1730,17 +1752,158 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     }
   }, []);
 
-  // Show onboarding modal for new real practices with no patients. Skipped for
-  // a location-scoped login: the tour ends by sending them to Add NPE, which
-  // isn't in their nav (data entry isn't their job), and "no patients yet" is
-  // an expected, unremarkable state for a single location, not a sign the
-  // account needs setup.
+  // ── Get Started (new-practice setup page) ─────────────────────────────
+  // settings 'setup' = { status: 'in-progress' | 'done', bonusSkipped, startedAt, finishedAt }.
+  // undefined = not loaded yet (or the load failed), null = this practice has no setup row.
+  const [setupState, setSetupState] = useState(undefined);
+  const setupPracticeId = managedPracticeId || currentUser?.practiceId;
   useEffect(() => {
-    if (!loading && currentUser?.id !== 'demo' && !currentUser?.locationScope && patients.length === 0) {
-      const dismissed = localStorage.getItem(`onboarding-dismissed-${currentUser?.practiceId}`);
-      if (!dismissed) setShowOnboarding(true);
+    setSetupState(undefined);
+    if (!supabase || currentUser?.id === 'demo' || !setupPracticeId) return;
+    let cancelled = false;
+    supabase.from('settings').select('value').eq('key', 'setup').eq('practice_id', setupPracticeId).maybeSingle()
+      .then(({ data, error }) => { if (!cancelled && !error) setSetupState(data ? data.value : null); });
+    return () => { cancelled = true; };
+  }, [setupPracticeId]);
+  const saveSetupState = async (value) => {
+    setSetupState(value);
+    await dbSaveSettings('setup', value);
+  };
+  // Admins only: TCs, managers and location owners never see setup.
+  const isPracticeAdmin = currentUser?.role === 'admin' && !currentUser?.locationScope && currentUser?.id !== 'demo';
+  // Setup starts only for a brand-new practice (no setup row and no patients), so practices
+  // that were running before this page existed never see it. A failed patient load never
+  // counts as "no patients", and a platform owner managing another practice never starts it.
+  useEffect(() => {
+    if (isPracticeAdmin && !superadminOriginalUser && setupState === null && !loading && !loadFailed && patients.length === 0) {
+      saveSetupState({ status: 'in-progress', startedAt: new Date().toISOString() });
     }
-  }, [loading, patients.length, currentUser?.practiceId, currentUser?.locationScope]);
+  }, [isPracticeAdmin, superadminOriginalUser, setupState, loading, loadFailed, patients.length]);
+  const showGetStarted = isPracticeAdmin && setupState?.status === 'in-progress';
+  // Land on Get Started once per sign-in while setup is unfinished.
+  const landedOnGetStarted = useRef(false);
+  useEffect(() => {
+    if (showGetStarted && !landedOnGetStarted.current) {
+      landedOnGetStarted.current = true;
+      setCurrentView('getstarted');
+    }
+  }, [showGetStarted]);
+  const setupTeamMembers = tcUsers.filter(u => (u.email || '').toLowerCase() !== (currentUser?.email || '').toLowerCase());
+  const setupBonusUsers = tcUsers.filter(u => (u.role === 'tc' || u.role === 'manager') && u.status !== 'inactive');
+  const setupDone = setupStepsDone({ locations, goals, teamMembers: setupTeamMembers, bonusUsers: setupBonusUsers,
+    bonusSkipped: !!setupState?.bonusSkipped, patientCount: patients.length });
+  const setupDoneCount = Object.values(setupDone).filter(Boolean).length;
+  // Each returns null on success or the error text.
+  const saveLocationsList = async (updated) => {
+    const { error } = await supabase.from('settings').upsert({ key: 'locations', value: updated, practice_id: setupPracticeId }, { onConflict: 'key,practice_id' });
+    if (error) return error.message || 'unknown error';
+    setLocations(updated);
+    localStorage.setItem(`npe-locations-${currentUser?.practiceId}`, JSON.stringify(updated));
+    return null;
+  };
+  const saveGoalsFromSetup = async (newGoals) => {
+    const { error } = await supabase.from('settings').upsert({ key: 'goals', value: newGoals, practice_id: setupPracticeId }, { onConflict: 'key,practice_id' });
+    if (error) return error.message || 'unknown error';
+    setGoals(newGoals);
+    localStorage.setItem(`npe-goals-${currentUser?.practiceId}`, JSON.stringify(newGoals));
+    return null;
+  };
+  const saveBonusRatesFromSetup = async (drafts) => {
+    for (const u of setupBonusUsers) {
+      if (!drafts[u.id]) continue;
+      const { error } = await supabase.from('tc_users').update({ bonus_rates: { ...ZERO_RATES, ...(u.bonus_rates || {}), ...drafts[u.id] } }).eq('id', u.id);
+      if (error) return error.message || 'unknown error';
+    }
+    await loadTCUsers();
+    return null;
+  };
+  const showFirstExamGuide = () => {
+    setCurrentView('add');
+    setGuidedHighlight({
+      elementId: 'guide-npe-form',
+      tooltipSide: 'right',
+      title: '➕ Fill Out This Form After Every Exam',
+      message: 'Any patient who didn\'t start treatment same-day gets logged here. CadenceIQ will build their follow-up schedule automatically.',
+      subSteps: [
+        'Patient Name — the person you examined',
+        'Phone — their number so your TC can call',
+        'NPE Date — today\'s date (pre-filled)',
+        'Location — which office the exam was at',
+        'Status — what happened (see descriptions below each option)',
+        'Obstacle — why they didn\'t start (if pending)',
+      ],
+      nextHighlight: {
+        elementId: 'guide-npe-name',
+        title: '✏️ Start Here — Patient\'s Name',
+        message: 'Type the patient\'s full name. This is how they\'ll appear in your follow-up queue.',
+      },
+    });
+  };
+
+  // Settings → Team "Add" and the Get Started team step both use this.
+  const handleAddTeamMember = async () => {
+    if (!newTCName.trim() || !newTCEmail.trim()) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Name and email are required.'); }
+    if (!USE_COGNITO && (!newTCPassword.trim() || newTCPassword.trim().length < 6)) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Password must be at least 6 characters.'); }
+    const isLocationOwnerRole = newTCRole === 'location_owner';
+    if (isLocationOwnerRole && !newTCLocationScope) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Pick a location for a Location Owner login.'); }
+    const addedName = newTCName.trim();
+    const addedEmail = newTCEmail.trim().toLowerCase();
+    const addedPassword = newTCPassword.trim();
+    // Refuse a duplicate before touching auth. Two tc_users rows sharing an
+    // email break login outright: fetchProfile uses .single(), which errors on
+    // multiple matches, and the person is bounced with "No account found".
+    if (tcUsers.some(u => (u.email || '').toLowerCase() === addedEmail)) {
+      setTcMgmtMsgType('error');
+      return setTcMgmtMsg(`${addedEmail} is already on your team. Use the Set Password box on their row to change their password, or Delete that row first.`);
+    }
+    // Create Supabase auth account using a temp client so admin stays signed in.
+    // On AWS the login is created after the team row, by the invite-user function.
+    let authError = null;
+    if (!USE_COGNITO) {
+      const tempClient = createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false, detectSessionInUrl: false } });
+      ({ error: authError } = await tempClient.auth.signUp({ email: addedEmail, password: addedPassword }));
+    }
+    // "Already registered" means the auth account survived an earlier Delete
+    // (Delete only removes the tc_users row). signUp then does NOT change the
+    // password -- so the credentials handed out below would be wrong. This used
+    // to be swallowed silently, which is how someone ends up with a green
+    // "ready to go" message and an account they cannot log into.
+    const authExisted = !!authError && /already.*registered/i.test(authError.message || '');
+    if (authError && !authExisted) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Auth error: ' + authError.message); }
+    // Insert into tc_users. location_scope/location_label stay null for
+    // every other role -- see 20260818_location_scope.sql.
+    const { error } = await supabase.from('tc_users').insert({
+      name: addedName, email: addedEmail, role: newTCRole, status: 'active',
+      practice_id: managedPracticeId || currentUser.practiceId,
+      location_scope: isLocationOwnerRole ? newTCLocationScope : null,
+      location_label: isLocationOwnerRole ? (newTCLocationLabel.trim() || newTCLocationScope) : null,
+    });
+    if (error) { setTcMgmtMsgType('error'); setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.')); return; }
+    setNewTCName(''); setNewTCEmail(''); setNewTCPassword(''); setNewTCRole('tc'); setNewTCLocationScope(''); setNewTCLocationLabel('');
+    await loadTCUsers();
+    if (USE_COGNITO) {
+      try {
+        const r = await sendInvite(addedEmail);
+        setTcMgmtMsgType('info');
+        setTcMgmtMsg(r.status === 'exists'
+          ? `${addedName} was added to the team. ${addedEmail} already has a CadenceIQ login, so they can sign in now with their existing password and authenticator app.`
+          : `✅ ${addedName} was added and an invite was emailed to ${addedEmail}. Its one-time password works for 7 days; at first sign-in they choose their own password and set up an authenticator app.`);
+      } catch (e) {
+        setTcMgmtMsgType('error');
+        setTcMgmtMsg(`${addedName} was added to the team, but the invite email could not be sent (${e.message}). Use "Resend invite" on their row to try again.`);
+      }
+      setTimeout(() => setTcMgmtMsg(''), 60000);
+      return;
+    }
+    if (authExisted) {
+      setTcMgmtMsgType('error');
+      setTcMgmtMsg(`${addedName} was added to the team, but a login already existed for ${addedEmail} — so the password you just typed was NOT applied. Their previous password still works. To set a new one, use the "New password…" box on their row above.`);
+      return;
+    }
+    setTcMgmtMsgType('success');
+    setTcMgmtMsg(`✅ ${addedName} is ready to go!\n\nSend them:\n🌐 ${APP_URL}\n📧 ${addedEmail}\n🔑 ${addedPassword}\n\nThey can log in right now and change their password in Settings.`);
+    setTimeout(() => setTcMgmtMsg(''), 60000);
+  };
   // ── Practice Metrics Supabase helpers ────────────────────────────────
   const loadPracticeMetrics = async () => {
     if (currentUser?.id === 'demo') {
@@ -3501,7 +3664,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
             : currentUser?.role === 'manager'
             ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
-            : ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'ontime', 'today', 'metrics', 'settings',
+            : [...(showGetStarted ? ['getstarted'] : []), 'dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), 'bonus', 'ontime', 'today', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
             <button
@@ -3524,6 +3687,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 transition:'background-color 0.2s',
               }}
             >
+              {view === 'getstarted' && `🚀 Get Started (${setupDoneCount}/5)`}
               {view === 'dashboard' && '📊 Dashboard'}
               {view === 'followup' && '🔔 Follow-Up Queue'}
               {view === 'add' && '➕ Add NPE'}
@@ -3559,6 +3723,34 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
       {/* Main Content */}
       <main style={{maxWidth:'1400px',margin:'0 auto',padding:'24px 16px'}}>
+        {currentView === 'getstarted' && isPracticeAdmin && setupState && (
+          <GetStarted
+            practiceName={currentUser?.practiceName}
+            locations={locations}
+            onAddLocation={name => saveLocationsList([...locations, name])}
+            onRemoveLocation={name => saveLocationsList(locations.filter(l => l !== name))}
+            goals={goals}
+            onSaveGoals={saveGoalsFromSetup}
+            teamMembers={setupTeamMembers}
+            form={{ name: newTCName, setName: setNewTCName, email: newTCEmail, setEmail: setNewTCEmail,
+              role: newTCRole, setRole: setNewTCRole, password: newTCPassword, setPassword: setNewTCPassword }}
+            onAddTeamMember={handleAddTeamMember}
+            teamMsg={tcMgmtMsg}
+            teamMsgType={tcMgmtMsgType}
+            showPassword={!USE_COGNITO}
+            inviteHelp={USE_COGNITO
+              ? 'They get an invite email. At first sign-in they choose their own password and set up an authenticator app. The invite works for 7 days.'
+              : 'You set a temporary password and give it to them. They can change it in Settings.'}
+            bonusUsers={setupBonusUsers}
+            bonusSkipped={!!setupState?.bonusSkipped}
+            onSkipBonus={() => saveSetupState({ ...setupState, bonusSkipped: true })}
+            onSaveBonusRates={saveBonusRatesFromSetup}
+            patientCount={patients.length}
+            onLogFirstExam={showFirstExamGuide}
+            onOpenSettings={() => setCurrentView('settings')}
+            onFinish={async () => { await saveSetupState({ ...setupState, status: 'done', finishedAt: new Date().toISOString() }); setCurrentView('dashboard'); }}
+          />
+        )}
         
         {/* DASHBOARD VIEW */}
         {currentView === 'dashboard' && (() => {
@@ -10926,11 +11118,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <div style={{fontSize:'12px',color:'#64748b',marginTop:'2px'}}>Only visible to you. {USE_COGNITO ? 'Creates the practice and emails its admin an invite.' : 'Creates the practice and admin user in Supabase.'}</div>
                     </div>
                   </div>
-                  <button
-                    onClick={() => { localStorage.removeItem(`onboarding-dismissed-${currentUser.practiceId}`); setShowOnboarding(true); }}
-                    style={{padding:'8px 16px',backgroundColor:'#334155',color:'#94a3b8',border:'1px solid #475569',borderRadius:'7px',fontSize:'12px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
-                    🧪 Preview Onboarding Flow
-                  </button>
                 </div>
 
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'12px',marginBottom:'16px'}}>
@@ -11603,71 +11790,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             </div>
                           </>
                         )}
-                        <button id="guide-tc-add" onClick={async () => {
-                          if (!newTCName.trim() || !newTCEmail.trim()) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Name and email are required.'); }
-                          if (!USE_COGNITO && (!newTCPassword.trim() || newTCPassword.trim().length < 6)) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Password must be at least 6 characters.'); }
-                          const isLocationOwnerRole = newTCRole === 'location_owner';
-                          if (isLocationOwnerRole && !newTCLocationScope) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Pick a location for a Location Owner login.'); }
-                          const addedName = newTCName.trim();
-                          const addedEmail = newTCEmail.trim().toLowerCase();
-                          const addedPassword = newTCPassword.trim();
-                          // Refuse a duplicate before touching auth. Two tc_users rows sharing an
-                          // email break login outright: fetchProfile uses .single(), which errors on
-                          // multiple matches, and the person is bounced with "No account found".
-                          if (tcUsers.some(u => (u.email || '').toLowerCase() === addedEmail)) {
-                            setTcMgmtMsgType('error');
-                            return setTcMgmtMsg(`${addedEmail} is already on your team. Use the Set Password box on their row to change their password, or Delete that row first.`);
-                          }
-                          // Create Supabase auth account using a temp client so admin stays signed in.
-                          // On AWS the login is created after the team row, by the invite-user function.
-                          let authError = null;
-                          if (!USE_COGNITO) {
-                            const tempClient = createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false, detectSessionInUrl: false } });
-                            ({ error: authError } = await tempClient.auth.signUp({ email: addedEmail, password: addedPassword }));
-                          }
-                          // "Already registered" means the auth account survived an earlier Delete
-                          // (Delete only removes the tc_users row). signUp then does NOT change the
-                          // password -- so the credentials handed out below would be wrong. This used
-                          // to be swallowed silently, which is how someone ends up with a green
-                          // "ready to go" message and an account they cannot log into.
-                          const authExisted = !!authError && /already.*registered/i.test(authError.message || '');
-                          if (authError && !authExisted) { setTcMgmtMsgType('error'); return setTcMgmtMsg('Auth error: ' + authError.message); }
-                          // Insert into tc_users. location_scope/location_label stay null for
-                          // every other role -- see 20260818_location_scope.sql.
-                          const { error } = await supabase.from('tc_users').insert({
-                            name: addedName, email: addedEmail, role: newTCRole, status: 'active',
-                            practice_id: managedPracticeId || currentUser.practiceId,
-                            location_scope: isLocationOwnerRole ? newTCLocationScope : null,
-                            location_label: isLocationOwnerRole ? (newTCLocationLabel.trim() || newTCLocationScope) : null,
-                          });
-                          if (error) { setTcMgmtMsgType('error'); setTcMgmtMsg('Error: ' + (error.message || 'Could not add user.')); return; }
-                          setNewTCName(''); setNewTCEmail(''); setNewTCPassword(''); setNewTCRole('tc'); setNewTCLocationScope(''); setNewTCLocationLabel('');
-                          await loadTCUsers();
-                          setGuidedHighlight(null);
-                          setShowOnboarding(true);
-                          if (USE_COGNITO) {
-                            try {
-                              const r = await sendInvite(addedEmail);
-                              setTcMgmtMsgType('info');
-                              setTcMgmtMsg(r.status === 'exists'
-                                ? `${addedName} was added to the team. ${addedEmail} already has a CadenceIQ login, so they can sign in now with their existing password and authenticator app.`
-                                : `✅ ${addedName} was added and an invite was emailed to ${addedEmail}. Its one-time password works for 7 days; at first sign-in they choose their own password and set up an authenticator app.`);
-                            } catch (e) {
-                              setTcMgmtMsgType('error');
-                              setTcMgmtMsg(`${addedName} was added to the team, but the invite email could not be sent (${e.message}). Use "Resend invite" on their row to try again.`);
-                            }
-                            setTimeout(() => setTcMgmtMsg(''), 60000);
-                            return;
-                          }
-                          if (authExisted) {
-                            setTcMgmtMsgType('error');
-                            setTcMgmtMsg(`${addedName} was added to the team, but a login already existed for ${addedEmail} — so the password you just typed was NOT applied. Their previous password still works. To set a new one, use the "New password…" box on their row above.`);
-                            return;
-                          }
-                          setTcMgmtMsgType('success');
-                          setTcMgmtMsg(`✅ ${addedName} is ready to go!\n\nSend them:\n🌐 ${APP_URL}\n📧 ${addedEmail}\n🔑 ${addedPassword}\n\nThey can log in right now and change their password in Settings.`);
-                          setTimeout(() => setTcMgmtMsg(''), 60000);
-                        }} style={{padding:'9px 16px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
+                        <button id="guide-tc-add" onClick={handleAddTeamMember} style={{padding:'9px 16px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
                           Add
                         </button>
                       </div>
@@ -14163,204 +14286,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         </div>
       )}
 
-      {/* ── Onboarding Modal — first-time real practices ─────────────── */}
-      {showOnboarding && currentUser?.id !== 'demo' && (() => {
-        const hasLocations = locations.length > 0;
-        const hasTeam    = tcUsers.filter(u => u.email !== currentUser?.email).length > 0;
-        // Goals count as set only if user has explicitly saved them (different from defaults)
-        const defaultMonthly = Array.from({length:12},(_,i)=>({carNPE:i===1?40:35,carStarted:i===1?20:18,apoNPE:i===1?15:12,apoStarted:i===1?8:6,convGoal:70}));
-        const hasGoals   = goals.monthly.some((m, i) => {
-          const d = defaultMonthly[i];
-          return m.carNPE !== d.carNPE || m.carStarted !== d.carStarted || m.apoNPE !== d.apoNPE || m.apoStarted !== d.apoStarted;
-        });
-        const hasPatient = patients.length > 0;
-        const steps = [
-          {
-            num: 1, icon: '📍', done: hasLocations,
-            title: 'Add Your Office Locations',
-            body: 'Tell CadenceIQ which offices you have. Every new patient exam is tied to a location so you can track performance per office.',
-            cta: 'Go to Settings → Locations', action: () => {
-              setCurrentView('settings');
-              setShowOnboarding(false);
-              setGuidedHighlight({
-                elementId: 'guide-locations-section',
-                title: '📍 Add Your Office Locations Here',
-                message: 'Type the name of each office and click Add.\n\nEvery NPE will be assigned to a location so you can compare performance across offices.',
-                subSteps: [
-                  'Type your first office name (e.g. "Main Office" or "Downtown")',
-                  'Click Add Location',
-                  'Repeat for each office you have',
-                ],
-                nextHighlight: {
-                  elementId: 'guide-location-input',
-                  title: '✏️ Type Your First Location Name',
-                  message: 'Enter the name of your first office here, then click Add Location.',
-                },
-              });
-            },
-          },
-          {
-            num: 2, icon: '👥', done: hasTeam,
-            title: 'Add Your Treatment Coordinators',
-            body: 'Your TCs need their own login. Add their name and email here and they\'ll get instructions on how to set up their account.',
-            cta: 'Go to Settings → Team', action: () => {
-              setCurrentView('settings');
-              setShowOnboarding(false);
-              setGuidedHighlight({
-                elementId: 'guide-team-form',
-                title: '👥 Add Your Treatment Coordinators Here',
-                message: 'Fill in each TC\'s name and email, then click Add.\n\nOnce added, they\'ll receive instructions to create their own login.',
-                subSteps: [
-                  'Type your TC\'s first name in the Name field',
-                  'Type their work email in the Email field',
-                  'Leave Role as "TC" (or set Admin for doctor/manager)',
-                  'Click the Add button — done!',
-                ],
-                nextHighlight: {
-                  elementId: 'guide-tc-name',
-                  title: '✏️ Start Here — Type the TC\'s Name',
-                  message: 'Type your treatment coordinator\'s first name here.',
-                  nextHighlight: {
-                    elementId: 'guide-tc-email',
-                    title: '📧 Now Their Email Address',
-                    message: 'Type their work email. This is what they\'ll use to log in.',
-                    nextHighlight: {
-                      elementId: 'guide-tc-add',
-                      title: '✅ Click Add to Save',
-                      message: 'Click this button to add them to your practice. They\'ll get a ready-to-send invite message you can text them.',
-                    },
-                  },
-                },
-              });
-            },
-          },
-          {
-            num: 3, icon: '🎯', done: hasGoals,
-            title: 'Set Your Monthly Goals',
-            body: 'Tell CadenceIQ how many NPEs and starts you\'re targeting each month. The dashboard will track your progress against those numbers.',
-            cta: 'Go to Settings → Goals', action: () => {
-              setCurrentView('settings');
-              setShowOnboarding(false);
-              setGuidedHighlight({
-                elementId: 'guide-goals-section',
-                title: '🎯 Enter Your Monthly Targets Here',
-                message: 'For each month, type in how many new patient exams (NPEs) you expect and how many you want to start treatment.\n\nThe dashboard will track your actual numbers against these goals automatically.',
-                subSteps: [
-                  'Find the current month\'s row in the table',
-                  'Type your target NPE count under "Car NPE" and "Apo NPE"',
-                  'Type your target starts under "Car Started" and "Apo Started"',
-                  'Scroll down and click Save Goals when done',
-                ],
-              });
-            },
-          },
-          {
-            num: 4, icon: '➕', done: hasPatient,
-            title: 'Add Your First New Patient Exam',
-            body: 'After every exam where a patient doesn\'t start same-day, add them here. CadenceIQ will automatically build a follow-up schedule based on their obstacle.',
-            cta: 'Add First Patient', action: () => {
-              setCurrentView('add');
-              setShowOnboarding(false);
-              setGuidedHighlight({
-                elementId: 'guide-npe-form',
-                tooltipSide: 'right',
-                title: '➕ Fill Out This Form After Every Exam',
-                message: 'Any patient who didn\'t start treatment same-day gets logged here. CadenceIQ will build their follow-up schedule automatically.',
-                subSteps: [
-                  'Patient Name — the person you examined',
-                  'Phone — their number so your TC can call',
-                  'NPE Date — today\'s date (pre-filled)',
-                  'Location — which office the exam was at',
-                  'Status — what happened (see descriptions below each option)',
-                  'Obstacle — why they didn\'t start (if pending)',
-                ],
-                nextHighlight: {
-                  elementId: 'guide-npe-name',
-                  title: '✏️ Start Here — Patient\'s Name',
-                  message: 'Type the patient\'s full name. This is how they\'ll appear in your follow-up queue.',
-                },
-              });
-            },
-          },
-        ];
-        const allDone = hasLocations && hasTeam && hasGoals && hasPatient;
-        return (
-          <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.75)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}}>
-            <div style={{backgroundColor:'white',borderRadius:'20px',maxWidth:'580px',width:'100%',overflow:'hidden',boxShadow:'0 32px 80px rgba(0,0,0,0.4)'}}>
-
-              {/* Header */}
-              <div style={{background:'linear-gradient(135deg,#0f172a 0%,#1e293b 100%)',padding:'28px 32px 24px'}}>
-                <div style={{fontSize:'13px',fontWeight:'700',color:'#4A90E2',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:'8px'}}>Welcome to CadenceIQ</div>
-                <div style={{fontSize:'22px',fontWeight:'900',color:'white',lineHeight:1.2,marginBottom:'8px'}}>
-                  {allDone ? "🎉 You're all set!" : "Let's get your practice set up"}
-                </div>
-                <div style={{fontSize:'13px',color:'#94a3b8',lineHeight:1.5}}>
-                  {allDone
-                    ? "Everything is in place. Your follow-up system is ready to go."
-                    : "CadenceIQ tracks every new patient exam and tells your TCs exactly who to call each day — so nothing falls through the cracks. Complete these 4 steps to get started."}
-                </div>
-              </div>
-
-              {/* Steps */}
-              <div style={{padding:'24px 32px',display:'flex',flexDirection:'column',gap:'12px'}}>
-                {steps.map(s => (
-                  <div key={s.num} style={{
-                    display:'flex',gap:'16px',alignItems:'flex-start',
-                    padding:'16px',borderRadius:'12px',
-                    backgroundColor: s.done ? '#f0fdf4' : '#f8fafc',
-                    border: `1px solid ${s.done ? '#bbf7d0' : '#e2e8f0'}`,
-                    opacity: s.done ? 0.85 : 1,
-                  }}>
-                    {/* Check / number */}
-                    <div style={{
-                      width:'32px',height:'32px',borderRadius:'50%',flexShrink:0,
-                      display:'flex',alignItems:'center',justifyContent:'center',
-                      backgroundColor: s.done ? '#10b981' : '#2563EB',
-                      fontSize: s.done ? '16px' : '13px',
-                      fontWeight:'800',color:'white',
-                    }}>
-                      {s.done ? '✓' : s.num}
-                    </div>
-                    {/* Content */}
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'3px'}}>
-                        <span style={{fontSize:'14px',fontWeight:'700',color: s.done ? '#166534' : '#111827'}}>{s.title}</span>
-                        {s.done && <span style={{fontSize:'11px',fontWeight:'700',color:'#16a34a',backgroundColor:'#dcfce7',padding:'2px 7px',borderRadius:'10px'}}>Done ✓</span>}
-                      </div>
-                      <div style={{fontSize:'12px',color:'#6b7280',lineHeight:'1.55',marginBottom: s.done ? 0 : '10px'}}>{s.body}</div>
-                      {!s.done && (
-                        <button onClick={s.action}
-                          style={{padding:'7px 16px',backgroundColor:'#2563EB',color:'white',border:'none',borderRadius:'7px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
-                          {s.cta} →
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Footer */}
-              <div style={{padding:'16px 32px 24px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',borderTop:'1px solid #f1f5f9'}}>
-                <button onClick={() => { setDemoTourStep(0); setCurrentView(TOUR_STEPS[0].view); setShowOnboarding(false); }}
-                  style={{padding:'9px 18px',backgroundColor:'#f1f5f9',color:'#374151',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'600',cursor:'pointer'}}>
-                  🎓 Take a Quick Tour
-                </button>
-                <button onClick={() => { localStorage.setItem(`onboarding-dismissed-${currentUser?.practiceId}`, '1'); setShowOnboarding(false); }}
-                  style={{padding:'9px 20px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
-                  {allDone ? 'Go to Dashboard →' : 'I\'ll do this later'}
-                </button>
-              </div>
-
-            </div>
-          </div>
-        );
-      })()}
-
       {/* ── Guided Spotlight ─────────────────────────────────────────── */}
       <GuidedHighlight
         highlight={guidedHighlight}
         onDismiss={(next) => setGuidedHighlight(next || null)}
-        onComplete={() => { setGuidedHighlight(null); setShowOnboarding(true); }}
+        onComplete={() => setGuidedHighlight(null)}
       />
 
       {/* ── Guided Demo Tour Overlay ─────────────────────────────────── */}
