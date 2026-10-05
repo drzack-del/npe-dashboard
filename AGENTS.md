@@ -38,5 +38,12 @@ keep one agent's work from undoing another's. Follow them exactly.
 
 ## Database
 
-- Supabase migrations are run by hand by Dr. Miller in the SQL Editor. Do not
-  ship code that depends on a migration he has not run yet.
+- Since 2026-10-05 the live database is on **AWS** (Aurora, reached through the
+  data layer at api-test.trycadenceiq.com; logins in Cognito). Supabase is kept
+  read-only as the way back for about 30 days. Do not write to Supabase.
+- Database changes run on AWS through the RDS Data API as `cadenceiq_owner`
+  (`SET ROLE cadenceiq_owner` ... `RESET ROLE`, one transaction), then
+  `NOTIFY pgrst, 'reload schema'`. Test locally first and have an undo script.
+  Dr. Miller says yes to each change before it runs. Do not ship code that
+  depends on a change that has not run yet.
+- How it is set up: `aws/HANDOFF.md` and `aws/CUTOVER.md` on branch `aws-infra`.
