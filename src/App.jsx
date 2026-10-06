@@ -2301,10 +2301,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // Calculate how much a patient earns under a popup bonus campaign (0 = doesn't qualify)
   // Per-user bonus rates from tc_users.bonus_rates (jsonb). Rates are strictly
-  // individual — no practice-wide fallback. Unknown names (ex-staff) earn $0.
+  // individual — no practice-wide fallback. Unknown names (ex-staff) earn $0, and so
+  // does anyone whose bonus switch is off. Their saved rates stay in tc_users for when
+  // the switch goes back on; Settings reads them from there, not from here.
   const ratesForTC = (tcName) => {
     const u = tcName ? tcUsers.find(u => u.name === tcName) : null;
-    return u && u.bonus_rates ? { ...ZERO_RATES, ...u.bonus_rates } : ZERO_RATES;
+    if (!u || !u.bonus_rates || u.bonus_enabled === false) return ZERO_RATES;
+    return { ...ZERO_RATES, ...u.bonus_rates };
   };
 
   // The monthly starts goal for a "YYYY-MM" string, or 0 when none is set
@@ -9102,6 +9105,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   patients.filter(p => !bonusTCFilter || p.tc === bonusTCFilter).forEach(p => {
                     const sd = effectiveStartDate(p);
                     if (!sd || !sd.startsWith(bonusMonthFilter)) return;
+                    // Same rule as the per-person table below: bonuses switched off = not counted
+                    if (tcUsers.find(u => u.name === p.tc)?.bonus_enabled === false) return;
                     const replacing = getReplacingCampaign(p, bonusTCFilter || null);
                     if (replacing) return;
                     const pr = ratesForTC(p.tc);
