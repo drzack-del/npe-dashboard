@@ -2452,7 +2452,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const rows = patients
       .filter(p => p.tc === name && (!monthStr || (effectiveStartDate(p) || '').startsWith(monthStr)))
       .map(p => ({ p, date: effectiveStartDate(p), amount: popupBonusEarnings(p, bonus, name) }))
-      .filter(r => r.amount > 0);
+      .filter(r => r.amount > 0)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     const sum = rows.reduce((s, r) => s + r.amount, 0);
     return { bonus, name, unlocked, startCount, rows, earned: unlocked ? sum : 0, onHold: unlocked ? 0 : sum };
   };
@@ -2504,8 +2505,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     // A campaign whose start goal isn't reached yet: hitting it releases what's on hold.
     b.campaigns.forEach(c => {
       if (c.unlocked || !(c.bonus.goalThreshold > 0)) return;
-      steps.push({ key: `camp-${c.bonus.id}`, need: c.bonus.goalThreshold - c.startCount, gain: c.onHold,
-        what: `unlocks ${c.bonus.name}`, detail: `${c.startCount}/${c.bonus.goalThreshold} your starts${c.onHold > 0 ? ' · releases what’s on hold' : ''}` });
+      steps.push({ key: `camp-${c.bonus.id}`, need: c.bonus.goalThreshold - c.startCount, gain: c.onHold, have: c.startCount, target: c.bonus.goalThreshold,
+        what: `Unlocks ${c.bonus.name}`, detail: `${c.startCount} of ${c.bonus.goalThreshold} of your starts${c.onHold > 0 ? ` · releases $${c.onHold} on hold` : ''}` });
     });
     // Practice starts-goal tiers (whole practice's starts).
     const goal = startsGoalForMonth(monthStr);
@@ -2515,12 +2516,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       const beatMin = Number(r.goalBeatMin) > 0 ? Number(r.goalBeatMin) : 1;
       const current = goalTierBonusFor(name, monthStr)?.amount || 0;
       const next = [
-        { at: goal - belowRange, amt: r.goalBelow || 0, what: `${belowRange} under the starts goal` },
-        { at: goal, amt: r.goalMet || 0, what: 'practice hits its starts goal' },
-        { at: goal + beatMin, amt: r.goalBeat || 0, what: `practice beats its starts goal` },
+        { at: goal - belowRange, amt: r.goalBelow || 0, what: `Practice gets within ${belowRange} of its starts goal` },
+        { at: goal, amt: r.goalMet || 0, what: 'Practice hits its starts goal' },
+        { at: goal + beatMin, amt: r.goalBeat || 0, what: 'Practice beats its starts goal' },
       ].find(t => t.at > starts && t.amt > current);
-      if (next) steps.push({ key: 'goal', need: next.at - starts, gain: next.amt - current, what: next.what,
-        detail: `practice ${starts}/${goal} starts · team effort` });
+      if (next) steps.push({ key: 'goal', need: next.at - starts, gain: next.amt - current, what: next.what, have: starts, target: next.at,
+        detail: `${starts} of ${goal} practice starts · whole team counts` });
     }
     // Case Acceptance levels (this person's own starts ÷ exams). Assumes no new exams.
     const tiers = cleanTiers(r.caTiers);
@@ -2531,8 +2532,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         const next = tiers.find(t => t.min > (rate ?? 0) && t.amt > current);
         if (next) {
           const need = Math.max(1, Math.ceil(next.min * exams / 100) - starts);
-          steps.push({ key: 'ca', need, gain: next.amt - current, what: `Case Acceptance ${next.min}%`,
-            detail: `you're at ${rate ?? 0}% (${starts}/${exams})` });
+          steps.push({ key: 'ca', need, gain: next.amt - current, what: `Case Acceptance ${next.min}%`, have: starts, target: starts + need,
+            detail: `you're at ${rate ?? 0}% · ${starts} starts from ${exams} exams` });
         }
       }
     }
@@ -4928,25 +4929,38 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   if (bonusPerTC.length === 0) return null;
                   const isNowMonth = selMonthStr === todayStrNew.slice(0, 7);
                   const daysLeft = isNowMonth ? new Date(dashYear, dashMonth + 1, 0).getDate() - Number(todayStrNew.slice(8, 10)) : 0;
+                  // One person (a TC's own view) reads as one open layout inside the card;
+                  // a team view gives each person their own panel.
                   const solo = bonusPerTC.length === 1;
-                  const chip = (label, amt, tone) => (
-                    <span key={label} style={{display:'inline-flex',alignItems:'baseline',gap:'5px',padding:'4px 10px',borderRadius:'999px',fontSize:'12px',
-                      backgroundColor: tone === 'camp' ? '#fefce8' : tone === 'goal' ? '#ecfeff' : '#f3f4f6',
-                      border:`1px solid ${tone === 'camp' ? '#fde68a' : tone === 'goal' ? '#a5f3fc' : '#e5e7eb'}`,
-                      color: tone === 'camp' ? '#92400e' : tone === 'goal' ? '#0e7490' : '#374151'}}>
-                      <strong style={{fontVariantNumeric:'tabular-nums'}}>${amt}</strong>{label}
-                    </span>
+                  // Same colour language as the Bonus Audit: grey per-start pay, amber
+                  // campaigns (and money on hold for one), teal monthly goal payouts.
+                  const TONES = {
+                    base: { bg:'#f3f4f6', bd:'#e5e7eb', fg:'#374151' },
+                    camp: { bg:'#fefce8', bd:'#fde68a', fg:'#92400e' },
+                    goal: { bg:'#ecfeff', bd:'#a5f3fc', fg:'#0e7490' },
+                  };
+                  const chip = (key, amt, label, tone = 'base', prefix = '') => {
+                    const t = TONES[tone];
+                    return (
+                      <span key={key} style={{display:'inline-flex',alignItems:'baseline',gap:'5px',padding:'4px 10px',borderRadius:'999px',fontSize:'12px',lineHeight:1.4,
+                        backgroundColor:t.bg,border:`1px solid ${t.bd}`,color:t.fg}}>
+                        <strong style={{fontVariantNumeric:'tabular-nums'}}>{prefix}${amt}</strong>{label}
+                      </span>
+                    );
+                  };
+                  const eyebrow = text => (
+                    <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'8px'}}>{text}</div>
                   );
                   return (
                   <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
-                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px',gap:'12px',flexWrap:'wrap'}}>
+                    <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:'18px',gap:'12px'}}>
                       <div>
                         <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>💰 {isAdmin ? 'TC Bonus' : 'My Bonus'} — {selMonthLabel}</div>
                         {isNowMonth && <div style={{fontSize:'12px',color:'#6b7280',marginTop:'1px'}}>{daysLeft === 0 ? 'Last day of the month' : `${daysLeft} day${daysLeft !== 1 ? 's' : ''} left this month`}</div>}
                       </div>
-                      <button onClick={()=>setCurrentView('bonus')} style={{padding:'7px 14px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'12px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
+                      <button onClick={()=>setCurrentView('bonus')} style={{padding:'7px 14px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'12px',color:'#374151',cursor:'pointer',fontWeight:'600',whiteSpace:'nowrap',flexShrink:0}}>Full Audit →</button>
                     </div>
-                    <div style={{display:'grid',gridTemplateColumns: solo ? '1fr' : 'repeat(auto-fit,minmax(300px,1fr))',gap:'14px'}}>
+                    <div style={{display:'grid',gridTemplateColumns: solo ? '1fr' : 'repeat(auto-fit,minmax(min(100%,300px),1fr))',gap:'14px'}}>
                       {bonusPerTC.map(tc => {
                         const b = tc.bonus;
                         const r = ratesForTC(tc.name);
@@ -4956,58 +4970,63 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         const liveCamps = b.campaigns.filter(c => c.unlocked && todayStrNew >= c.bonus.startDate && todayStrNew <= c.bonus.endDate && c.bonus.amtSDS !== undefined && !c.bonus.replacesBase);
                         const perStart = [
                           r.sds > 0 && { l: 'same-day start', a: r.sds },
-                          r.ret > 0 && { l: 'retainers added', a: r.ret },
-                          r.white > 0 && { l: 'whitening added', a: r.white },
+                          r.ret > 0 && { l: 'retainers', a: r.ret },
+                          r.white > 0 && { l: 'whitening', a: r.white },
                           r.pif > 0 && { l: 'paid in full', a: r.pif },
                           ...liveCamps.flatMap(c => [
                             c.bonus.amtScheduled > 0 && { l: `any start · ${c.bonus.name}`, a: c.bonus.amtScheduled, camp: true },
                             c.bonus.amtSDS > 0 && c.bonus.amtSDS !== c.bonus.amtScheduled && { l: `same-day start · ${c.bonus.name}`, a: c.bonus.amtSDS, camp: true },
                           ]),
                         ].filter(Boolean);
+                        const showRight = isNowMonth && (steps.length > 0 || perStart.length > 0);
                         return (
-                          <div key={tc.name} style={{display:'grid',gridTemplateColumns: solo && isNowMonth ? 'minmax(220px,1fr) minmax(280px,1.6fr)' : '1fr',gap:'18px',borderRadius:'12px',padding:'18px 20px',border:'1px solid #e5e7eb',backgroundColor:'#fafafa'}}>
+                          <div key={tc.name} style={{display:'grid',gridTemplateColumns: showRight ? 'repeat(auto-fit,minmax(min(100%,260px),1fr))' : '1fr',columnGap:'28px',rowGap:'18px',
+                            ...(solo ? {} : { borderRadius:'10px',padding:'16px 18px',border:'1px solid #e5e7eb',backgroundColor:'#fafafa' })}}>
                             <div>
                               {!solo || isAdmin ? <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'6px'}}>{tc.name}</div> : null}
-                              <div style={{fontSize:'44px',fontWeight:'900',color:'#10b981',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>${b.total}</div>
-                              <div style={{fontSize:'12px',color:'#6b7280',margin:'4px 0 10px'}}>{isNowMonth ? 'earned so far' : 'earned'} · {b.counts.starts} start{b.counts.starts !== 1 ? 's' : ''}</div>
+                              <div style={{fontSize:'44px',fontWeight:'900',color:'#10b981',lineHeight:1,fontVariantNumeric:'tabular-nums',letterSpacing:'-0.01em'}}>${b.total}</div>
+                              <div style={{fontSize:'12px',color:'#6b7280',margin:'6px 0 12px'}}>{isNowMonth ? 'earned so far' : 'earned'} · {b.counts.starts} start{b.counts.starts !== 1 ? 's' : ''}</div>
                               <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
-                                {chip(' per-start pay', b.base)}
-                                {b.campaigns.filter(c => c.earned > 0).map(c => chip(` ${c.bonus.name}`, c.earned, 'camp'))}
-                                {b.goals.map(g => chip(g.kind === 'ca' ? ' case acceptance' : ' starts goal', g.amount, 'goal'))}
+                                {(b.base > 0 || b.total === 0) && chip('base', b.base, 'per-start pay')}
+                                {b.campaigns.filter(c => c.earned > 0).map(c => chip(`c-${c.bonus.id}`, c.earned, c.bonus.name, 'camp'))}
+                                {b.goals.map((g, i) => chip(`g-${i}`, g.amount, g.kind === 'ca' ? 'case acceptance' : 'starts goal', 'goal'))}
+                                {b.onHold > 0 && chip('hold', b.onHold, 'on hold', 'camp', '🔒 ')}
                               </div>
-                              {b.onHold > 0 && (
-                                <div style={{marginTop:'10px',fontSize:'12px',color:'#92400e',fontWeight:'600'}}>🔒 ${b.onHold} more waiting on a campaign goal</div>
-                              )}
                             </div>
-                            {isNowMonth && (
-                              <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                            {showRight && (
+                              <div style={{display:'flex',flexDirection:'column',gap:'16px',minWidth:0}}>
                                 {steps.length > 0 && (
                                   <div>
-                                    <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'6px'}}>Next up</div>
-                                    <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
-                                      {steps.slice(0, 3).map(s => (
-                                        <div key={s.key} style={{display:'flex',alignItems:'center',gap:'12px',padding:'8px 12px',borderRadius:'8px',backgroundColor:'white',border:'1px solid #e5e7eb'}}>
-                                          <div style={{fontSize:'13px',fontWeight:'800',color:'#111827',whiteSpace:'nowrap'}}>{s.need} more start{s.need !== 1 ? 's' : ''}</div>
-                                          <div style={{flex:1,minWidth:0}}>
-                                            <div style={{fontSize:'12px',color:'#374151',fontWeight:'600'}}>{s.what}</div>
-                                            <div style={{fontSize:'11px',color:'#9ca3af'}}>{s.detail}</div>
+                                    {eyebrow('Next up')}
+                                    <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+                                      {steps.slice(0, 3).map(s => {
+                                        const pct = s.target > 0 ? Math.min(100, Math.round(s.have / s.target * 100)) : 0;
+                                        return (
+                                          <div key={s.key} style={{padding:'10px 12px',borderRadius:'8px',backgroundColor: solo ? '#f9fafb' : 'white',border:'1px solid #eef0f2'}}>
+                                            <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:'12px'}}>
+                                              <div style={{fontSize:'13px',color:'#111827',minWidth:0}}>
+                                                <strong>{s.need} more start{s.need !== 1 ? 's' : ''}</strong>
+                                                <span style={{color:'#374151'}}> · {s.what}</span>
+                                              </div>
+                                              <div style={{fontSize:'16px',fontWeight:'900',color:'#10b981',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>+${s.gain}</div>
+                                            </div>
+                                            <div style={{height:'4px',borderRadius:'2px',backgroundColor:'#e5e7eb',overflow:'hidden',margin:'7px 0 5px'}}>
+                                              <div style={{height:'100%',width:`${pct}%`,backgroundColor:'#10b981',borderRadius:'2px'}} />
+                                            </div>
+                                            <div style={{fontSize:'11px',color:'#6b7280'}}>{s.detail}</div>
                                           </div>
-                                          <div style={{fontSize:'16px',fontWeight:'900',color:'#10b981',whiteSpace:'nowrap'}}>+${s.gain}</div>
-                                        </div>
-                                      ))}
+                                        );
+                                      })}
                                     </div>
                                   </div>
                                 )}
                                 {perStart.length > 0 && (
                                   <div>
-                                    <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'6px'}}>Every start this month pays</div>
+                                    {eyebrow('Each start this month pays')}
                                     <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
-                                      {perStart.map(x => chip(` ${x.l}`, x.a, x.camp ? 'camp' : null))}
+                                      {perStart.map(x => chip(x.l, x.a, x.l, x.camp ? 'camp' : 'base', '+'))}
                                     </div>
                                   </div>
-                                )}
-                                {steps.length === 0 && perStart.length === 0 && (
-                                  <div style={{fontSize:'12px',color:'#9ca3af'}}>No per-start rates or goals are set up for this month.</div>
                                 )}
                               </div>
                             )}
@@ -6720,7 +6739,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 return (
                   <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'16px 20px',display:'flex',alignItems:'center',gap:'20px',flexWrap:'wrap'}}>
                     <div style={{fontSize:'28px'}}>🎯</div>
-                    <div style={{flex:1}}>
+                    <div style={{flex:'1 1 240px',minWidth:0}}>
                       <div style={{fontWeight:'800',fontSize:'16px',color:'#92400e'}}>{bonus.name}</div>
                       <div style={{fontSize:'13px',color:'#92400e',marginTop:'2px'}}>
                         <strong>{typeLabels}</strong> — ends {endLabel}
@@ -9194,6 +9213,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             ...b.campaigns.filter(c => c.unlocked).flatMap(c => c.rows.map(r => ({ date: r.date, patient: r.p.name, tc: b.name, type: 'Campaign', campaign: c.bonus.name, amount: r.amount }))),
             ...b.goals.map(g => ({ date: `${bonusMonthFilter}-31`, patient: g.label, tc: b.name, type: g.kind === 'ca' ? 'Case Acceptance' : 'Goal', amount: g.amount, isGoal: true })),
           ]).sort((a, b2) => a.date.localeCompare(b2.date));
+          // One card style for the whole page (same as the dashboard cards), and friendly dates.
+          const auditCard = { backgroundColor:'white', borderRadius:'12px', padding:'20px 24px', boxShadow:'0 1px 3px rgba(0,0,0,0.08)', border:'1px solid #f3f4f6', marginBottom:'16px' };
+          const fmtDay = d => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const auditMonthLabel = new Date(bonusMonthFilter + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+          const auditChip = (key, amt, label, tone = 'base', prefix = '') => {
+            const t = { base: ['#f3f4f6','#e5e7eb','#374151'], camp: ['#fefce8','#fde68a','#92400e'], goal: ['#ecfeff','#a5f3fc','#0e7490'] }[tone];
+            return (
+              <span key={key} style={{display:'inline-flex',alignItems:'baseline',gap:'5px',padding:'4px 10px',borderRadius:'999px',fontSize:'12px',lineHeight:1.4,backgroundColor:t[0],border:`1px solid ${t[1]}`,color:t[2]}}>
+                <strong style={{fontVariantNumeric:'tabular-nums'}}>{prefix}${amt}</strong>{label}
+              </span>
+            );
+          };
           return (
           <div>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'24px',flexWrap:'wrap',gap:'12px'}}>
@@ -9233,34 +9264,30 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <>
                 {(() => {
                   const sumOf = f => auditBonuses.reduce((s, b) => s + f(b), 0);
-                  const mbSDS = sumOf(b => b.counts.sds), mbRet = sumOf(b => b.counts.ret), mbWhite = sumOf(b => b.counts.white), mbPIF = sumOf(b => b.counts.pif);
-                  const mbCampaigns = auditBonuses.flatMap(b => b.campaigns.filter(c => c.earned > 0).map(c => ({ ...c, who: b.name })));
+                  const starts = sumOf(b => b.counts.starts);
+                  const counts = [
+                    [sumOf(b => b.counts.sds), 'same-day start'], [sumOf(b => b.counts.ret), 'retainer'],
+                    [sumOf(b => b.counts.white), 'whitening'], [sumOf(b => b.counts.pif), 'paid in full'],
+                  ].filter(([n]) => n > 0).map(([n, l]) => `${n} ${l}${n !== 1 && l !== 'whitening' && l !== 'paid in full' ? 's' : ''}`);
+                  const base = sumOf(b => b.base);
                   const mbOnHold = sumOf(b => b.onHold);
-                  const monthLabel = new Date(bonusMonthFilter + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                  const who = n => bonusTCFilter ? '' : `${n.split(' ')[0]}: `;
                   return (
-                    <div style={{backgroundColor:'#dcfce7',border:'1px solid #86efac',padding:'16px',borderRadius:'8px',marginBottom:'24px'}}>
-                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                        <div>
-                          <strong style={{color:'#166534',fontSize:'18px'}}>Total Bonus — {monthLabel}</strong>
-                          <div style={{fontSize:'14px',color:'#166534',marginTop:'4px'}}>
-                            {mbSDS} SDS • {mbRet} Retainers • {mbWhite} Whitening • {mbPIF} PIF
-                          </div>
-                          {mbCampaigns.length > 0 && (
-                            <div style={{fontSize:'13px',color:'#166534',marginTop:'4px'}}>
-                              {mbCampaigns.map(c => `🎯 ${bonusTCFilter ? '' : c.who + ': '}${c.bonus.name} — $${c.earned}`).join(' · ')}
-                            </div>
-                          )}
-                          {monthGoalBonuses.length > 0 && (
-                            <div style={{fontSize:'13px',color:'#166534',marginTop:'4px'}}>
-                              {monthGoalBonuses.map(g => `${g.kind === 'ca' ? '📈' : '🏁'} ${bonusTCFilter ? '' : g.name + ': '}${g.label} — $${g.amount}`).join(' · ')}
-                            </div>
-                          )}
-                          {mbOnHold > 0 && (
-                            <div style={{fontSize:'12px',color:'#92400e',marginTop:'4px'}}>🔒 ${mbOnHold} more on hold until a campaign start goal is reached — not in this total yet</div>
-                          )}
-                        </div>
-                        <div style={{fontSize:'36px',fontWeight:'bold',color:'#10b981'}}>${auditTotal}</div>
+                    <div style={auditCard}>
+                      <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em'}}>Total bonus · {auditMonthLabel}</div>
+                      <div style={{display:'flex',alignItems:'baseline',gap:'14px',flexWrap:'wrap',margin:'6px 0 12px'}}>
+                        <div style={{fontSize:'44px',fontWeight:'900',color:'#10b981',lineHeight:1,fontVariantNumeric:'tabular-nums',letterSpacing:'-0.01em'}}>${auditTotal}</div>
+                        <div style={{fontSize:'13px',color:'#6b7280'}}>{starts} start{starts !== 1 ? 's' : ''}{counts.length > 0 ? ` · ${counts.join(' · ')}` : ''}</div>
                       </div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
+                        {(base > 0 || auditTotal === 0) && auditChip('base', base, 'per-start pay')}
+                        {auditBonuses.flatMap(b => b.campaigns.filter(c => c.earned > 0).map(c => auditChip(`c-${b.name}-${c.bonus.id}`, c.earned, `${who(b.name)}${c.bonus.name}`, 'camp')))}
+                        {monthGoalBonuses.map((g, i) => auditChip(`g-${i}`, g.amount, `${who(g.name)}${g.kind === 'ca' ? 'case acceptance' : 'starts goal'}`, 'goal'))}
+                        {mbOnHold > 0 && auditChip('hold', mbOnHold, 'on hold', 'camp', '🔒 ')}
+                      </div>
+                      {mbOnHold > 0 && (
+                        <div style={{fontSize:'12px',color:'#92400e',marginTop:'10px'}}>On-hold money isn't in the total until the campaign's start goal is reached.</div>
+                      )}
                     </div>
                   );
                 })()}
@@ -9272,8 +9299,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const goal = startsGoalForMonth(bonusMonthFilter);
                   const monthLabel = new Date(bonusMonthFilter + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
                   if (goal <= 0) return (
-                    <div style={{backgroundColor:'#fffbeb',border:'1px solid #fcd34d',padding:'16px',borderRadius:'8px',marginBottom:'24px',fontSize:'13px',color:'#92400e'}}>
-                      🎯 Your starts goal bonus is set up, but no starts goal exists for {monthLabel} yet.
+                    <div style={{...auditCard,fontSize:'13px',color:'#6b7280'}}>
+                      🏁 Your starts goal bonus is set up, but the practice hasn't set a starts goal for {monthLabel} yet.
                     </div>
                   );
                   const starts = practiceStartsInMonth(bonusMonthFilter);
@@ -9293,22 +9320,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     : nextTier ? (earning.key === 'below' ? goal - starts : goal + beatMin - starts) : 0;
                   const pct = goal > 0 ? Math.min(100, Math.round((starts / goal) * 100)) : 0;
                   return (
-                    <div style={{backgroundColor:'white',border:'2px solid #a5f3fc',padding:'20px',borderRadius:'10px',marginBottom:'24px'}}>
+                    <div style={auditCard}>
                       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:'12px',marginBottom:'14px'}}>
                         <div>
-                          <div style={{fontSize:'16px',fontWeight:'800',color:'#0e7490'}}>🎯 Starts Goal Bonus — {monthLabel}</div>
+                          <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>🏁 Starts Goal Bonus</div>
                           <div style={{fontSize:'13px',color:'#6b7280',marginTop:'3px'}}>
                             Practice starts: <strong style={{color:'#374151'}}>{starts}</strong> of <strong style={{color:'#374151'}}>{goal}</strong> goal
                             {diff < 0 ? ` · ${-diff} more to reach goal` : diff === 0 ? ' · goal reached!' : ` · ${diff} over goal`}
                           </div>
                         </div>
                         <div style={{textAlign:'right'}}>
-                          <div style={{fontSize:'32px',fontWeight:'900',color: earning ? '#10b981' : '#d1d5db',lineHeight:1}}>${earning ? earning.amt : 0}</div>
+                          <div style={{fontSize:'32px',fontWeight:'900',color: earning ? '#10b981' : '#d1d5db',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>${earning ? earning.amt : 0}</div>
                           <div style={{fontSize:'11px',color:'#6b7280',marginTop:'2px'}}>{earning ? 'on pace to earn' : 'no tier reached yet'}</div>
                         </div>
                       </div>
-                      <div style={{height:'10px',backgroundColor:'#f1f5f9',borderRadius:'5px',overflow:'hidden',marginBottom:'14px'}}>
-                        <div style={{height:'100%',width:`${pct}%`,backgroundColor: diff >= 0 ? '#10b981' : '#22d3ee',transition:'width 0.3s'}} />
+                      <div style={{height:'8px',backgroundColor:'#f1f5f9',borderRadius:'4px',overflow:'hidden',marginBottom:'14px'}}>
+                        <div style={{height:'100%',width:`${pct}%`,backgroundColor: diff >= 0 ? '#10b981' : '#22d3ee',borderRadius:'4px',transition:'width 0.3s'}} />
                       </div>
                       <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
                         {tiers.map(t => (
@@ -9326,8 +9353,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         ))}
                       </div>
                       {nextTier && startsToNext > 0 && (
-                        <div style={{fontSize:'12px',color:'#0e7490',marginTop:'10px',fontWeight:'600'}}>
-                          {startsToNext} more start{startsToNext !== 1 ? 's' : ''} to reach ${nextTier.amt}
+                        <div style={{fontSize:'13px',color:'#0e7490',marginTop:'12px',fontWeight:'700'}}>
+                          {startsToNext} more practice start{startsToNext !== 1 ? 's' : ''} → ${nextTier.amt}
                         </div>
                       )}
                       <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'8px'}}>
@@ -9349,30 +9376,30 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const typeLabels = bonus.amtSDS !== undefined
                       ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
                       : `$${bonus.amount}/start`;
+                    const campaignRange = `${fmtDay(bonus.startDate)} – ${fmtDay(bonus.endDate)}`;
                     // Show locked state if this person hasn't reached the start goal
                     if (solo && bonus.goalThreshold > 0 && !solo.unlocked) {
                       const startCount = solo.startCount;
                       const pct = Math.min(100, Math.round((startCount / bonus.goalThreshold) * 100));
                       return (
-                        <div key={bonus.id} style={{backgroundColor:'#f8fafc',border:'2px solid #cbd5e1',borderRadius:'10px',padding:'20px 24px',marginBottom:'16px'}}>
-                          <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'12px'}}>
-                            <span style={{fontSize:'22px'}}>🔒</span>
-                            <div style={{flex:1}}>
-                              <div style={{fontWeight:'800',fontSize:'16px',color:'#475569'}}>{bonus.name}</div>
-                              <div style={{fontSize:'12px',color:'#64748b'}}>{typeLabels} · {bonus.startDate} → {bonus.endDate}</div>
-                              <div style={{fontSize:'12px',color:'#f59e0b',fontWeight:'700',marginTop:'2px'}}>
-                                Goal: {startCount} / {bonus.goalThreshold} starts needed to unlock
-                              </div>
+                        <div key={bonus.id} style={auditCard}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'16px',flexWrap:'wrap'}}>
+                            <div style={{minWidth:0}}>
+                              <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>🔒 {bonus.name}</div>
+                              <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>{typeLabels} · {campaignRange}</div>
                             </div>
-                            <div style={{textAlign:'right'}}>
-                              <div style={{fontSize:'22px',fontWeight:'900',color:'#94a3b8',lineHeight:1}}>{solo.onHold > 0 ? `$${solo.onHold} on hold` : 'Locked'}</div>
-                              <div style={{fontSize:'12px',color:'#9ca3af'}}>{bonus.goalThreshold - startCount} more start{bonus.goalThreshold - startCount !== 1 ? 's' : ''} to unlock</div>
+                            <div style={{textAlign:'right',marginLeft:'auto'}}>
+                              <div style={{fontSize:'28px',fontWeight:'900',color:'#92400e',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{solo.onHold > 0 ? `$${solo.onHold}` : '—'}</div>
+                              <div style={{fontSize:'11px',color:'#92400e',marginTop:'2px'}}>on hold</div>
                             </div>
                           </div>
-                          <div style={{height:'8px',backgroundColor:'#e2e8f0',borderRadius:'4px',overflow:'hidden'}}>
+                          <div style={{fontSize:'14px',fontWeight:'700',color:'#111827',margin:'14px 0 8px'}}>
+                            {bonus.goalThreshold - startCount} more start{bonus.goalThreshold - startCount !== 1 ? 's' : ''} unlock{bonus.goalThreshold - startCount === 1 ? 's' : ''} {solo.onHold > 0 ? `$${solo.onHold}` : 'this campaign'}
+                          </div>
+                          <div style={{height:'8px',backgroundColor:'#f1f5f9',borderRadius:'4px',overflow:'hidden'}}>
                             <div style={{height:'100%',width:`${pct}%`,backgroundColor:'#f59e0b',borderRadius:'4px',transition:'width 0.3s'}} />
                           </div>
-                          <div style={{fontSize:'11px',color:'#94a3b8',marginTop:'4px',textAlign:'right'}}>{pct}% to goal</div>
+                          <div style={{fontSize:'11px',color:'#6b7280',marginTop:'5px'}}>{startCount} of {bonus.goalThreshold} of your starts · then every qualifying start in the campaign pays</div>
                         </div>
                       );
                     }
@@ -9382,34 +9409,33 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const total = unlocked.reduce((sum, r) => sum + r.earned, 0);
                     if (rows.length === 0 && stillLocked.length === 0) return null;
                     return (
-                      <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'20px 24px',marginBottom:'16px'}}>
-                        <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'12px'}}>
-                          <span style={{fontSize:'22px'}}>🎯</span>
-                          <div>
-                            <div style={{fontWeight:'800',fontSize:'16px',color:'#92400e'}}>{bonus.name}</div>
-                            <div style={{fontSize:'12px',color:'#92400e'}}>{typeLabels} · {bonus.startDate} → {bonus.endDate}</div>
+                      <div key={bonus.id} style={auditCard}>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'16px',flexWrap:'wrap',marginBottom:'14px'}}>
+                          <div style={{minWidth:0}}>
+                            <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>🎯 {bonus.name}</div>
+                            <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>{typeLabels} · {campaignRange}</div>
                             {bonus.goalThreshold > 0 && (
-                              <div style={{fontSize:'12px',color:'#10b981',fontWeight:'700',marginTop:'2px'}}>
-                                {solo ? `🏆 Goal reached! ${solo.startCount} / ${bonus.goalThreshold} starts` : `Unlocks at ${bonus.goalThreshold} starts per person`}
+                              <div style={{fontSize:'12px',color:'#059669',fontWeight:'700',marginTop:'4px'}}>
+                                {solo ? `🏆 Unlocked — ${solo.startCount} of ${bonus.goalThreshold} starts` : `Unlocks at ${bonus.goalThreshold} starts per person`}
                               </div>
                             )}
                             {bonus.replacesBase && (
                               <div style={{fontSize:'11px',color:'#92400e',marginTop:'2px'}}>🔁 Replaces standard SDS/retainer/whitening bonuses for these starts</div>
                             )}
                           </div>
-                          <div style={{marginLeft:'auto',textAlign:'right'}}>
-                            <div style={{fontSize:'28px',fontWeight:'900',color:'#10b981',lineHeight:1}}>${total}</div>
-                            <div style={{fontSize:'12px',color:'#9ca3af'}}>{rows.length} qualifying in {monthLabel}</div>
+                          <div style={{textAlign:'right',marginLeft:'auto'}}>
+                            <div style={{fontSize:'28px',fontWeight:'900',color:'#10b981',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>${total}</div>
+                            <div style={{fontSize:'11px',color:'#6b7280',marginTop:'2px'}}>{rows.length} start{rows.length !== 1 ? 's' : ''} in {monthLabel.split(' ')[0]}</div>
                           </div>
                         </div>
                         {rows.length > 0 && (
                         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
                           <thead>
-                            <tr style={{backgroundColor:'#fef9c3'}}>
-                              <th style={{padding:'6px 10px',textAlign:'left',fontWeight:'600',color:'#92400e'}}>Patient</th>
-                              <th style={{padding:'6px 10px',textAlign:'left',fontWeight:'600',color:'#92400e'}}>TC</th>
-                              <th style={{padding:'6px 10px',textAlign:'left',fontWeight:'600',color:'#92400e'}}>Start Date</th>
-                              <th style={{padding:'6px 10px',textAlign:'right',fontWeight:'600',color:'#92400e'}}>Bonus</th>
+                            <tr style={{borderBottom:'1px solid #e5e7eb'}}>
+                              <th style={{padding:'8px 10px',textAlign:'left',fontWeight:'600',color:'#6b7280',fontSize:'12px'}}>Start</th>
+                              <th style={{padding:'8px 10px',textAlign:'left',fontWeight:'600',color:'#6b7280',fontSize:'12px'}}>Patient</th>
+                              {!solo && <th style={{padding:'8px 10px',textAlign:'left',fontWeight:'600',color:'#6b7280',fontSize:'12px'}}>TC</th>}
+                              <th style={{padding:'8px 10px',textAlign:'right',fontWeight:'600',color:'#6b7280',fontSize:'12px'}}>Bonus</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -9425,12 +9451,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 return parts.join(', ');
                               })() : [p['R+'] && `R+ $${ratesForTC(p.tc).ret}`, p['W+'] && `W+ $${ratesForTC(p.tc).white}`].filter(Boolean).join(', ');
                               return (
-                                <tr key={p.id} style={{borderBottom:'1px solid #fde68a'}}>
-                                  <td style={{padding:'6px 10px',color:'#374151'}}>{p.name}</td>
-                                  <td style={{padding:'6px 10px',color:'#374151'}}>{tc}</td>
-                                  <td style={{padding:'6px 10px',color:'#374151'}}>{date}</td>
-                                  <td style={{padding:'6px 10px',textAlign:'right',fontWeight:'700',color:'#10b981'}}>
-                                    ${amount}{breakdown ? <span style={{fontSize:'11px',color:'#92400e',fontWeight:'400',marginLeft:'4px'}}>({breakdown})</span> : null}
+                                <tr key={p.id} style={{borderBottom:'1px solid #f3f4f6'}}>
+                                  <td style={{padding:'8px 10px',color:'#6b7280',whiteSpace:'nowrap'}}>{fmtDay(date)}</td>
+                                  <td style={{padding:'8px 10px',color:'#374151'}}>{p.name}</td>
+                                  {!solo && <td style={{padding:'8px 10px',color:'#374151'}}>{tc}</td>}
+                                  <td style={{padding:'8px 10px',textAlign:'right'}}>
+                                    <strong style={{color:'#10b981',fontVariantNumeric:'tabular-nums'}}>${amount}</strong>
+                                    {breakdown ? <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'1px'}}>{breakdown}</div> : null}
                                   </td>
                                 </tr>
                               );
@@ -9461,7 +9488,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </h3>
                       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:'14px',marginBottom:'8px'}}>
                         {entries.map(b => (
-                          <div key={b.name} style={{backgroundColor:'white',borderRadius:'10px',padding:'20px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'2px solid #86efac'}}>
+                          <div key={b.name} style={{...auditCard,marginBottom:0}}>
                             <div style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'2px'}}>{b.name}</div>
                             <div style={{fontSize:'36px',fontWeight:'900',color:'#10b981',lineHeight:1,marginBottom:'12px'}}>${b.total}</div>
                             <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
@@ -9481,10 +9508,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   );
                 })()}
 
-                <div style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'16px'}}>
-                  <h3 style={{fontSize:'18px',fontWeight:'bold',marginBottom:'16px'}}>Detailed Breakdown</h3>
+                <div style={auditCard}>
+                  <h3 style={{fontSize:'16px',fontWeight:'800',color:'#202020',margin:'0 0 12px'}}>Detailed Breakdown</h3>
                   
-                  <table style={{width:'100%',borderCollapse:'collapse'}}>
+                  <div style={{overflowX:'auto'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',minWidth:'480px'}}>
                     <thead>
                       <tr style={{borderBottom:'2px solid #e5e7eb'}}>
                         <th style={{textAlign:'left',padding:'12px',fontSize:'13px',fontWeight:'600',color:'#6b7280'}}>Date</th>
@@ -9497,7 +9525,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <tbody>
                       {auditLines.map((item, i) => (
                           <tr key={i} style={{borderBottom:'1px solid #F5F5F5'}}>
-                            <td style={{padding:'12px',fontSize:'14px'}}>{item.isGoal ? 'Month end' : new Date(item.date + 'T12:00:00').toLocaleDateString()}</td>
+                            <td style={{padding:'12px',fontSize:'14px',color:'#6b7280',whiteSpace:'nowrap'}}>{item.isGoal ? 'Month end' : fmtDay(item.date)}</td>
                             <td style={{padding:'12px',fontSize:'14px'}}>{item.patient}</td>
                             {!bonusTCFilter && <td style={{padding:'12px',fontSize:'14px',color:'#6b7280'}}>{item.tc || '—'}</td>}
                             <td style={{padding:'12px',fontSize:'14px'}}>
@@ -9505,7 +9533,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 padding:'2px 8px',
                                 backgroundColor: item.type==='SDS' ? '#fef3c7' : item.type==='Retainer' ? '#dbeafe' : item.type==='Whitening' ? '#e0e7ff' : item.type==='Campaign' ? '#fef9c3' : item.isGoal ? '#dcfce7' : '#fce7f3',
                                 color: item.type==='SDS' ? '#92400e' : item.type==='Retainer' ? '#1e40af' : item.type==='Whitening' ? '#3730a3' : item.type==='Campaign' ? '#92400e' : item.isGoal ? '#166534' : '#831843',
-                                borderRadius:'4px',fontSize:'12px',fontWeight:'600'
+                                borderRadius:'4px',fontSize:'12px',fontWeight:'600',whiteSpace:'nowrap'
                               }}>
                                 {item.type === 'Campaign' ? `🎯 ${item.campaign}` : item.type}
                               </span>
@@ -9514,14 +9542,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           </tr>
                       ))}
                       {auditLines.length === 0 && (
-                        <tr key="empty"><td colSpan={bonusTCFilter ? 4 : 5} style={{padding:'24px',textAlign:'center',color:'#9ca3af',fontStyle:'italic'}}>No bonus entries for {bonusMonthFilter}</td></tr>
+                        <tr key="empty"><td colSpan={bonusTCFilter ? 4 : 5} style={{padding:'24px',textAlign:'center',color:'#9ca3af',fontStyle:'italic'}}>No bonus entries for {auditMonthLabel}</td></tr>
                       )}
                       <tr style={{borderTop:'2px solid #202020',backgroundColor:'#f9fafb'}}>
-                        <td colSpan={bonusTCFilter ? 3 : 4} style={{padding:'12px',fontSize:'16px',fontWeight:'bold'}}>TOTAL — {bonusMonthFilter}</td>
+                        <td colSpan={bonusTCFilter ? 3 : 4} style={{padding:'12px',fontSize:'16px',fontWeight:'bold'}}>Total — {auditMonthLabel}</td>
                         <td style={{padding:'12px',fontSize:'20px',fontWeight:'bold',textAlign:'right',color:'#10b981'}}>${auditTotal}</td>
                       </tr>
                     </tbody>
                   </table>
+                  </div>
                 </div>
 
                 <div style={{display:'flex',gap:'12px'}}>
