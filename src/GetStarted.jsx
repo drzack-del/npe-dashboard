@@ -28,7 +28,7 @@ export const ROLE_INFO = [
   { value: 'tc', label: 'TC', who: 'Treatment coordinators',
     can: 'Works the Follow-Up Queue and adds new patients. Sees only their own bonus.' },
   { value: 'manager', label: 'Office Manager', who: 'Office or practice managers',
-    can: 'Everything a TC does, for the whole practice. By default they can also add TCs, delete patients and see every TC\'s bonus; change that in Settings → Team. No production dollars.' },
+    can: 'Everything a TC does, for the whole practice. By default they can also add TCs, delete patients and see every TC\'s bonus; change that in Settings → Team.' },
   { value: 'admin', label: 'Admin', who: 'Doctors and owners',
     can: 'Full control: settings, goals, team, bonus rates and production numbers.' },
   { value: 'consultant', label: 'Consultant', who: 'Outside consultants, or anyone who should only look',
@@ -235,7 +235,7 @@ const GoalsStep = ({ goalsStore, onSaveGoalsStore, goalsSkipped, onSkipGoals, on
   );
 };
 
-const TeamStep = ({ teamMembers, form, onAddTeamMember, teamAdding, teamMsg, teamMsgType, showPassword, inviteHelp, onResendInvite, inviteState = {} }) => (
+const TeamStep = ({ teamMembers, form, onAddTeamMember, teamAdding, teamMsg, teamMsgType, showPassword, inviteHelp, onResendInvite, inviteState = {}, teamVisibility, onSetTeamVisibility }) => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
     <p style={{ margin: 0, fontSize: '14px', color: '#4b5563', lineHeight: 1.6 }}>
       Add everyone who will use CadenceIQ. Each person gets their own login, so calls and bonuses are tracked per person. Pick the role that matches what they should see and do:
@@ -295,8 +295,46 @@ const TeamStep = ({ teamMembers, form, onAddTeamMember, teamAdding, teamMsg, tea
     </div>
     <div style={{ fontSize: '12px', color: '#6b7280', lineHeight: 1.5 }}>{inviteHelp}</div>
     {teamMsg && <Note tone={teamMsgType === 'error' ? 'error' : teamMsgType === 'success' || teamMsgType === 'info' ? 'ok' : 'info'}>{teamMsg}</Note>}
+    {onSetTeamVisibility && (
+      <div style={{ marginTop: '6px', paddingTop: '14px', borderTop: '1px solid #f3f4f6' }}>
+        <div style={{ fontSize: '14px', fontWeight: 700, color: '#202020', marginBottom: '4px' }}>What should your team see?</div>
+        <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '10px', lineHeight: 1.5 }}>
+          By default only admins and consultants see dollar amounts. Tick anything you also want TCs or Office Managers to see. You can change this anytime in Settings → Team.
+        </div>
+        <TeamVisibilityChoices value={teamVisibility} onChange={onSetTeamVisibility} />
+      </div>
+    )}
   </div>
 );
+
+// What TCs and Office Managers may see (settings 'team-visibility'). Admins and Consultants
+// always see everything; Location Owners see their own office. Off by default.
+export const DEFAULT_TEAM_VISIBILITY = { tcProduction: false, tcMetrics: false, managerProduction: false, managerMetrics: false };
+export const TEAM_VISIBILITY_OPTIONS = [
+  { key: 'Production', label: 'Production on the dashboard', hint: 'Contract dollars from this month\'s starts, and financing.' },
+  { key: 'Metrics', label: 'Practice Metrics page', hint: 'Net production, collections and monthly results. View only, they can\'t change it.' },
+];
+export const TeamVisibilityChoices = ({ value, onChange, compact }) => {
+  const v = { ...DEFAULT_TEAM_VISIBILITY, ...(value || {}) };
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px' }}>
+      {[['tc', 'TCs'], ['manager', 'Office Managers']].map(([role, roleLabel]) => (
+        <div key={role} style={{ padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: '8px', backgroundColor: compact ? 'white' : '#f9fafb' }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: '#202020', marginBottom: '6px' }}>{roleLabel} can see…</div>
+          {TEAM_VISIBILITY_OPTIONS.map(o => {
+            const k = `${role}${o.key}`;
+            return (
+              <label key={k} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', padding: '4px 0', cursor: 'pointer', fontSize: '13px', color: '#374151' }}>
+                <input type="checkbox" checked={!!v[k]} onChange={e => onChange({ ...v, [k]: e.target.checked })} style={{ marginTop: '3px' }} />
+                <span>{o.label}<span style={{ display: 'block', fontSize: '11px', color: '#9ca3af' }}>{o.hint}</span></span>
+              </label>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+};
 
 const blankTiers = () => Array.from({ length: CA_TIER_COUNT }, () => ({ min: '', amt: '' }));
 const draftFor = u => ({

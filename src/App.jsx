@@ -29,7 +29,7 @@ class ErrorBoundary extends Component {
   }
 }
 import { createClient } from '@supabase/supabase-js';
-import GetStarted, { setupStepsDone, PRACTICE_SOFTWARE, cleanTiers, hasAnyBonus } from './GetStarted.jsx';
+import GetStarted, { setupStepsDone, PRACTICE_SOFTWARE, cleanTiers, hasAnyBonus, DEFAULT_TEAM_VISIBILITY, TeamVisibilityChoices } from './GetStarted.jsx';
 import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals } from './goals.js';
 
 
@@ -1088,6 +1088,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [practiceSoftware, setPracticeSoftware] = useState(null);
   // settings 'bonuses-enabled' = false hides every bonus screen for the whole practice.
   const [bonusesEnabled, setBonusesEnabled] = useState(true);
+  // settings 'team-visibility': whether TCs / Office Managers see production on the dashboard
+  // and the Practice Metrics page (view only). Each practice's admin chooses; all off by default.
+  const [teamVisibility, setTeamVisibility] = useState(DEFAULT_TEAM_VISIBILITY);
   const [obsRecallMonths, setObsRecallMonths] = useState(4); // months BEFORE anticipated OBS date to schedule booking call
   // End-of-Day consultant report recipients (editable in Settings). Empty until the practice
   // saves its own — a new practice must never be shown another practice's addresses.
@@ -1626,7 +1629,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   useEffect(() => {
     const loadSettings = async () => {
       if (currentUser?.id === 'demo') return;
-      const [cloudGoals, cloudAdminPw, cloudPopupBonuses, cloudLocations, cloudMedicaidEnabled, cloudObsRecall, cloudRecipients, cloudSoftware, cloudBonusesEnabled] = await Promise.all([
+      const [cloudGoals, cloudAdminPw, cloudPopupBonuses, cloudLocations, cloudMedicaidEnabled, cloudObsRecall, cloudRecipients, cloudSoftware, cloudBonusesEnabled, cloudTeamVisibility] = await Promise.all([
         dbLoadSettings('goals'),
         dbLoadSettings('admin-password'),
         dbLoadSettings('popup-bonuses'),
@@ -1636,6 +1639,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         dbLoadSettings('consultant-recipients'),
         dbLoadSettings('practice-software'),
         dbLoadSettings('bonuses-enabled'),
+        dbLoadSettings('team-visibility'),
       ]);
       setGoalsStore(normalizeGoals(cloudGoals));
       if (cloudAdminPw) localStorage.setItem(`npe-admin-password-${currentUser.practiceId}`, cloudAdminPw);
@@ -1646,6 +1650,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       setMedicaidEnabled(cloudMedicaidEnabled !== false);
       setPracticeSoftware(typeof cloudSoftware === 'string' ? cloudSoftware : null);
       setBonusesEnabled(cloudBonusesEnabled !== false);
+      setTeamVisibility({ ...DEFAULT_TEAM_VISIBILITY, ...(cloudTeamVisibility && typeof cloudTeamVisibility === 'object' ? cloudTeamVisibility : {}) });
       if (cloudObsRecall && typeof cloudObsRecall === 'number' && cloudObsRecall > 0) setObsRecallMonths(cloudObsRecall);
       // Reset when the practice has none saved, so switching practices (platform owner) never
       // carries one practice's recipients into another.
@@ -1847,6 +1852,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const isViewOnly = !!currentUser?.locationScope || myRole === 'consultant';
   const canDeletePatients = !isViewOnly && (myRole === 'admin' || (myRole === 'manager' && practicePerms.manager_delete_patients));
   const canEditSetup = !isViewOnly && (myRole === 'admin' || (myRole === 'manager' && practicePerms.manager_edit_goals_settings));
+  // Practice Metrics: TCs and Office Managers only when their practice's admin allows it, and then
+  // view only (a manager who may edit goals/settings can still edit, as the database allows).
+  const seesMetrics = myRole === 'tc' ? !!teamVisibility.tcMetrics : myRole === 'manager' ? !!teamVisibility.managerMetrics : true;
+  const metricsReadOnly = isViewOnly || myRole === 'tc' || (myRole === 'manager' && !canEditSetup);
+  const saveTeamVisibility = async (v) => { setTeamVisibility(v); await dbSaveSettings('team-visibility', v); };
   const canManageTCs = !isViewOnly && (myRole === 'admin' || (myRole === 'manager' && practicePerms.manager_manage_tcs));
   const seesAllBonuses = myRole === 'admin' || myRole === 'consultant' || (myRole === 'manager' && practicePerms.manager_see_all_bonuses);
   // Team rows this viewer may invite, reset, (de)activate or remove: anyone for an admin,
@@ -3808,9 +3818,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             : currentUser?.role === 'consultant'
             ? ['dashboard', 'patients', ...(bonusesEnabled ? ['bonus'] : []), 'ontime', 'metrics', 'settings']
             : currentUser?.role === 'tc'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', 'settings']
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', ...(seesMetrics ? ['metrics'] : []), 'settings']
             : currentUser?.role === 'manager'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && (currentUser?.bonusEnabled || seesAllBonuses) ? ['bonus'] : []), 'ontime', 'today', 'settings']
+            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && (currentUser?.bonusEnabled || seesAllBonuses) ? ['bonus'] : []), 'ontime', 'today', ...(seesMetrics ? ['metrics'] : []), 'settings']
             : [...(showGetStarted ? ['getstarted'] : []), 'dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled ? ['bonus'] : []), 'ontime', 'today', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
@@ -3892,6 +3902,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             teamMembers={setupTeamMembers}
             teamAdding={teamAdding}
             inviteState={inviteStatus}
+            teamVisibility={teamVisibility}
+            onSetTeamVisibility={saveTeamVisibility}
             onResendInvite={USE_COGNITO ? async u => {
               setInviteStatus(st => ({ ...st, [u.id]: 'sending' }));
               try {
@@ -4637,7 +4649,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             //
             // Revenue is owner-level information: TCs and managers share this layout
             // (see the bonus card below), so the whole column is admin-only.
-            const showProduction = currentUser?.role === 'admin' || currentUser?.role === 'consultant' || isLocationOwner;
+            const showProduction = currentUser?.role === 'admin' || currentUser?.role === 'consultant' || isLocationOwner
+              || (currentUser?.role === 'tc' && !!teamVisibility.tcProduction)
+              || (currentUser?.role === 'manager' && !!teamVisibility.managerProduction);
             const feeOf = p => parseFloat((p.contractAmount || '').toString().replace(/[^0-9.]/g, '')) || 0;
             const prodStartPts   = selStartPts.filter(p => isSDS(p) || p.ST);
             const prodFees       = prodStartPts.map(p => ({ p, fee: feeOf(p) }));
@@ -10178,7 +10192,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         })()}
 
         {/* PRACTICE METRICS */}
-        {currentView === 'metrics' && currentUser?.role !== 'manager' && (() => {
+        {currentView === 'metrics' && seesMetrics && (() => {
           const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
           const fmt$   = (v) => v != null && v > 0 ? '$' + Math.round(v).toLocaleString() : '—';
           const fmtPct = (v) => v != null ? Math.round(v * 100) + '%' : '—';
@@ -10439,7 +10453,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'12px'}}>
                 <div>
                   <h2 style={{fontSize:'26px',fontWeight:'800',color:'#202020',margin:0}}>Practice Metrics</h2>
-                  <div style={{fontSize:'13px',color:'#6b7280',marginTop:'2px'}}>Financial & growth performance — admin only</div>
+                  <div style={{fontSize:'13px',color:'#6b7280',marginTop:'2px'}}>Financial & growth performance{metricsReadOnly ? ' — view only' : ''}</div>
                 </div>
                 <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
                   {metricsSaveMsg && <span style={{fontSize:'13px',color:'#10b981',fontWeight:'700'}}>{metricsSaveMsg}</span>}
@@ -10457,7 +10471,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </button>
                     ))}
                   </div>
-                  {!isViewOnly && <button onClick={() => {
+                  {!metricsReadOnly && <button onClick={() => {
                     const dash = getDashboardMonthData(metricsYear, new Date().getMonth()+1);
                     const curGoal = getGoal(new Date().getMonth()+1);
                     setMetricsForm({ year: metricsYear, month: new Date().getMonth()+1, net_production: '', collections: '', npe_scheduled: '',
@@ -10525,7 +10539,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </button>
                   </div>
                   {/* Quick Adjust Goals bar */}
-                  {yearGoals.length > 0 && !isViewOnly && (
+                  {yearGoals.length > 0 && !metricsReadOnly && (
                     <div style={{display:'flex',alignItems:'center',gap:'8px',padding:'8px 14px',borderBottom:'1px solid #f3f4f6',backgroundColor:'#fafafa',flexWrap:'wrap'}}>
                       <span style={{fontSize:'11px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.05em'}}>Adjust All Goals:</span>
                       {[-10, -5, 5, 10].map(pct => (
@@ -10605,7 +10619,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   if (g?.production_goal) return (
                                     <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
-                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:String(g.production_goal)})}>
+                                      onClick={() => !metricsReadOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:String(g.production_goal)})}>
                                       <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{fmt$(g.production_goal)}</strong>
                                       {m ? <span style={{fontWeight:'700',color:vsColor(m.net_production,g.production_goal)}}>{Math.round(m.net_production/g.production_goal*100)}%</span> : null}
                                       <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
@@ -10614,7 +10628,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   return (
                                     <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
-                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:''})}>
+                                      onClick={() => !metricsReadOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'prod',value:''})}>
                                       ＋ Set goal
                                     </div>
                                   );
@@ -10641,7 +10655,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   if (g?.npe_goal) return (
                                     <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
-                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:String(g.npe_goal)})}>
+                                      onClick={() => !metricsReadOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:String(g.npe_goal)})}>
                                       <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{g.npe_goal}</strong>
                                       {m?.npe_showed!=null ? <span style={{fontWeight:'700',color:vsColor(m.npe_showed,g.npe_goal)}}>{Math.round(m.npe_showed/g.npe_goal*100)}%</span> : null}
                                       <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
@@ -10650,7 +10664,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   return (
                                     <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
-                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:''})}>
+                                      onClick={() => !metricsReadOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'npe',value:''})}>
                                       ＋ Set goal
                                     </div>
                                   );
@@ -10678,7 +10692,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   if (g?.start_goal) return (
                                     <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
-                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:String(g.start_goal)})}>
+                                      onClick={() => !metricsReadOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:String(g.start_goal)})}>
                                       <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{g.start_goal}</strong>
                                       {m?.starts!=null ? <span style={{fontWeight:'700',color:vsColor(m.starts,g.start_goal)}}>{Math.round(m.starts/g.start_goal*100)}%</span> : null}
                                       <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
@@ -10687,7 +10701,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   return (
                                     <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
-                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:''})}>
+                                      onClick={() => !metricsReadOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'starts',value:''})}>
                                       ＋ Set goal
                                     </div>
                                   );
@@ -10710,7 +10724,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   if (g?.conversion_goal) return (
                                     <div style={{fontSize:'11px',color:'#6b7280',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'4px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px solid #e5e7eb',backgroundColor:'#f9fafb'}}
-                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:String(Math.round(g.conversion_goal*100))})}>
+                                      onClick={() => !metricsReadOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:String(Math.round(g.conversion_goal*100))})}>
                                       <span style={{color:'#9ca3af'}}>Goal:</span> <strong>{fmtPct(g.conversion_goal)}</strong>
                                       {m?.conversion_rate!=null ? <span style={{fontWeight:'700',color:vsColor(m.conversion_rate,g.conversion_goal)}}>{Math.round(m.conversion_rate/g.conversion_goal*100)}%</span> : null}
                                       <span style={{color:'#9ca3af',fontSize:'10px'}}>edit</span>
@@ -10719,7 +10733,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   return (
                                     <div style={{fontSize:'11px',color:'#2563EB',marginTop:'3px',cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'3px',
                                       padding:'2px 6px',borderRadius:'4px',border:'1px dashed #bfdbfe',backgroundColor:'#eff6ff'}}
-                                      onClick={() => !isViewOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:''})}>
+                                      onClick={() => !metricsReadOnly && setInlineGoalEdit({year:metricsYear,month:mo,field:'conv',value:''})}>
                                       ＋ Set goal
                                     </div>
                                   );
@@ -10746,7 +10760,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 })()}
                               </td>
                               <td style={{padding:'10px 13px'}}>
-                                {!isViewOnly && <button onClick={() => {
+                                {!metricsReadOnly && <button onClick={() => {
                                   const dash = getDashboardMonthData(metricsYear, mo);
                                   const rowGoal = yearGoals.find(g => g.month === mo);
                                   setMetricsForm({
@@ -10922,7 +10936,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <h3 style={{fontSize:'14px',fontWeight:'700',color:'#374151',margin:0}}>Smart Goal Builder</h3>
                     <div style={{fontSize:'12px',color:'#9ca3af',marginTop:'2px'}}>Trend-based projections using your historical data with seasonal patterns</div>
                   </div>
-                  {!isViewOnly && <button onClick={() => setShowAIGoals(!showAIGoals)}
+                  {!metricsReadOnly && <button onClick={() => setShowAIGoals(!showAIGoals)}
                     style={{padding:'9px 16px',backgroundColor:showAIGoals?'#f3f4f6':'#202020',color:showAIGoals?'#374151':'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer'}}>
                     {showAIGoals ? 'Hide' : 'Build Goal Projections'}
                   </button>}
@@ -12046,7 +12060,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   {currentUser?.role === 'admin' && (
                   <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
                     <h4 style={{fontSize:'15px',fontWeight:'700',marginBottom:'4px',color:'#202020'}}>🔐 Office Manager Permissions</h4>
-                    <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>What Office Managers in this practice may do. Office Managers always work patients and never see production dollars.</p>
+                    <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>What Office Managers in this practice may do. Office Managers always work patients. Whether they see production is under What Your Team Can See below.</p>
                     {[
                       ['manager_delete_patients', 'Delete patients', 'Remove patient records for good.'],
                       ...(bonusesEnabled ? [['manager_see_all_bonuses', "See every team member's bonus", 'Otherwise they see only their own.']] : []),
@@ -12074,6 +12088,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </button>
                       </div>
                     ))}
+                  </div>
+                  )}
+
+                  {/* What TCs and Office Managers can see — admins only (settings 'team-visibility') */}
+                  {currentUser?.role === 'admin' && (
+                  <div style={{padding:'20px',backgroundColor:'#f9fafb',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
+                    <h4 style={{fontSize:'15px',fontWeight:'700',marginBottom:'4px',color:'#202020'}}>👁️ What Your Team Can See</h4>
+                    <p style={{fontSize:'12px',color:'#6b7280',marginBottom:'16px'}}>Admins and Consultants always see every number. Choose whether TCs and Office Managers also see dollar amounts.</p>
+                    <TeamVisibilityChoices value={teamVisibility} onChange={saveTeamVisibility} compact />
                   </div>
                   )}
 
