@@ -1,0 +1,19 @@
+{
+  "note": "Stripe TEST mode IDs for practice sign-up. Not secret. Written by scripts/stripe-setup.mjs.",
+  "account": "acct_1UNLSXF3rmUeGYk0",
+  "apiVersion": "2026-09-30.endive",
+  "products": [
+    "cadenceiq_subscription",
+    "cadenceiq_setup",
+    "cadenceiq_card_surcharge",
+    "cadenceiq_ach_processing"
+  ],
+  "prices": {
+    "cadenceiq_foundation_monthly": "price_1UNVRyF3rmUeGYk0SODQGFOq",
+    "cadenceiq_standard_monthly": "price_1UNVRzF3rmUeGYk0z1Ubezf8",
+    "cadenceiq_setup_fee": "price_1UNVRzF3rmUeGYk03Zj07dfz"
+  },
+  "portalConfiguration": "bpc_1UNVRzF3rmUeGYk0RalWM39v",
+  "paymentMethodConfiguration": "pmc_1UNLT4F3rmUeGYk0Ki9SDMbH",
+  "updatedAt": "2026-10-06T10:18:23.868Z"
+}
