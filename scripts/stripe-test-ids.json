@@ -11,9 +11,15 @@
   "prices": {
     "cadenceiq_foundation_monthly": "price_1UNVRyF3rmUeGYk0SODQGFOq",
     "cadenceiq_standard_monthly": "price_1UNVRzF3rmUeGYk0z1Ubezf8",
-    "cadenceiq_setup_fee": "price_1UNVRzF3rmUeGYk03Zj07dfz"
+    "cadenceiq_setup_fee": "price_1UNVRzF3rmUeGYk03Zj07dfz",
+    "cadenceiq_ach_foundation_monthly": "price_1UNZdZF3rmUeGYk0HT0PiD0S",
+    "cadenceiq_card_foundation_monthly": "price_1UNZdZF3rmUeGYk08GQwCKlq",
+    "cadenceiq_ach_standard_monthly": "price_1UNZdZF3rmUeGYk0QQwOAlCt",
+    "cadenceiq_card_standard_monthly": "price_1UNZdZF3rmUeGYk07zsGbcOU",
+    "cadenceiq_ach_setup": "price_1UNZdaF3rmUeGYk0O4nsLCQg",
+    "cadenceiq_card_setup": "price_1UNZdaF3rmUeGYk005TJAaXw"
   },
   "portalConfiguration": "bpc_1UNVRzF3rmUeGYk0RalWM39v",
   "paymentMethodConfiguration": "pmc_1UNLT4F3rmUeGYk0Ki9SDMbH",
-  "updatedAt": "2026-10-06T10:18:23.868Z"
+  "updatedAt": "2026-10-06T14:46:38.877Z"
 }
