@@ -919,6 +919,25 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // over goal it takes to reach the "beat" tier (at-goal covers 0..goalBeatMin-1).
   // caTiers: monthly Case Acceptance bonus, up to 3 levels [{ min: percent, amt: dollars }]
   // (see caseAcceptanceBonusFor).
+  // Goal keys for the office at position li (see saveLocationsList).
+  const LOC_GOAL_KEY = /^(car|apo|loc\d+)(NPE|Started)$/;
+  const locGoalKey = (li, kind) => (li === 0 ? 'car' : li === 1 ? 'apo' : `loc${li}`) + kind;
+  // from[newIndex] = the office's old index (-1 for a new office). Every year's monthly goals.
+  const remapLocationGoals = (store, from) => {
+    const years = {};
+    for (const [y, yg] of Object.entries(store?.years || {})) {
+      years[y] = { ...yg, monthly: (yg.monthly || []).map(m => {
+        const out = {};
+        for (const [k, v] of Object.entries(m || {})) if (!LOC_GOAL_KEY.test(k)) out[k] = v;
+        from.forEach((oi, ni) => {
+          if (oi < 0) return;
+          for (const kind of ['NPE', 'Started']) if (m?.[locGoalKey(oi, kind)] !== undefined) out[locGoalKey(ni, kind)] = m[locGoalKey(oi, kind)];
+        });
+        return out;
+      }) };
+    }
+    return { ...store, version: 2, years };
+  };
   const ZERO_RATES = { sds: 0, ret: 0, white: 0, pif: 0, goalBelow: 0, goalMet: 0, goalBeat: 0, goalBelowRange: 5, goalBeatMin: 1, caTiers: [] };
   const RATES_MISSING_MSG = "Bonus rates didn't load, so nothing was saved. Refresh the page and try again.";
   // Unsaved per-user rate edits in Settings, keyed by tc_users.id.
@@ -1655,7 +1674,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       setPracticeSoftware(typeof cloudSoftware === 'string' ? cloudSoftware : null);
       setBonusesEnabled(cloudBonusesEnabled !== false);
       setTeamVisibility({ ...DEFAULT_TEAM_VISIBILITY, ...(cloudTeamVisibility && typeof cloudTeamVisibility === 'object' ? cloudTeamVisibility : {}) });
-      if (cloudObsRecall && typeof cloudObsRecall === 'number' && cloudObsRecall > 0) setObsRecallMonths(cloudObsRecall);
+      setObsRecallMonths(typeof cloudObsRecall === 'number' && cloudObsRecall > 0 ? cloudObsRecall : 4); // reset when switching to a practice without one
       // Reset when the practice has none saved, so switching practices (platform owner) never
       // carries one practice's recipients into another.
       if (cloudRecipients && (Array.isArray(cloudRecipients.to) || Array.isArray(cloudRecipients.cc))) {
@@ -1915,17 +1934,31 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     return null;
   };
   // Each returns null on success or the error text.
-  const saveLocationsList = async (updated) => {
-    const { error } = await supabase.from('settings').upsert({ key: 'locations', value: updated, practice_id: setupPracticeId }, { onConflict: 'key,practice_id' });
-    if (error) return error.message || 'unknown error';
-    setLocations(updated);
-    localStorage.setItem(`npe-locations-${currentUser?.practiceId}`, JSON.stringify(updated));
-    return null;
-  };
   const saveGoalsStore = async (newStore) => {
     const { error } = await supabase.from('settings').upsert({ key: 'goals', value: newStore, practice_id: setupPracticeId }, { onConflict: 'key,practice_id' });
     if (error) return error.message || 'unknown error';
     setGoalsStore(newStore);
+    return null;
+  };
+  // Per-office goals are stored by the office's position in the list (carNPE = first office,
+  // apoNPE = second, loc2NPE = third ...). When the list changes, each office's goals move to
+  // its new position and a removed office's goals go with it, so no goal lands on the wrong
+  // office or keeps counting in the practice total.
+  const saveLocationsList = async (updated) => {
+    const from = updated.map(name => locations.indexOf(name));
+    const unmoved = updated.length >= locations.length && from.every((oi, ni) => oi === ni || oi === -1);
+    const prevGoals = goalsStore;
+    if (!unmoved) {
+      const goalErr = await saveGoalsStore(remapLocationGoals(goalsStore, from));
+      if (goalErr) return `goals couldn't be moved with the offices (${goalErr}); nothing was changed`;
+    }
+    const { error } = await supabase.from('settings').upsert({ key: 'locations', value: updated, practice_id: setupPracticeId }, { onConflict: 'key,practice_id' });
+    if (error) {
+      if (!unmoved) await saveGoalsStore(prevGoals);
+      return error.message || 'unknown error';
+    }
+    setLocations(updated);
+    localStorage.setItem(`npe-locations-${currentUser?.practiceId}`, JSON.stringify(updated));
     return null;
   };
 
@@ -4021,8 +4054,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const apoNPEGoal = mGoal.apoNPE || 0;
           const apoStartedGoal = mGoal.apoStarted || 0;
           const convGoal = mGoal.convGoal || 70;
-          const totalNPEGoal = goals.overallMode ? (mGoal.totalNPE || 0) : (carNPEGoal + apoNPEGoal);
-          const totalStartedGoal = goals.overallMode ? (mGoal.totalStarted || 0) : (carStartedGoal + apoStartedGoal);
+          const { npe: totalNPEGoal, started: totalStartedGoal } = monthGoalTotals(goals, mGoal);
 
           // Today's queue counts — scoped to the selected TC so the hero/urgency cards
           // match the (already TC-scoped) metric cards below. For a TC this is always
@@ -6178,8 +6210,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
           // Goals
           const mGoal = goals.monthly[curM] || {};
-          const totalNPEGoal = goals.overallMode ? (mGoal.totalNPE || 0) : (mGoal.carNPE || 0) + (mGoal.apoNPE || 0);
-          const totalStartedGoal = goals.overallMode ? (mGoal.totalStarted || 0) : (mGoal.carStarted || 0) + (mGoal.apoStarted || 0);
+          const { npe: totalNPEGoal, started: totalStartedGoal } = monthGoalTotals(goals, mGoal);
           const convGoal = mGoal.convGoal || 70;
 
           // Practice-wide on-time rate (current month, all patients)
@@ -11282,7 +11313,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         {/* SETTINGS */}
         {currentView === 'settings' && (
           <div style={{maxWidth:'1200px'}}>
-            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>{currentUser?.locationScope ? 'My Account' : (currentUser?.role === 'tc' || currentUser?.role === 'consultant') ? 'My Account' : currentUser?.role === 'manager' ? 'Team & Account' : 'Goals & Settings'}</h2>
+            <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',marginBottom:'24px'}}>{currentUser?.locationScope ? 'My Account' : (currentUser?.role === 'tc' || currentUser?.role === 'consultant') ? 'My Account' : 'Settings'}</h2>
 
             {/* ── Change My Password — visible to all users ── */}
             <div style={{backgroundColor:'white',padding:'24px',borderRadius:'10px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',marginBottom:'24px',maxWidth:'420px'}}>
@@ -11575,7 +11606,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',flexWrap:'wrap',padding:'12px 16px',backgroundColor:'white',border:'1px solid #e5e7eb',borderRadius:'8px',marginBottom:'10px'}}>
                       <div>
                         <div style={{fontSize:'14px',fontWeight:'700',color:'#202020'}}>🖥️ Practice management software</div>
-                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>The system you schedule patients in. Decides whether today's scheduled exams can be pulled into Add NPE.</div>
+                        <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>The system you schedule patients in. Where CadenceIQ can connect to it, today's scheduled exams can be pulled into Add NPE.</div>
                       </div>
                       <select value={practiceSoftware || ''} onChange={async e => {
                           const v = e.target.value || null;
@@ -11773,7 +11804,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                         : newRole === 'admin'
                                         ? `Make ${u.name} a full Admin? They'll gain complete access — practice metrics, bonuses, pay, and every setting. Patients already assigned to ${u.name} stay assigned until you reassign them.`
                                         : newRole === 'manager'
-                                        ? `Make ${u.name} an Office Manager? They'll see the dashboard, follow-ups, on-time performance, and can manage TC logins — but NOT practice metrics, the bonus tabs, or pay settings. They're removed from the assignable-TC list; reassign any patients still under them.`
+                                        ? `Make ${u.name} an Office Manager? They'll work patients like a TC, for the whole practice. What else they may do (delete patients, manage TC logins, edit goals and settings, see every bonus) is set in Office Manager Permissions, and whether they see production or Practice Metrics in What Your Team Can See. They never change pay settings. They're removed from the assignable-TC list; reassign any patients still under them.`
                                         : `Change ${u.name} to a TC? They'll appear as an assignable TC and lose admin/manager access.`;
                                       if (!window.confirm(msg)) return;
                                       const { data: roleUpdated, error: roleErr } = await supabase.from('tc_users').update({ role: newRole }).eq('id', u.id).select(TEAM_COLS);
@@ -12536,7 +12567,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       )}
                     </div>
                   )}
-                  {!supabase && <div style={{fontSize:'12px',color:'#92400e',marginTop:'4px'}}>Paste your Supabase URL & anon key in the code to enable cloud sync.</div>}
+                  {!supabase && <div style={{fontSize:'12px',color:'#92400e',marginTop:'4px'}}>Not connected to the database. Changes on this screen won't be saved; contact CadenceIQ support.</div>}
                 </div>
                 {supabase && (
                   <button
@@ -12596,8 +12627,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 const isPastYear = goalsEditYear < curYear;
                 const locs = locations.length > 0 ? locations : ['Loc 1', 'Loc 2'];
                 // helpers: read/write per-location goal values (backwards-compatible with carNPE/apoNPE keys)
-                const npeKey = (li) => li === 0 ? 'carNPE' : li === 1 ? 'apoNPE' : `loc${li}NPE`;
-                const stKey  = (li) => li === 0 ? 'carStarted' : li === 1 ? 'apoStarted' : `loc${li}Started`;
+                const npeKey = (li) => locGoalKey(li, 'NPE');
+                const stKey  = (li) => locGoalKey(li, 'Started');
                 // Annual totals per location
                 const totByLoc = locs.map((_, li) => ({
                   npe:     goals.monthly.reduce((s,m) => s + (m[npeKey(li)]||0), 0),

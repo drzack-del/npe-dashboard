@@ -28,7 +28,7 @@ export const ROLE_INFO = [
   { value: 'tc', label: 'TC', who: 'Treatment coordinators',
     can: 'Works the Follow-Up Queue and adds new patients. Sees only their own bonus.' },
   { value: 'manager', label: 'Office Manager', who: 'Office or practice managers',
-    can: 'Everything a TC does, for the whole practice. By default they can also add TCs, delete patients and see every TC\'s bonus; change that in Settings → Team.' },
+    can: 'Everything a TC does, for the whole practice. By default they can also add TCs and delete patients, and see only their own bonus; change that in Settings → Office Manager Permissions.' },
   { value: 'admin', label: 'Admin', who: 'Doctors and owners',
     can: 'Full control: settings, goals, team, bonus rates and production numbers.' },
   { value: 'consultant', label: 'Consultant', who: 'Outside consultants, or anyone who should only look',
@@ -299,7 +299,7 @@ const TeamStep = ({ teamMembers, form, onAddTeamMember, teamAdding, teamMsg, tea
       <div style={{ marginTop: '6px', paddingTop: '14px', borderTop: '1px solid #f3f4f6' }}>
         <div style={{ fontSize: '14px', fontWeight: 700, color: '#202020', marginBottom: '4px' }}>What should your team see?</div>
         <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '10px', lineHeight: 1.5 }}>
-          By default only admins and consultants see dollar amounts. Tick anything you also want TCs or Office Managers to see. You can change this anytime in Settings → Team.
+          By default only admins and consultants see dollar amounts. Tick anything you also want TCs or Office Managers to see. You can change this anytime in Settings → What Your Team Can See.
         </div>
         <TeamVisibilityChoices value={teamVisibility} onChange={onSetTeamVisibility} />
       </div>
@@ -312,7 +312,7 @@ const TeamStep = ({ teamMembers, form, onAddTeamMember, teamAdding, teamMsg, tea
 export const DEFAULT_TEAM_VISIBILITY = { tcProduction: false, tcMetrics: false, managerProduction: false, managerMetrics: false };
 export const TEAM_VISIBILITY_OPTIONS = [
   { key: 'Production', label: 'Production on the dashboard', hint: 'Contract dollars from this month\'s starts, and financing.' },
-  { key: 'Metrics', label: 'Practice Metrics page', hint: 'Net production, collections and monthly results. View only, they can\'t change it.' },
+  { key: 'Metrics', label: 'Practice Metrics page', hint: 'Net production, collections and monthly results. View only, unless an Office Manager may edit goals and settings.' },
 ];
 export const TeamVisibilityChoices = ({ value, onChange, compact }) => {
   const v = { ...DEFAULT_TEAM_VISIBILITY, ...(value || {}) };
