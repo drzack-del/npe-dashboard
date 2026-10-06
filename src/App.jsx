@@ -2436,6 +2436,109 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     }) || null;
   };
 
+  // ── One source for every bonus figure ────────────────────────────────
+  // The dashboard card, Follow-Up Queue banner, Bonus Audit (total, payment summary,
+  // breakdown, CSV) and the Settings campaign list all read these two, so no two
+  // screens can show a TC different money for the same month.
+
+  // What one person earns from one campaign. With monthStr ("YYYY-MM") only starts in that
+  // month count: campaign pay lands in the month of the start, like base pay, so a campaign
+  // that runs across a month end pays each start once. Without it, the whole campaign so far.
+  // The start goal is per person and counted over the whole campaign, as the campaign form
+  // promises ("if the TC reaches N starts"). Until it's reached the money is on hold.
+  const campaignResultFor = (bonus, name, monthStr) => {
+    const unlocked = isThresholdMet(bonus, name);
+    const startCount = bonus.goalThreshold > 0 ? thresholdStartCount(bonus, name) : null;
+    const rows = patients
+      .filter(p => p.tc === name && (!monthStr || (effectiveStartDate(p) || '').startsWith(monthStr)))
+      .map(p => ({ p, date: effectiveStartDate(p), amount: popupBonusEarnings(p, bonus, name) }))
+      .filter(r => r.amount > 0);
+    const sum = rows.reduce((s, r) => s + r.amount, 0);
+    return { bonus, name, unlocked, startCount, rows, earned: unlocked ? sum : 0, onHold: unlocked ? 0 : sum };
+  };
+
+  // Everything one person earns in one calendar month: per-start pay, campaigns, and the
+  // monthly starts-goal and Case Acceptance payouts. Ex-staff and anyone with their bonus
+  // switched off earn $0 here, same as ratesForTC.
+  const bonusForMonth = (name, monthStr) => {
+    const out = { name, items: [], campaigns: [], goals: [], base: 0, campaign: 0, onHold: 0, goal: 0, total: 0,
+      counts: { starts: 0, sds: 0, ret: 0, white: 0, pif: 0 } };
+    const u = name ? tcUsers.find(x => x.name === name) : null;
+    if (!u || u.bonus_enabled === false) return out;
+    const r = ratesForTC(name);
+    patients.forEach(p => {
+      if (p.tc !== name) return;
+      const sd = effectiveStartDate(p);
+      if (!sd || !sd.startsWith(monthStr)) return;
+      const isStart = isSDS(p) || p.ST;
+      if (isStart) out.counts.starts++;
+      if (getReplacingCampaign(p, name)) return; // paid by that campaign instead
+      const add = (type, key, amount) => {
+        out.counts[key]++;
+        if (amount > 0) { out.items.push({ date: sd, p, type, amount }); out.base += amount; }
+      };
+      if (isSDS(p)) add('SDS', 'sds', r.sds);
+      if ((isStart || p.DBRETS) && p['R+']) add('Retainer', 'ret', r.ret);
+      if ((isStart || p.DBRETS) && p['W+']) add('Whitening', 'white', r.white);
+      if (isStart && p.PIF) add('PIF', 'pif', r.pif);
+    });
+    out.campaigns = popupBonuses
+      .filter(b => b.startDate.slice(0, 7) <= monthStr && b.endDate.slice(0, 7) >= monthStr && (b.tcFilter === 'All' || b.tcFilter === name))
+      .map(b => campaignResultFor(b, name, monthStr));
+    out.campaign = out.campaigns.reduce((s, c) => s + c.earned, 0);
+    out.onHold = out.campaigns.reduce((s, c) => s + c.onHold, 0);
+    out.goals = [goalTierBonusFor(name, monthStr), caseAcceptanceBonusFor(name, monthStr)]
+      .filter(g => g && g.amount > 0).map(g => ({ name, kind: 'goal', ...g }));
+    out.goal = out.goals.reduce((s, g) => s + g.amount, 0);
+    out.total = out.base + out.campaign + out.goal;
+    return out;
+  };
+
+  // The next money within reach for one person this month, each as "N more starts → +$X",
+  // nearest first. The dashboard bonus card uses it to show a TC what more starts are worth.
+  const bonusNextSteps = (name, monthStr, b = bonusForMonth(name, monthStr)) => {
+    const u = name ? tcUsers.find(x => x.name === name) : null;
+    if (!u || u.bonus_enabled === false) return [];
+    const r = ratesForTC(name);
+    const steps = [];
+    // A campaign whose start goal isn't reached yet: hitting it releases what's on hold.
+    b.campaigns.forEach(c => {
+      if (c.unlocked || !(c.bonus.goalThreshold > 0)) return;
+      steps.push({ key: `camp-${c.bonus.id}`, need: c.bonus.goalThreshold - c.startCount, gain: c.onHold,
+        what: `unlocks ${c.bonus.name}`, detail: `${c.startCount}/${c.bonus.goalThreshold} your starts${c.onHold > 0 ? ' · releases what’s on hold' : ''}` });
+    });
+    // Practice starts-goal tiers (whole practice's starts).
+    const goal = startsGoalForMonth(monthStr);
+    if (goal > 0 && (r.goalBelow > 0 || r.goalMet > 0 || r.goalBeat > 0)) {
+      const starts = practiceStartsInMonth(monthStr);
+      const belowRange = Number(r.goalBelowRange) > 0 ? Number(r.goalBelowRange) : 5;
+      const beatMin = Number(r.goalBeatMin) > 0 ? Number(r.goalBeatMin) : 1;
+      const current = goalTierBonusFor(name, monthStr)?.amount || 0;
+      const next = [
+        { at: goal - belowRange, amt: r.goalBelow || 0, what: `${belowRange} under the starts goal` },
+        { at: goal, amt: r.goalMet || 0, what: 'practice hits its starts goal' },
+        { at: goal + beatMin, amt: r.goalBeat || 0, what: `practice beats its starts goal` },
+      ].find(t => t.at > starts && t.amt > current);
+      if (next) steps.push({ key: 'goal', need: next.at - starts, gain: next.amt - current, what: next.what,
+        detail: `practice ${starts}/${goal} starts · team effort` });
+    }
+    // Case Acceptance levels (this person's own starts ÷ exams). Assumes no new exams.
+    const tiers = cleanTiers(r.caTiers);
+    if (tiers.length > 0) {
+      const { exams, starts, rate } = tcCaseAcceptance(name, monthStr);
+      if (exams > 0) {
+        const current = caseAcceptanceBonusFor(name, monthStr)?.amount || 0;
+        const next = tiers.find(t => t.min > (rate ?? 0) && t.amt > current);
+        if (next) {
+          const need = Math.max(1, Math.ceil(next.min * exams / 100) - starts);
+          steps.push({ key: 'ca', need, gain: next.amt - current, what: `Case Acceptance ${next.min}%`,
+            detail: `you're at ${rate ?? 0}% (${starts}/${exams})` });
+        }
+      }
+    }
+    return steps.filter(s => s.need > 0 && s.gain > 0).sort((a, b2) => a.need - b2.need);
+  };
+
   // Calculate metrics. npePts = patients filtered by NPE date (for NPE totals).
   // startPts = patients filtered by start date (for start counts). Defaults to npePts if not provided.
   const calculateMetrics = (pts, startPts = null) => {
@@ -4583,45 +4686,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   if (entry.date <= entry.scheduledDate) tcOT++;
                 });
               });
-              // Base bonus for selected month
-              let tcBaseBonus = 0;
-              patients.forEach(p => {
-                if (p.tc !== tcName) return;
-                const sd = effectiveStartDate(p);
-                if (!sd || !sd.startsWith(selMonthStr)) return;
-                const replacing = getReplacingCampaign(p, tcName);
-                if (!replacing) {
-                  const tr = ratesForTC(tcName);
-                  if (isSDS(p)) tcBaseBonus += tr.sds;
-                  if ((isSDS(p)||p.ST||p.DBRETS) && p['R+']) tcBaseBonus += tr.ret;
-                  if ((isSDS(p)||p.ST||p.DBRETS) && p['W+']) tcBaseBonus += tr.white;
-                  if ((isSDS(p)||p.ST) && p.PIF) tcBaseBonus += tr.pif;
-                }
-              });
-              // Campaign bonus for selected month
-              const activeCampaigns = popupBonuses.filter(b => {
-                const overlapStart = b.startDate.substring(0,7) <= selMonthStr;
-                const overlapEnd   = b.endDate.substring(0,7)   >= selMonthStr;
-                return overlapStart && overlapEnd && (b.tcFilter==='All' || b.tcFilter===tcName);
-              });
-              let tcCampaignBonus = 0;
-              activeCampaigns.forEach(b => {
-                if (!isThresholdMet(b, tcName)) return;
-                patients.forEach(p => { tcCampaignBonus += popupBonusEarnings(p, b, tcName); });
-              });
-              // Starts this month (for campaign threshold display)
-              const tcStartsThisMonth = selStartPts.filter(p => p.tc===tcName && (isSDS(p)||p.ST)).length;
+              // Bonus for the selected month — the same figure the Bonus Audit shows
+              const bonus = bonusForMonth(tcName, selMonthStr);
               return {
                 name: tcName,
                 // Denominator counts only log entries carrying a scheduledDate — follow-ups
                 // that were actually due, not total call volume.
                 onTimeRate: tcOTTotal>0 ? Math.round((tcOT/tcOTTotal)*100) : null,
                 onTimeTotal: tcOTTotal,
-                baseBonus: tcBaseBonus,
-                campaignBonus: tcCampaignBonus,
-                totalBonus: tcBaseBonus + tcCampaignBonus,
-                startsThisMonth: tcStartsThisMonth,
-                activeCampaigns,
+                bonus,
               };
             });
 
@@ -4833,6 +4906,118 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   })()}
                 </div>
                 )}
+
+                {/* TC Bonus — above the KPIs, because for a TC this is the number that moves
+                    them. Hidden in custom range (bonuses are calendar-month). A location owner
+                    never sees it — it's staff pay, not a location number, and bonusPerTC alone
+                    isn't a reliable gate since an admin could still flip bonus_enabled on for
+                    this row later. Every figure comes from bonusForMonth, the same calculation
+                    the Bonus Audit uses, so the two always agree. */}
+                {bonusesEnabled && !isLocationOwner && !isRangeMode && (() => {
+                  // Compensation is need-to-know: admins, consultants and "see all bonuses"
+                  // managers see the whole team; everyone else sees only their own figure —
+                  // and only when their own bonus display is enabled.
+                  const isAdmin = seesAllBonuses;
+                  const bonusPerTC = (isAdmin || currentUser?.bonusEnabled)
+                    ? perTCNew.filter(tc => {
+                        const u = tcUsers.find(u => u.name === tc.name);
+                        if (u && u.bonus_enabled === false) return false;
+                        return isAdmin || tc.name === currentUser?.name;
+                      })
+                    : [];
+                  if (bonusPerTC.length === 0) return null;
+                  const isNowMonth = selMonthStr === todayStrNew.slice(0, 7);
+                  const daysLeft = isNowMonth ? new Date(dashYear, dashMonth + 1, 0).getDate() - Number(todayStrNew.slice(8, 10)) : 0;
+                  const solo = bonusPerTC.length === 1;
+                  const chip = (label, amt, tone) => (
+                    <span key={label} style={{display:'inline-flex',alignItems:'baseline',gap:'5px',padding:'4px 10px',borderRadius:'999px',fontSize:'12px',
+                      backgroundColor: tone === 'camp' ? '#fefce8' : tone === 'goal' ? '#ecfeff' : '#f3f4f6',
+                      border:`1px solid ${tone === 'camp' ? '#fde68a' : tone === 'goal' ? '#a5f3fc' : '#e5e7eb'}`,
+                      color: tone === 'camp' ? '#92400e' : tone === 'goal' ? '#0e7490' : '#374151'}}>
+                      <strong style={{fontVariantNumeric:'tabular-nums'}}>${amt}</strong>{label}
+                    </span>
+                  );
+                  return (
+                  <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px',gap:'12px',flexWrap:'wrap'}}>
+                      <div>
+                        <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>💰 {isAdmin ? 'TC Bonus' : 'My Bonus'} — {selMonthLabel}</div>
+                        {isNowMonth && <div style={{fontSize:'12px',color:'#6b7280',marginTop:'1px'}}>{daysLeft === 0 ? 'Last day of the month' : `${daysLeft} day${daysLeft !== 1 ? 's' : ''} left this month`}</div>}
+                      </div>
+                      <button onClick={()=>setCurrentView('bonus')} style={{padding:'7px 14px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'12px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
+                    </div>
+                    <div style={{display:'grid',gridTemplateColumns: solo ? '1fr' : 'repeat(auto-fit,minmax(300px,1fr))',gap:'14px'}}>
+                      {bonusPerTC.map(tc => {
+                        const b = tc.bonus;
+                        const r = ratesForTC(tc.name);
+                        const steps = isNowMonth ? bonusNextSteps(tc.name, selMonthStr, b) : [];
+                        // What one more start pays today: the per-start rates, plus any campaign
+                        // already unlocked and running today.
+                        const liveCamps = b.campaigns.filter(c => c.unlocked && todayStrNew >= c.bonus.startDate && todayStrNew <= c.bonus.endDate && c.bonus.amtSDS !== undefined && !c.bonus.replacesBase);
+                        const perStart = [
+                          r.sds > 0 && { l: 'same-day start', a: r.sds },
+                          r.ret > 0 && { l: 'retainers added', a: r.ret },
+                          r.white > 0 && { l: 'whitening added', a: r.white },
+                          r.pif > 0 && { l: 'paid in full', a: r.pif },
+                          ...liveCamps.flatMap(c => [
+                            c.bonus.amtScheduled > 0 && { l: `any start · ${c.bonus.name}`, a: c.bonus.amtScheduled, camp: true },
+                            c.bonus.amtSDS > 0 && c.bonus.amtSDS !== c.bonus.amtScheduled && { l: `same-day start · ${c.bonus.name}`, a: c.bonus.amtSDS, camp: true },
+                          ]),
+                        ].filter(Boolean);
+                        return (
+                          <div key={tc.name} style={{display:'grid',gridTemplateColumns: solo && isNowMonth ? 'minmax(220px,1fr) minmax(280px,1.6fr)' : '1fr',gap:'18px',borderRadius:'12px',padding:'18px 20px',border:'1px solid #e5e7eb',backgroundColor:'#fafafa'}}>
+                            <div>
+                              {!solo || isAdmin ? <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'6px'}}>{tc.name}</div> : null}
+                              <div style={{fontSize:'44px',fontWeight:'900',color:'#10b981',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>${b.total}</div>
+                              <div style={{fontSize:'12px',color:'#6b7280',margin:'4px 0 10px'}}>{isNowMonth ? 'earned so far' : 'earned'} · {b.counts.starts} start{b.counts.starts !== 1 ? 's' : ''}</div>
+                              <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
+                                {chip(' per-start pay', b.base)}
+                                {b.campaigns.filter(c => c.earned > 0).map(c => chip(` ${c.bonus.name}`, c.earned, 'camp'))}
+                                {b.goals.map(g => chip(g.kind === 'ca' ? ' case acceptance' : ' starts goal', g.amount, 'goal'))}
+                              </div>
+                              {b.onHold > 0 && (
+                                <div style={{marginTop:'10px',fontSize:'12px',color:'#92400e',fontWeight:'600'}}>🔒 ${b.onHold} more waiting on a campaign goal</div>
+                              )}
+                            </div>
+                            {isNowMonth && (
+                              <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                                {steps.length > 0 && (
+                                  <div>
+                                    <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'6px'}}>Next up</div>
+                                    <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+                                      {steps.slice(0, 3).map(s => (
+                                        <div key={s.key} style={{display:'flex',alignItems:'center',gap:'12px',padding:'8px 12px',borderRadius:'8px',backgroundColor:'white',border:'1px solid #e5e7eb'}}>
+                                          <div style={{fontSize:'13px',fontWeight:'800',color:'#111827',whiteSpace:'nowrap'}}>{s.need} more start{s.need !== 1 ? 's' : ''}</div>
+                                          <div style={{flex:1,minWidth:0}}>
+                                            <div style={{fontSize:'12px',color:'#374151',fontWeight:'600'}}>{s.what}</div>
+                                            <div style={{fontSize:'11px',color:'#9ca3af'}}>{s.detail}</div>
+                                          </div>
+                                          <div style={{fontSize:'16px',fontWeight:'900',color:'#10b981',whiteSpace:'nowrap'}}>+${s.gain}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {perStart.length > 0 && (
+                                  <div>
+                                    <div style={{fontSize:'11px',fontWeight:'700',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'6px'}}>Every start this month pays</div>
+                                    <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
+                                      {perStart.map(x => chip(` ${x.l}`, x.a, x.camp ? 'camp' : null))}
+                                    </div>
+                                  </div>
+                                )}
+                                {steps.length === 0 && perStart.length === 0 && (
+                                  <div style={{fontSize:'12px',color:'#9ca3af'}}>No per-start rates or goals are set up for this month.</div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  );
+                })()}
 
                 {/* ── KPI table ────────────────────────────────────────────────
                      Practice totals on top, locations beneath, on ONE grid — so every
@@ -5244,90 +5429,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     row of pills inside the Who's Stuck card below, summed from that
                     card's own rows — one pile, reported once, in the place where you
                     can actually act on it. */}
-
-                {/* TC Bonus — full width (hidden in custom range; bonuses are calendar-month).
-                    A location owner never sees this — it's staff pay, not a location
-                    number, and bonusPerTC alone isn't a reliable gate since an admin
-                    could still flip bonus_enabled on for this row later. */}
-                {bonusesEnabled && !isLocationOwner && !isRangeMode && (() => {
-                  // Compensation is need-to-know: the admin sees the whole team, while
-                  // managers and TCs see only their own figure — and only when their own
-                  // bonus display is enabled. Mirrors how the Bonus Audit view already
-                  // scopes itself, so neither route exposes a colleague's pay.
-                  // Everyone's bonus for admins, consultants and "see all bonuses" managers;
-                  // otherwise only the viewer's own (the only rates they are given).
-                  const isAdmin = seesAllBonuses;
-                  const bonusPerTC = (isAdmin || currentUser?.bonusEnabled)
-                    ? perTCNew.filter(tc => {
-                        const u = tcUsers.find(u => u.name === tc.name);
-                        if (u && u.bonus_enabled === false) return false;
-                        return isAdmin || tc.name === currentUser?.name;
-                      })
-                    : [];
-                  if (bonusPerTC.length === 0) return null;
-                  return (
-                  <div style={{backgroundColor:'white',borderRadius:'12px',padding:'20px 24px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'1px solid #f3f4f6'}}>
-                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px'}}>
-                      <div style={{fontSize:'15px',fontWeight:'800',color:'#202020'}}>💰 {isAdmin ? 'TC Bonus' : 'My Bonus'} — {selMonthLabel}</div>
-                      <button onClick={()=>setCurrentView('bonus')} style={{padding:'7px 14px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'12px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
-                    </div>
-                    <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(bonusPerTC.length,1)},1fr)`,gap:'14px',maxWidth:bonusPerTC.length===1?'380px':'none'}}>
-                      {bonusPerTC.map(tc => {
-                        const todayStr2 = todayStrNew;
-                        const activePops = tc.activeCampaigns.filter(b => todayStr2>=b.startDate && todayStr2<=b.endDate);
-                        return (
-                          <div key={tc.name} style={{borderRadius:'12px',padding:'18px 20px',border:'1px solid #e5e7eb',backgroundColor:'#fafafa'}}>
-                            <div style={{fontSize:'12px',fontWeight:'700',color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:'6px'}}>{tc.name}</div>
-                            <div style={{fontSize:'38px',fontWeight:'900',color:'#10b981',lineHeight:1,marginBottom:'4px'}}>${tc.totalBonus}</div>
-                            <div style={{fontSize:'12px',color:'#6b7280',marginBottom:'12px'}}>
-                              {tc.startsThisMonth} start{tc.startsThisMonth!==1?'s':''} · base ${tc.baseBonus}{tc.campaignBonus>0?` + $${tc.campaignBonus} campaign`:''}
-                            </div>
-                            {activePops.map(b => {
-                              const threshOk = isThresholdMet(b, tc.name);
-                              const startCnt = b.goalThreshold>0 ? thresholdStartCount(b, tc.name) : tc.startsThisMonth;
-                              const pct = b.goalThreshold>0 ? Math.min(100,Math.round((startCnt/b.goalThreshold)*100)) : 100;
-                              const potentialBonus = patients.filter(p => {
-                                const sd = effectiveStartDate(p);
-                                if (!sd || sd < b.startDate || sd > b.endDate) return false;
-                                if (b.tcFilter !== 'All' && p.tc !== b.tcFilter) return false;
-                                if (p.tc !== tc.name) return false;
-                                return true;
-                              }).reduce((sum, p) => sum + popupBonusEarnings(p, b, tc.name), 0);
-                              const projectedBonus = b.replacesBase && b.goalThreshold > 0 && b.amtSDS > 0
-                                ? b.goalThreshold * b.amtSDS
-                                : potentialBonus;
-                              return (
-                                <div key={b.id} style={{marginTop:'8px',padding:'10px 12px',borderRadius:'8px',backgroundColor:threshOk?'#f0fdf4':'#f3f4f6',border:`1px solid ${threshOk?'#86efac':'#d1d5db'}`}}>
-                                  <div style={{fontSize:'12px',fontWeight:'700',color:threshOk?'#166534':'#374151',marginBottom:'6px'}}>
-                                    {threshOk?'🏆':'🔒'} {b.name}
-                                  </div>
-                                  {b.goalThreshold>0 && (
-                                    <>
-                                      <div style={{height:'6px',backgroundColor:'rgba(0,0,0,0.09)',borderRadius:'3px',overflow:'hidden',marginBottom:'4px'}}>
-                                        <div style={{height:'100%',width:`${pct}%`,backgroundColor:threshOk?'#10b981':'#6b7280',borderRadius:'3px'}} />
-                                      </div>
-                                      <div style={{fontSize:'11px',color:threshOk?'#166534':'#6b7280',marginBottom: threshOk ? '0' : '6px'}}>
-                                        {threshOk ? `Goal hit! ${startCnt}/${b.goalThreshold} starts` : `${startCnt}/${b.goalThreshold} starts — ${b.goalThreshold-startCnt} to go`}
-                                      </div>
-                                      {!threshOk && (
-                                        <div style={{padding:'6px 10px',borderRadius:'6px',backgroundColor:'white',border:'1px solid #e5e7eb',marginTop:'4px'}}>
-                                          <div style={{fontSize:'10px',color:'#9ca3af',fontWeight:'600',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:'2px'}}>Unlock this bonus</div>
-                                          <div style={{fontSize:'22px',fontWeight:'900',color:'#374151',lineHeight:1}}>${projectedBonus}</div>
-                                          <div style={{fontSize:'11px',color:'#6b7280',marginTop:'2px'}}>at {b.goalThreshold} starts</div>
-                                        </div>
-                                      )}
-                                    </>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  );
-                })()}
 
                 {/* Pipeline — a COHORT card, not a period card. It answers "of the exams
                     we saw in this window, where did each one end up", so its tiles are a
@@ -6603,8 +6704,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               );
               if (activeBonuses.length === 0) return null;
               return activeBonuses.map(bonus => {
-                const qualifying = patients.filter(p => popupBonusEarnings(p, bonus, myTC) > 0);
-                const earned = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, myTC), 0);
+                // Per person, whole campaign so far, and only once that person reaches the
+                // start goal — the same rule as the dashboard card and Bonus Audit.
+                const results = (myTC ? [myTC] : bonusEligibleNames)
+                  .filter(n => bonus.tcFilter === 'All' || bonus.tcFilter === n)
+                  .map(n => campaignResultFor(bonus, n));
+                const earned = results.reduce((s, r) => s + r.earned, 0);
+                const qualifyingCount = results.reduce((s, r) => s + (r.unlocked ? r.rows.length : 0), 0);
+                const mine = myTC ? results[0] : null;
+                const locked = mine && !mine.unlocked && bonus.goalThreshold > 0;
                 const endLabel = new Date(bonus.endDate + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'});
                 const typeLabels = bonus.amtSDS !== undefined
                   ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
@@ -6620,8 +6728,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </div>
                     </div>
                     <div style={{textAlign:'center',backgroundColor:'white',padding:'10px 18px',borderRadius:'8px',border:'1px solid #fde68a'}}>
-                      <div style={{fontSize:'26px',fontWeight:'900',color:'#10b981',lineHeight:1}}>${earned}</div>
-                      <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px'}}>{qualifying.length} qualifying so far</div>
+                      {locked ? (<>
+                        <div style={{fontSize:'20px',fontWeight:'900',color:'#92400e',lineHeight:1}}>🔒 {bonus.goalThreshold - mine.startCount} more start{bonus.goalThreshold - mine.startCount !== 1 ? 's' : ''}</div>
+                        <div style={{fontSize:'11px',color:'#92400e',marginTop:'3px'}}>{mine.onHold > 0 ? `to unlock $${mine.onHold} on hold` : `to unlock (${mine.startCount}/${bonus.goalThreshold})`}</div>
+                      </>) : (<>
+                        <div style={{fontSize:'26px',fontWeight:'900',color:'#10b981',lineHeight:1}}>${earned}</div>
+                        <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px'}}>{qualifyingCount} qualifying so far</div>
+                      </>)}
                     </div>
                   </div>
                 );
@@ -9068,14 +9181,19 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           // TCs, and Office Managers without "see all bonuses", see only their own. The
           // database only hands them their own rates anyway (team_bonus_rates).
           const bonusTCFilter = !seesAllBonuses ? currentUser.name : (bonusTCSelect !== 'All' ? bonusTCSelect : null);
-          // Practice-goal tier payouts for the selected month, one per user with
-          // tier amounts configured (respects the per-user bonus on/off switch)
-          // Monthly payouts (starts-goal tiers and Case Acceptance levels), one entry each.
-          const monthGoalBonuses = (bonusTCFilter ? [bonusTCFilter] : bonusEligibleNames)
-            .filter(n => { const u = tcUsers.find(x => x.name === n); return !u || u.bonus_enabled !== false; })
-            .flatMap(n => [goalTierBonusFor(n, bonusMonthFilter), caseAcceptanceBonusFor(n, bonusMonthFilter)]
-              .filter(Boolean).map(b => ({ name: n, kind: 'goal', ...b })))
-            .filter(x => x.amount > 0);
+          // Every figure on this page comes from bonusForMonth — the same calculation the
+          // dashboard card uses — so the top total, payment summary, breakdown, CSV and the
+          // dashboard all agree, campaigns and month-end payouts included.
+          const auditBonuses = (bonusTCFilter ? [bonusTCFilter] : bonusEligibleNames).map(n => bonusForMonth(n, bonusMonthFilter));
+          const monthGoalBonuses = auditBonuses.flatMap(b => b.goals);
+          const auditTotal = auditBonuses.reduce((s, b) => s + b.total, 0);
+          // Each line that pays, for the breakdown table and the CSV: per-start pay, unlocked
+          // campaign pay (in the month of the start), then the month-end payouts.
+          const auditLines = auditBonuses.flatMap(b => [
+            ...b.items.map(it => ({ date: it.date, patient: it.p.name, tc: b.name, type: it.type, amount: it.amount })),
+            ...b.campaigns.filter(c => c.unlocked).flatMap(c => c.rows.map(r => ({ date: r.date, patient: r.p.name, tc: b.name, type: 'Campaign', campaign: c.bonus.name, amount: r.amount }))),
+            ...b.goals.map(g => ({ date: `${bonusMonthFilter}-31`, patient: g.label, tc: b.name, type: g.kind === 'ca' ? 'Case Acceptance' : 'Goal', amount: g.amount, isGoal: true })),
+          ]).sort((a, b2) => a.date.localeCompare(b2.date));
           return (
           <div>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'24px',flexWrap:'wrap',gap:'12px'}}>
@@ -9114,22 +9232,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             ) : (
               <>
                 {(() => {
-                  let mbSDS = 0, mbRet = 0, mbWhite = 0, mbPIF = 0, mbTotal = 0;
-                  patients.filter(p => !bonusTCFilter || p.tc === bonusTCFilter).forEach(p => {
-                    const sd = effectiveStartDate(p);
-                    if (!sd || !sd.startsWith(bonusMonthFilter)) return;
-                    // Same rule as the per-person table below: bonuses switched off = not counted
-                    if (tcUsers.find(u => u.name === p.tc)?.bonus_enabled === false) return;
-                    const replacing = getReplacingCampaign(p, bonusTCFilter || null);
-                    if (replacing) return;
-                    const pr = ratesForTC(p.tc);
-                    if (isSDS(p)) { mbSDS++; mbTotal += pr.sds; }
-                    if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) { mbRet++; mbTotal += pr.ret; }
-                    if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) { mbWhite++; mbTotal += pr.white; }
-                    if ((isSDS(p) || p.ST) && p.PIF) { mbPIF++; mbTotal += pr.pif; }
-                  });
+                  const sumOf = f => auditBonuses.reduce((s, b) => s + f(b), 0);
+                  const mbSDS = sumOf(b => b.counts.sds), mbRet = sumOf(b => b.counts.ret), mbWhite = sumOf(b => b.counts.white), mbPIF = sumOf(b => b.counts.pif);
+                  const mbCampaigns = auditBonuses.flatMap(b => b.campaigns.filter(c => c.earned > 0).map(c => ({ ...c, who: b.name })));
+                  const mbOnHold = sumOf(b => b.onHold);
                   const monthLabel = new Date(bonusMonthFilter + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-                  const mbGoalTotal = monthGoalBonuses.reduce((s, g) => s + g.amount, 0);
                   return (
                     <div style={{backgroundColor:'#dcfce7',border:'1px solid #86efac',padding:'16px',borderRadius:'8px',marginBottom:'24px'}}>
                       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -9138,13 +9245,21 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           <div style={{fontSize:'14px',color:'#166534',marginTop:'4px'}}>
                             {mbSDS} SDS • {mbRet} Retainers • {mbWhite} Whitening • {mbPIF} PIF
                           </div>
-                          {monthGoalBonuses.length > 0 && (
+                          {mbCampaigns.length > 0 && (
                             <div style={{fontSize:'13px',color:'#166534',marginTop:'4px'}}>
-                              {monthGoalBonuses.map(g => `${g.kind === 'ca' ? '📈' : '🎯'} ${bonusTCFilter ? '' : g.name + ': '}${g.label} — $${g.amount}`).join(' · ')}
+                              {mbCampaigns.map(c => `🎯 ${bonusTCFilter ? '' : c.who + ': '}${c.bonus.name} — $${c.earned}`).join(' · ')}
                             </div>
                           )}
+                          {monthGoalBonuses.length > 0 && (
+                            <div style={{fontSize:'13px',color:'#166534',marginTop:'4px'}}>
+                              {monthGoalBonuses.map(g => `${g.kind === 'ca' ? '📈' : '🏁'} ${bonusTCFilter ? '' : g.name + ': '}${g.label} — $${g.amount}`).join(' · ')}
+                            </div>
+                          )}
+                          {mbOnHold > 0 && (
+                            <div style={{fontSize:'12px',color:'#92400e',marginTop:'4px'}}>🔒 ${mbOnHold} more on hold until a campaign start goal is reached — not in this total yet</div>
+                          )}
                         </div>
-                        <div style={{fontSize:'36px',fontWeight:'bold',color:'#10b981'}}>${mbTotal + mbGoalTotal}</div>
+                        <div style={{fontSize:'36px',fontWeight:'bold',color:'#10b981'}}>${auditTotal}</div>
                       </div>
                     </div>
                   );
@@ -9222,28 +9337,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   );
                 })()}
 
-                {/* Popup Bonus Earnings */}
+                {/* Campaign earnings — this month's starts only, unlocked person by person */}
                 {(() => {
-                  const relevantBonuses = popupBonuses.filter(b => {
-                    const overlapStart = b.startDate.substring(0, 7) <= bonusMonthFilter;
-                    const overlapEnd = b.endDate.substring(0, 7) >= bonusMonthFilter;
-                    return overlapStart && overlapEnd;
-                  });
+                  const relevantBonuses = popupBonuses.filter(b => b.startDate.slice(0, 7) <= bonusMonthFilter && b.endDate.slice(0, 7) >= bonusMonthFilter);
                   if (relevantBonuses.length === 0) return null;
+                  const monthLabel = new Date(bonusMonthFilter + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
                   return relevantBonuses.map(bonus => {
-                    const tcFilter = bonusTCFilter || null;
-                    const thresholdOk = isThresholdMet(bonus, tcFilter);
-                    const startCount = bonus.goalThreshold > 0 ? thresholdStartCount(bonus, tcFilter) : 0;
-                    const qualifying = thresholdOk ? patients.filter(p => popupBonusEarnings(p, bonus, tcFilter) > 0) : [];
-                    const total = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, tcFilter), 0);
+                    const results = auditBonuses.flatMap(b => b.campaigns.filter(c => c.bonus.id === bonus.id));
+                    if (results.length === 0) return null;
+                    const solo = results.length === 1 ? results[0] : null;
                     const typeLabels = bonus.amtSDS !== undefined
                       ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
                       : `$${bonus.amount}/start`;
-                    // Show locked state if threshold not met
-                    if (bonus.goalThreshold > 0 && !thresholdOk) {
+                    // Show locked state if this person hasn't reached the start goal
+                    if (solo && bonus.goalThreshold > 0 && !solo.unlocked) {
+                      const startCount = solo.startCount;
                       const pct = Math.min(100, Math.round((startCount / bonus.goalThreshold) * 100));
                       return (
-                        <div key={bonus.id} style={{backgroundColor:'#f8fafc',border:'2px solid #cbd5e1',borderRadius:'10px',padding:'20px 24px',marginBottom:'16px',opacity:0.85}}>
+                        <div key={bonus.id} style={{backgroundColor:'#f8fafc',border:'2px solid #cbd5e1',borderRadius:'10px',padding:'20px 24px',marginBottom:'16px'}}>
                           <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'12px'}}>
                             <span style={{fontSize:'22px'}}>🔒</span>
                             <div style={{flex:1}}>
@@ -9254,8 +9365,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               </div>
                             </div>
                             <div style={{textAlign:'right'}}>
-                              <div style={{fontSize:'22px',fontWeight:'900',color:'#94a3b8',lineHeight:1}}>Locked</div>
-                              <div style={{fontSize:'12px',color:'#9ca3af'}}>{bonus.goalThreshold - startCount} more to go</div>
+                              <div style={{fontSize:'22px',fontWeight:'900',color:'#94a3b8',lineHeight:1}}>{solo.onHold > 0 ? `$${solo.onHold} on hold` : 'Locked'}</div>
+                              <div style={{fontSize:'12px',color:'#9ca3af'}}>{bonus.goalThreshold - startCount} more start{bonus.goalThreshold - startCount !== 1 ? 's' : ''} to unlock</div>
                             </div>
                           </div>
                           <div style={{height:'8px',backgroundColor:'#e2e8f0',borderRadius:'4px',overflow:'hidden'}}>
@@ -9265,7 +9376,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                       );
                     }
-                    if (!bonus.goalThreshold && qualifying.length === 0) return null;
+                    const unlocked = results.filter(r => r.unlocked);
+                    const stillLocked = results.filter(r => !r.unlocked && bonus.goalThreshold > 0);
+                    const rows = unlocked.flatMap(r => r.rows.map(x => ({ ...x, tc: r.name })));
+                    const total = unlocked.reduce((sum, r) => sum + r.earned, 0);
+                    if (rows.length === 0 && stillLocked.length === 0) return null;
                     return (
                       <div key={bonus.id} style={{backgroundColor:'#fefce8',border:'2px solid #fbbf24',borderRadius:'10px',padding:'20px 24px',marginBottom:'16px'}}>
                         <div style={{display:'flex',alignItems:'center',gap:'12px',marginBottom:'12px'}}>
@@ -9275,7 +9390,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             <div style={{fontSize:'12px',color:'#92400e'}}>{typeLabels} · {bonus.startDate} → {bonus.endDate}</div>
                             {bonus.goalThreshold > 0 && (
                               <div style={{fontSize:'12px',color:'#10b981',fontWeight:'700',marginTop:'2px'}}>
-                                🏆 Goal reached! {startCount} / {bonus.goalThreshold} starts
+                                {solo ? `🏆 Goal reached! ${solo.startCount} / ${bonus.goalThreshold} starts` : `Unlocks at ${bonus.goalThreshold} starts per person`}
                               </div>
                             )}
                             {bonus.replacesBase && (
@@ -9284,9 +9399,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           </div>
                           <div style={{marginLeft:'auto',textAlign:'right'}}>
                             <div style={{fontSize:'28px',fontWeight:'900',color:'#10b981',lineHeight:1}}>${total}</div>
-                            <div style={{fontSize:'12px',color:'#9ca3af'}}>{qualifying.length} qualifying events</div>
+                            <div style={{fontSize:'12px',color:'#9ca3af'}}>{rows.length} qualifying in {monthLabel}</div>
                           </div>
                         </div>
+                        {rows.length > 0 && (
                         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
                           <thead>
                             <tr style={{backgroundColor:'#fef9c3'}}>
@@ -9297,10 +9413,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             </tr>
                           </thead>
                           <tbody>
-                            {qualifying.map(p => {
-                              const rowTotal = popupBonusEarnings(p, bonus, bonusTCFilter || null);
+                            {rows.map(({ p, date, amount, tc }) => {
                               const breakdown = bonus.amtSDS !== undefined ? (() => {
                                 const parts = [];
+                                if (bonus.replacesBase) { parts.push(`Start $${bonus.amtSDS}`); return parts.join(', '); }
                                 if (isSDS(p) && bonus.amtSDS > 0) parts.push(`SDS $${bonus.amtSDS}`);
                                 if (p.fromPending && bonus.amtPending > 0) parts.push(`Off Pending $${bonus.amtPending}`);
                                 if (p.ST && !isSDS(p) && !p.fromPending && bonus.amtScheduled > 0) parts.push(`ST $${bonus.amtScheduled}`);
@@ -9311,16 +9427,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               return (
                                 <tr key={p.id} style={{borderBottom:'1px solid #fde68a'}}>
                                   <td style={{padding:'6px 10px',color:'#374151'}}>{p.name}</td>
-                                  <td style={{padding:'6px 10px',color:'#374151'}}>{p.tc}</td>
-                                  <td style={{padding:'6px 10px',color:'#374151'}}>{p.startDate}</td>
+                                  <td style={{padding:'6px 10px',color:'#374151'}}>{tc}</td>
+                                  <td style={{padding:'6px 10px',color:'#374151'}}>{date}</td>
                                   <td style={{padding:'6px 10px',textAlign:'right',fontWeight:'700',color:'#10b981'}}>
-                                    ${rowTotal}{breakdown ? <span style={{fontSize:'11px',color:'#92400e',fontWeight:'400',marginLeft:'4px'}}>({breakdown})</span> : null}
+                                    ${amount}{breakdown ? <span style={{fontSize:'11px',color:'#92400e',fontWeight:'400',marginLeft:'4px'}}>({breakdown})</span> : null}
                                   </td>
                                 </tr>
                               );
                             })}
                           </tbody>
                         </table>
+                        )}
+                        {stillLocked.length > 0 && (
+                          <div style={{fontSize:'12px',color:'#92400e',marginTop:'10px'}}>
+                            🔒 Not unlocked yet: {stillLocked.map(r => `${r.name} ${r.startCount}/${bonus.goalThreshold}${r.onHold > 0 ? ` ($${r.onHold} on hold)` : ''}`).join(' · ')}
+                          </div>
+                        )}
                       </div>
                     );
                   });
@@ -9328,52 +9450,28 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
                 {/* Per-TC Payment Summary — doctor/admin only */}
                 {!bonusTCFilter && (() => {
-                  const perTC = {};
-                  patients.forEach(p => {
-                    const sd = effectiveStartDate(p);
-                    if (!sd || !sd.startsWith(bonusMonthFilter)) return;
-                    const tc = p.tc || 'Unassigned';
-                    const tcUser = tcUsers.find(u => u.name === tc);
-                    if (tcUser && tcUser.bonus_enabled === false) return;
-                    if (!perTC[tc]) perTC[tc] = { sds: 0, ret: 0, white: 0, pif: 0, sdsAmt: 0, retAmt: 0, whiteAmt: 0, pifAmt: 0, total: 0 };
-                    const replacing = getReplacingCampaign(p, null);
-                    const tr = ratesForTC(p.tc);
-                    if (isSDS(p) && !replacing) {
-                      perTC[tc].sds++;
-                      perTC[tc].sdsAmt += tr.sds;
-                      perTC[tc].total += tr.sds;
-                    }
-                    if ((isSDS(p) || p.ST || p.DBRETS) && !replacing) {
-                      if (p['R+']) { perTC[tc].ret++; perTC[tc].retAmt += tr.ret; perTC[tc].total += tr.ret; }
-                      if (p['W+']) { perTC[tc].white++; perTC[tc].whiteAmt += tr.white; perTC[tc].total += tr.white; }
-                    }
-                    if ((isSDS(p) || p.ST) && p.PIF && !replacing) { perTC[tc].pif++; perTC[tc].pifAmt += tr.pif; perTC[tc].total += tr.pif; }
-                  });
-                  // Goal-tier payouts — users can earn these even with no patient rows
-                  monthGoalBonuses.forEach(g => {
-                    if (!perTC[g.name]) perTC[g.name] = { sds: 0, ret: 0, white: 0, pif: 0, sdsAmt: 0, retAmt: 0, whiteAmt: 0, pifAmt: 0, total: 0 };
-                    perTC[g.name].goals = [...(perTC[g.name].goals || []), g];
-                    perTC[g.name].total += g.amount;
-                  });
-                  const entries = Object.entries(perTC).filter(([, v]) => v.total > 0);
+                  const entries = auditBonuses.filter(b => b.total > 0);
                   if (entries.length === 0) return null;
                   const monthLabel = new Date(bonusMonthFilter + '-01T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                  const amtOf = (b, type) => b.items.filter(i => i.type === type).reduce((s, i) => s + i.amount, 0);
                   return (
                     <div style={{marginBottom:'24px'}}>
                       <h3 style={{fontSize:'16px',fontWeight:'700',color:'#374151',marginBottom:'14px'}}>
                         💸 Payment Summary — {monthLabel}
                       </h3>
                       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:'14px',marginBottom:'8px'}}>
-                        {entries.map(([tcName, d]) => (
-                          <div key={tcName} style={{backgroundColor:'white',borderRadius:'10px',padding:'20px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'2px solid #86efac'}}>
-                            <div style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'2px'}}>{tcName}</div>
-                            <div style={{fontSize:'36px',fontWeight:'900',color:'#10b981',lineHeight:1,marginBottom:'12px'}}>${d.total}</div>
+                        {entries.map(b => (
+                          <div key={b.name} style={{backgroundColor:'white',borderRadius:'10px',padding:'20px',boxShadow:'0 1px 3px rgba(0,0,0,0.08)',border:'2px solid #86efac'}}>
+                            <div style={{fontSize:'14px',fontWeight:'700',color:'#374151',marginBottom:'2px'}}>{b.name}</div>
+                            <div style={{fontSize:'36px',fontWeight:'900',color:'#10b981',lineHeight:1,marginBottom:'12px'}}>${b.total}</div>
                             <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
-                              {d.sds > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.sds} SDS — <strong style={{color:'#374151'}}>${d.sdsAmt}</strong></div>}
-                              {d.ret > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.ret} Retainer{d.ret > 1 ? 's' : ''} — <strong style={{color:'#374151'}}>${d.retAmt}</strong></div>}
-                              {d.white > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.white} Whitening — <strong style={{color:'#374151'}}>${d.whiteAmt}</strong></div>}
-                              {d.pif > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {d.pif} PIF — <strong style={{color:'#374151'}}>${d.pifAmt}</strong></div>}
-                              {(d.goals || []).map((g, gi) => <div key={gi} style={{fontSize:'12px',color:'#6b7280'}}>• {g.kind === 'ca' ? '📈' : '🎯'} {g.label} — <strong style={{color:'#374151'}}>${g.amount}</strong></div>)}
+                              {b.counts.sds > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {b.counts.sds} SDS — <strong style={{color:'#374151'}}>${amtOf(b, 'SDS')}</strong></div>}
+                              {b.counts.ret > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {b.counts.ret} Retainer{b.counts.ret > 1 ? 's' : ''} — <strong style={{color:'#374151'}}>${amtOf(b, 'Retainer')}</strong></div>}
+                              {b.counts.white > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {b.counts.white} Whitening — <strong style={{color:'#374151'}}>${amtOf(b, 'Whitening')}</strong></div>}
+                              {b.counts.pif > 0 && <div style={{fontSize:'12px',color:'#6b7280'}}>• {b.counts.pif} PIF — <strong style={{color:'#374151'}}>${amtOf(b, 'PIF')}</strong></div>}
+                              {b.campaigns.filter(c => c.earned > 0).map(c => <div key={c.bonus.id} style={{fontSize:'12px',color:'#6b7280'}}>• 🎯 {c.bonus.name} ({c.rows.length}) — <strong style={{color:'#374151'}}>${c.earned}</strong></div>)}
+                              {b.goals.map((g, gi) => <div key={gi} style={{fontSize:'12px',color:'#6b7280'}}>• {g.kind === 'ca' ? '📈' : '🏁'} {g.label} — <strong style={{color:'#374151'}}>${g.amount}</strong></div>)}
+                              {b.onHold > 0 && <div style={{fontSize:'12px',color:'#92400e'}}>• 🔒 ${b.onHold} on hold (campaign goal not reached)</div>}
                             </div>
                           </div>
                         ))}
@@ -9397,43 +9495,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </tr>
                     </thead>
                     <tbody>
-                      {(() => {
-                        const started = patients.filter(p => isSDS(p) || p.ST);
-                        let bonusItems = [];
-
-                        patients.forEach(p => {
-                          const sd = effectiveStartDate(p);
-                          const replacing = getReplacingCampaign(p, bonusTCFilter || null);
-                          const pr = ratesForTC(p.tc);
-                          if (isSDS(p) && !replacing) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'SDS', amount: pr.sds});
-                          }
-                          if ((isSDS(p) || p.ST || p.DBRETS) && p['R+'] && !replacing) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Retainer', amount: pr.ret});
-                          }
-                          if ((isSDS(p) || p.ST || p.DBRETS) && p['W+'] && !replacing) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'Whitening', amount: pr.white});
-                          }
-                          if (started.find(s => s.id === p.id) && p.PIF && !replacing) {
-                            bonusItems.push({date: sd, patient: p.name, tc: p.tc, location: p.location, type: 'PIF', amount: pr.pif});
-                          }
-                        });
-                        // Filter by month and TC
-                        bonusItems = bonusItems.filter(item => item.date && item.date.startsWith(bonusMonthFilter));
-                        if (bonusTCFilter) bonusItems = bonusItems.filter(item => item.tc === bonusTCFilter);
-                        // Exclude TCs with bonus disabled
-                        if (!bonusTCFilter) bonusItems = bonusItems.filter(item => {
-                          const u = tcUsers.find(u => u.name === item.tc);
-                          return !u || u.bonus_enabled !== false;
-                        });
-                        // Goal-tier payouts land at month end (already filtered per user)
-                        monthGoalBonuses.forEach(g => {
-                          bonusItems.push({date: `${bonusMonthFilter}-31`, patient: g.label, tc: g.name, type: g.kind === 'ca' ? 'Case Acceptance' : 'Goal', amount: g.amount, isGoal: true});
-                        });
-                        bonusItems.sort((a,b) => a.date.localeCompare(b.date));
-                        const filteredTotal = bonusItems.reduce((sum, item) => sum + item.amount, 0);
-
-                        return bonusItems.map((item, i) => (
+                      {auditLines.map((item, i) => (
                           <tr key={i} style={{borderBottom:'1px solid #F5F5F5'}}>
                             <td style={{padding:'12px',fontSize:'14px'}}>{item.isGoal ? 'Month end' : new Date(item.date + 'T12:00:00').toLocaleDateString()}</td>
                             <td style={{padding:'12px',fontSize:'14px'}}>{item.patient}</td>
@@ -9441,43 +9503,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             <td style={{padding:'12px',fontSize:'14px'}}>
                               <span style={{
                                 padding:'2px 8px',
-                                backgroundColor: item.type==='SDS' ? '#fef3c7' : item.type==='Retainer' ? '#dbeafe' : item.type==='Whitening' ? '#e0e7ff' : item.isGoal ? '#dcfce7' : '#fce7f3',
-                                color: item.type==='SDS' ? '#92400e' : item.type==='Retainer' ? '#1e40af' : item.type==='Whitening' ? '#3730a3' : item.isGoal ? '#166534' : '#831843',
+                                backgroundColor: item.type==='SDS' ? '#fef3c7' : item.type==='Retainer' ? '#dbeafe' : item.type==='Whitening' ? '#e0e7ff' : item.type==='Campaign' ? '#fef9c3' : item.isGoal ? '#dcfce7' : '#fce7f3',
+                                color: item.type==='SDS' ? '#92400e' : item.type==='Retainer' ? '#1e40af' : item.type==='Whitening' ? '#3730a3' : item.type==='Campaign' ? '#92400e' : item.isGoal ? '#166534' : '#831843',
                                 borderRadius:'4px',fontSize:'12px',fontWeight:'600'
                               }}>
-                                {item.type}
+                                {item.type === 'Campaign' ? `🎯 ${item.campaign}` : item.type}
                               </span>
                             </td>
                             <td style={{padding:'12px',fontSize:'14px',textAlign:'right',fontWeight:'600',color:'#10b981'}}>${item.amount}</td>
                           </tr>
-                        )).concat(bonusItems.length === 0 ? [
-                          <tr key="empty"><td colSpan={bonusTCFilter ? 4 : 5} style={{padding:'24px',textAlign:'center',color:'#9ca3af',fontStyle:'italic'}}>No bonus entries for {bonusMonthFilter}</td></tr>
-                        ] : []);
-                      })()}
+                      ))}
+                      {auditLines.length === 0 && (
+                        <tr key="empty"><td colSpan={bonusTCFilter ? 4 : 5} style={{padding:'24px',textAlign:'center',color:'#9ca3af',fontStyle:'italic'}}>No bonus entries for {bonusMonthFilter}</td></tr>
+                      )}
                       <tr style={{borderTop:'2px solid #202020',backgroundColor:'#f9fafb'}}>
                         <td colSpan={bonusTCFilter ? 3 : 4} style={{padding:'12px',fontSize:'16px',fontWeight:'bold'}}>TOTAL — {bonusMonthFilter}</td>
-                        <td style={{padding:'12px',fontSize:'20px',fontWeight:'bold',textAlign:'right',color:'#10b981'}}>
-                          ${patients.filter(p => {
-                            if (bonusTCFilter && p.tc !== bonusTCFilter) return false;
-                            if (!bonusTCFilter) {
-                              const u = tcUsers.find(u => u.name === p.tc);
-                              if (u && u.bonus_enabled === false) return false;
-                            }
-                            return true;
-                          }).reduce((sum, p) => {
-                            let amt = 0;
-                            const sd = effectiveStartDate(p);
-                            if (!sd || !sd.startsWith(bonusMonthFilter)) return sum;
-                            const replacing = getReplacingCampaign(p, bonusTCFilter || null);
-                            if (replacing) return sum;
-                            const pr = ratesForTC(p.tc);
-                            if (isSDS(p)) amt += pr.sds;
-                            if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) amt += pr.ret;
-                            if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) amt += pr.white;
-                            if ((isSDS(p) || p.ST) && p.PIF) amt += pr.pif;
-                            return sum + amt;
-                          }, 0) + monthGoalBonuses.reduce((s, g) => s + g.amount, 0)}
-                        </td>
+                        <td style={{padding:'12px',fontSize:'20px',fontWeight:'bold',textAlign:'right',color:'#10b981'}}>${auditTotal}</td>
                       </tr>
                     </tbody>
                   </table>
@@ -9486,28 +9527,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{display:'flex',gap:'12px'}}>
                   <button
                     onClick={() => {
-                      const started = patients.filter(p => isSDS(p) || p.ST);
-                      const rows = [['Start Date','Patient','TC','Type','Amount']];
-                      // Same people as on screen: a TC (or a manager without "see all
-                      // bonuses") exports only their own rows.
-                      patients.forEach(p => {
-                        const sd = effectiveStartDate(p);
-                        if (!sd || !sd.startsWith(bonusMonthFilter)) return;
-                        if (bonusTCFilter && p.tc !== bonusTCFilter) return;
-                        const replacing = getReplacingCampaign(p, bonusTCFilter || null);
-                        if (!replacing) {
-                          const pr = ratesForTC(p.tc);
-                          if (isSDS(p)) rows.push([sd, p.name, p.tc||'', 'SDS', pr.sds]);
-                          if ((isSDS(p) || p.ST || p.DBRETS) && p['R+']) rows.push([sd, p.name, p.tc||'', 'Retainer', pr.ret]);
-                          if ((isSDS(p) || p.ST || p.DBRETS) && p['W+']) rows.push([sd, p.name, p.tc||'', 'Whitening', pr.white]);
-                          if (started.find(s=>s.id===p.id) && p.PIF) rows.push([sd, p.name, p.tc||'', 'PIF', pr.pif]);
-                        } else {
-                          if (isSDS(p) || p.ST) rows.push([sd, p.name, p.tc||'', `Goal Bonus (${replacing.name})`, popupBonusEarnings(p, replacing, bonusTCFilter || null)]);
-                        }
-                      });
-                      monthGoalBonuses.forEach(g => {
-                        rows.push([bonusMonthFilter, g.label, g.name, g.kind === 'ca' ? 'Case Acceptance Bonus' : 'Practice Goal Bonus', g.amount]);
-                      });
+                      // Exactly the lines on screen (a TC, or a manager without "see all
+                      // bonuses", exports only their own), so the CSV adds up to the total.
+                      const rows = [['Start Date','Patient','TC','Type','Amount'],
+                        ...auditLines.map(l => [l.isGoal ? bonusMonthFilter : l.date, l.patient, l.tc || '',
+                          l.type === 'Campaign' ? `Campaign (${l.campaign})` : l.type === 'Goal' ? 'Practice Goal Bonus' : l.type === 'Case Acceptance' ? 'Case Acceptance Bonus' : l.type,
+                          l.amount])];
                       const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
                       const a = document.createElement('a');
                       a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}));
@@ -12521,10 +12546,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     const todayStr = localToday();
                     const isActive = todayStr >= bonus.startDate && todayStr <= bonus.endDate;
                     const isEnded = todayStr > bonus.endDate;
-                    const threshOk = isThresholdMet(bonus, null);
-                    const startCnt = bonus.goalThreshold > 0 ? thresholdStartCount(bonus, null) : 0;
-                    const qualifying = threshOk ? patients.filter(p => popupBonusEarnings(p, bonus, null) > 0) : [];
-                    const earned = qualifying.reduce((sum, p) => sum + popupBonusEarnings(p, bonus, null), 0);
+                    // The start goal is per person ("if the TC reaches N starts"), so the
+                    // campaign pays whoever has reached it; the badge counts who has.
+                    const results = bonusEligibleNames
+                      .filter(n => bonus.tcFilter === 'All' || bonus.tcFilter === n)
+                      .map(n => campaignResultFor(bonus, n))
+                      .filter(r => r.rows.length > 0 || r.startCount > 0);
+                    const unlockedCount = results.filter(r => r.unlocked).length;
+                    const threshOk = bonus.goalThreshold > 0 ? unlockedCount > 0 : true;
+                    const earned = results.reduce((sum, r) => sum + r.earned, 0);
+                    const qualifyingCount = results.reduce((sum, r) => sum + (r.unlocked ? r.rows.length : 0), 0);
                     const legacyRates = ratesForTC(bonus.tcFilter !== 'All' ? bonus.tcFilter : null);
                     const typeLabels = bonus.amtSDS !== undefined
                       ? [bonus.amtSDS > 0 && `SDS $${bonus.amtSDS}`, bonus.amtPending > 0 && `Off Pending $${bonus.amtPending}`, bonus.amtScheduled > 0 && `Scheduled $${bonus.amtScheduled}`, bonus.amtRetainer > 0 && `Retainer $${bonus.amtRetainer}`, bonus.amtWhitening > 0 && `Whitening $${bonus.amtWhitening}`].filter(Boolean).join(' · ')
@@ -12545,7 +12576,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 backgroundColor: threshOk ? '#dcfce7' : '#fef9c3',
                                 color: threshOk ? '#166534' : '#92400e'
                               }}>
-                                {threshOk ? `🏆 GOAL HIT (${startCnt}/${bonus.goalThreshold})` : `🔒 ${startCnt}/${bonus.goalThreshold} starts`}
+                                {unlockedCount > 0 ? `🏆 ${unlockedCount} of ${results.length} unlocked (${bonus.goalThreshold} starts each)` : `🔒 nobody at ${bonus.goalThreshold} starts yet`}
                               </span>
                             )}
                           </div>
@@ -12557,7 +12588,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                         <div style={{textAlign:'center'}}>
                           <div style={{fontSize:'20px',fontWeight:'800',color: threshOk ? '#10b981' : '#94a3b8'}}>${earned}</div>
-                          <div style={{fontSize:'11px',color:'#9ca3af'}}>{threshOk ? `${qualifying.length} qualifying` : 'locked'}</div>
+                          <div style={{fontSize:'11px',color:'#9ca3af'}}>{threshOk ? `${qualifyingCount} qualifying` : 'locked'}</div>
                         </div>
                         <button
                           onClick={async () => {
