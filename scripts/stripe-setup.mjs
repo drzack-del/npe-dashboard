@@ -10,7 +10,7 @@
 import { writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { PLANS, SURCHARGE_BPS, achFeeCents, surchargeCents } from '../src/signup/workflow.mjs';
+import { PLANS, achFeeCents, surchargeCents } from '../src/signup/workflow.mjs';
 
 const API_VERSION = '2026-09-30.endive';
 // Opaque Stripe tax codes from docs.stripe.com/tax/tax-codes. Prices are tax-exclusive so
@@ -21,7 +21,7 @@ const PRODUCTS = [
   { id: 'cadenceiq_subscription', name: 'CadenceIQ subscription', tax_code: TAX.saas, description: 'Practice reporting and new-patient follow-up, priced per practice.' },
   { id: 'cadenceiq_setup', name: 'CadenceIQ setup and onboarding', tax_code: TAX.setup, description: 'One-time data connection and onboarding.' },
   // The two pass-through fees are priced at checkout from the plan amount (see chargeSummary).
-  { id: 'cadenceiq_card_surcharge', name: `Credit-card surcharge (${SURCHARGE_BPS / 100}%)`, tax_code: TAX.saas },
+  { id: 'cadenceiq_card_surcharge', name: 'Credit-card surcharge (processing cost, max 3%)', tax_code: TAX.saas },
   { id: 'cadenceiq_ach_processing', name: 'ACH processing cost (0.8%, $5 maximum)', tax_code: TAX.saas },
 ];
 const PRICES = [
@@ -122,8 +122,9 @@ async function ensurePrice(p) {
   return created.id;
 }
 
-// Practices manage their own billing here: card/bank account, invoices, cancel at period end.
-// No plan switching: the Foundation Partner rate is only for the first 5 practices.
+// Practices manage their own billing here: card/bank account, invoices, billing details.
+// No self-cancel: the Agreement requires 30 days' written notice by email, and Dr. Miller sets
+// the cancellation date in Stripe. No plan switching: the Foundation rate is for the first 5.
 async function ensurePortal() {
   const config = {
     name: 'CadenceIQ practices',
@@ -133,8 +134,7 @@ async function ensurePortal() {
       customer_update: { enabled: true, allowed_updates: ['email', 'address', 'tax_id'] },
       invoice_history: { enabled: true },
       payment_method_update: { enabled: true },
-      subscription_cancel: { enabled: true, mode: 'at_period_end', proration_behavior: 'none',
-        cancellation_reason: { enabled: true, options: ['too_expensive', 'missing_features', 'switched_service', 'unused', 'other'] } },
+      subscription_cancel: { enabled: false },
       subscription_update: { enabled: false },
     },
   };

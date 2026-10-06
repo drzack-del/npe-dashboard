@@ -160,7 +160,7 @@ export default function SignupPage() {
             ['signerEmail', 'Signer email *', 'email'], ['billingEmail', 'Billing email *', 'email'],
           ].map(([name, label, type]) => <Field key={name} name={name} label={label} type={type} error={fieldErrors[name]} value={form[name]}
             onChange={v => setForm({ ...form, [name]: name === 'state' ? v.toUpperCase().slice(0, 2) : v })} />)}
-          <Field name="locations" label="Office locations (comma separated) *" error={fieldErrors.locations} value={(form.locations || []).join(', ')}
+          <Field name="locations" label="Office locations, up to 3 (comma separated) *" error={fieldErrors.locations} value={(form.locations || []).join(', ')}
             onChange={v => setForm({ ...form, locations: v.split(',').map(x => x.trimStart()) })} />
           <Field name="practiceManagementSystem" label="Practice management software" value={form.practiceManagementSystem}
             onChange={v => setForm({ ...form, practiceManagementSystem: v })} />
@@ -194,7 +194,7 @@ export default function SignupPage() {
           </div>
           <label style={{ display: 'flex', gap: 10, fontSize: 13, lineHeight: 1.45 }}>
             <input type="checkbox" checked={authorized} onChange={e => setAuthorized(e.target.checked)} />
-            <span>I am authorized to bind the practice, have reviewed all {docs.length} documents, accept the recurring charges and cancellation terms, and agree to sign electronically.</span>
+            <span>I am authorized to bind the practice, have reviewed all {docs.length} documents, accept the recurring monthly charges, the non-refundable setup fee, and the 30-day cancellation notice, and agree to sign electronically.</span>
           </label>
           <div style={{ marginTop: 14, maxWidth: 420 }}><Field label={`Type your full name to sign: ${form.signerName}`} value={signature} onChange={setSignature} /></div>
           <button onClick={sign} disabled={busy || reviewedDocs.length < docs.length} style={{ ...primary, marginTop: 14, opacity: reviewedDocs.length < docs.length ? .55 : 1 }}>Sign all agreements</button>
@@ -216,9 +216,9 @@ export default function SignupPage() {
           <PaymentChoice active={paymentMethod === 'us_bank_account'} onClick={() => setPaymentMethod('us_bank_account')} title="Bank account (ACH)" badge="Lower cost"
             lines={[['Monthly subscription', money(plan.monthlyFeeCents)], ['ACH processing cost', money(ach.monthlyExtra)], ['Monthly total', money(ach.monthlyTotal)]]}
             note="Recovers Stripe's 0.8% ACH fee, $5 maximum per payment. Bank payments can take a few business days to clear." />
-          <PaymentChoice active={paymentMethod === 'card'} disabled={!cardAllowed} onClick={() => setPaymentMethod('card')} title="Credit card" badge="3% surcharge"
-            lines={[['Monthly subscription', money(plan.monthlyFeeCents)], ['Card surcharge (3%)', money(card.monthlyExtra)], ['Monthly total', money(card.monthlyTotal)]]}
-            note={cardAllowed ? 'Credit cards only. Debit and prepaid cards are not accepted.' : 'Card payment is not available in your state yet. Please use a bank account.'} />
+          <PaymentChoice active={paymentMethod === 'card'} disabled={!cardAllowed} onClick={() => setPaymentMethod('card')} title="Credit card" badge="Surcharge"
+            lines={[['Monthly subscription', money(plan.monthlyFeeCents)], ['Card surcharge', money(card.monthlyExtra)], ['Monthly total', money(card.monthlyTotal)]]}
+            note={cardAllowed ? 'Surcharge equals our card processing cost (2.9% + $0.30), never more than 3%. Credit cards only; debit and prepaid cards are not accepted.' : 'Card payment is not available in your state yet. Please use a bank account.'} />
         </div>
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 18, display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginTop: 14, alignItems: 'center' }}>
           <div><strong>Due today: {money(chosen.dueToday)}</strong>

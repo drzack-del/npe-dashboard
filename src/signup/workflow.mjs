@@ -22,6 +22,8 @@ export const PLANS = {
   foundation: { key: 'foundation', name: 'Foundation Partner', monthlyFeeCents: 25000, setupFeeCents: 50000 },
   standard: { key: 'standard', name: 'CadenceIQ Standard', monthlyFeeCents: 40000, setupFeeCents: 50000 },
 };
+// Per-practice pricing covers one legal entity (one tax ID) with up to this many offices.
+export const MAX_LOCATIONS = 3;
 export const planFor = foundationTaken => foundationTaken < FOUNDATION_SPOTS ? PLANS.foundation : PLANS.standard;
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -37,15 +39,24 @@ export const practiceDetailErrors = (details = {}) => {
   if (value('signerTitle').length < 2) errors.signerTitle = 'Enter the signer’s title.';
   if (!emailPattern.test(value('signerEmail'))) errors.signerEmail = 'Enter a valid signer email address.';
   if (!emailPattern.test(value('billingEmail'))) errors.billingEmail = 'Enter a valid billing email address.';
-  if (!Array.isArray(details.locations) || !details.locations.some(x => String(x).trim())) errors.locations = 'Add at least one office location.';
+  const offices = Array.isArray(details.locations) ? details.locations.filter(x => String(x).trim()) : [];
+  if (!offices.length) errors.locations = 'Add at least one office location.';
+  else if (offices.length > MAX_LOCATIONS) errors.locations = `Online sign-up covers up to ${MAX_LOCATIONS} locations. For larger groups, contact us for custom pricing.`;
   return errors;
 };
 
 export const money = cents => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((Number(cents) || 0) / 100);
 
-// Card: 3% of the charge, credit cards only, and only in states cleared for surcharging.
+// Card: credit cards only, and only in states cleared for surcharging. The surcharge is our
+// processing cost (Stripe's 2.9% + 30 cents), never more than 3% (card-network rules cap it at
+// both the merchant's cost and 3%).
 export const SURCHARGE_BPS = 300;
-export const surchargeCents = (cents, bps = SURCHARGE_BPS) => Math.round((Number(cents) || 0) * bps / 10000);
+export const CARD_COST_BPS = 290;
+export const CARD_COST_FIXED_CENTS = 30;
+export const surchargeCents = (cents, bps = SURCHARGE_BPS) => {
+  const c = Number(cents) || 0;
+  return Math.min(Math.round(c * bps / 10000), Math.round(c * CARD_COST_BPS / 10000) + CARD_COST_FIXED_CENTS);
+};
 // ACH: recovers Stripe's 0.8% fee (grossed up so the fee on the fee is covered), $5 maximum per debit.
 export const ACH_FEE_BPS = 80;
 export const ACH_FEE_CAP_CENTS = 500;
