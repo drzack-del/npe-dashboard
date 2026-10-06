@@ -214,6 +214,10 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
         // Today as YYYY-MM-DD in the practice's local time. Never toISOString() for a calendar
         // date — that is UTC, which is already tomorrow after 8pm Eastern.
         const localToday = () => localDateStr(new Date());
+        // First day of the 30-day window ending on `end` (inclusive), for the follow-up
+        // accountability score. Trailing rather than calendar month so the score doesn't
+        // reset to a handful of calls on the 1st.
+        const trailing30From = (end) => { const d = new Date(end + 'T12:00:00'); d.setDate(d.getDate() - 29); return localDateStr(d); };
 
         const skipWeekend = (dateStr) => {
           if (!dateStr) return dateStr;
@@ -1029,9 +1033,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [bonusMonthFilter, setBonusMonthFilter] = useState(
     localToday().slice(0, 7)
   );
-  const [ontimeMonthFilter, setOntimeMonthFilter] = useState(
-    localToday().slice(0, 7)
-  );
+  // 'last30' (30 days ending today), 'last30:YYYY-MM-DD' (30 days ending that day — what the
+  // dashboard card hands over when it's showing a past month), or a calendar month 'YYYY-MM'.
+  const [ontimeMonthFilter, setOntimeMonthFilter] = useState('last30');
   const [followupTCFilter, setFollowupTCFilter] = useState('All');
   const [bonusTCSelect, setBonusTCSelect] = useState('All');
   const [ontimeTCFilter, setOntimeTCFilter] = useState('All');
@@ -4553,17 +4557,26 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             const { npe: nmNPEGoal, started: nmStartedGoal } = monthGoalTotals(nmYearGoals, nmGoal);
             const nmConvGoal    = nmGoal.convGoal || 70;
 
+            // Follow-up accountability window: the 30 days ending at the end of the period
+            // being viewed, never past today. On the current month that's simply the last
+            // 30 days; step back a month and the window walks back with it.
+            const otPeriodEnd = isRangeMode
+              ? (customRangeValid ? dashCustomTo : todayStrNew)
+              : ymdStr(dashYear, dashMonth, new Date(dashYear, dashMonth+1, 0).getDate());
+            const otTo = otPeriodEnd < todayStrNew ? otPeriodEnd : todayStrNew;
+            const otFrom = trailing30From(otTo);
+            const otWindowLabel = otTo === todayStrNew
+              ? 'Last 30 days'
+              : `30 days to ${new Date(otTo+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`;
+
             // Per-TC data
             const perTCNew = tcNames.map(tcName => {
-              // On-time rate for selected period — credit who logged the call, not the patient's TC
+              // On-time rate over the trailing 30 days — credit who logged the call, not the patient's TC
               let tcOT=0, tcOTTotal=0;
               patients.forEach(p => {
                 (p.contact_log||[]).forEach(entry => {
                   if (!entry.scheduledDate || !entry.date) return;
-                  const inPeriod = isRangeMode
-                    ? (customRangeValid && entry.date >= dashCustomFrom && entry.date <= dashCustomTo)
-                    : entry.date.startsWith(selMonthStr);
-                  if (!inPeriod) return;
+                  if (entry.date < otFrom || entry.date > otTo) return;
                   const logger = entry.logged_by || p.tc;
                   if (logger !== tcName) return;
                   tcOTTotal++;
@@ -4784,9 +4797,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'12px'}}>
                     <div>
                       <div style={{fontSize:'16px',fontWeight:'800',color:'#202020'}}>⏱️ TC Follow-Up Accountability</div>
-                      <div style={{fontSize:'12px',color:'#6b7280',marginTop:'1px'}}>Scheduled follow-ups completed on or before their due date · Goal 80%</div>
+                      <div style={{fontSize:'12px',color:'#6b7280',marginTop:'1px'}}>{otWindowLabel} · Scheduled follow-ups completed on or before their due date · Goal 80%</div>
                     </div>
-                    <button onClick={()=>setCurrentView('ontime')} style={{padding:'8px 16px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
+                    <button onClick={()=>{ setOntimeMonthFilter(otTo === todayStrNew ? 'last30' : `last30:${otTo}`); setCurrentView('ontime'); }} style={{padding:'8px 16px',backgroundColor:'transparent',border:'1px solid #d1d5db',borderRadius:'8px',fontSize:'13px',color:'#374151',cursor:'pointer',fontWeight:'600'}}>Full Audit →</button>
                   </div>
                   {/* One line per coordinator. The bars share a baseline so ranking is
                       immediate, and the section stays an alert rather than becoming
@@ -9711,7 +9724,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const isTC = currentUser?.role === 'tc';
           const tcName = currentUser?.name;
 
-          // Collect all contact log entries with a scheduledDate in the selected month
+          // Collect all contact log entries with a scheduledDate in the selected window
+          const isTrailing = ontimeMonthFilter.startsWith('last30');
+          const otAuditTo = ontimeMonthFilter.startsWith('last30:') ? ontimeMonthFilter.slice(7) : localToday();
+          const otAuditFrom = trailing30From(otAuditTo);
+          const inAuditWindow = d => isTrailing ? (d >= otAuditFrom && d <= otAuditTo) : d.startsWith(ontimeMonthFilter);
+          const auditWindowLabel = !isTrailing ? 'this month'
+            : ontimeMonthFilter === 'last30' ? 'in the last 30 days'
+            : `in the 30 days to ${new Date(otAuditTo+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}`;
           let entries = [];
           patients.forEach(p => {
             // Chronological rank of each countable contact for this patient, so the
@@ -9723,7 +9743,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               .sort((a, b) => ((a.date || '') + (a.time || '')).localeCompare((b.date || '') + (b.time || '')));
             (p.contact_log || []).forEach(entry => {
               if (!entry.scheduledDate || !entry.date) return;
-              if (!entry.date.startsWith(ontimeMonthFilter)) return;
+              if (!inAuditWindow(entry.date)) return;
               // Credit whoever actually LOGGED the call (fall back to the patient's
               // assigned TC only for older entries with no logged_by) — the same rule
               // the dashboard accountability box uses. This keeps a patient reassignment
@@ -9774,10 +9794,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{fontSize:'13px',color:'#6b7280',marginTop:'3px'}}>Tracks whether follow-ups were completed on or before their scheduled date</div>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
-                <label style={{fontSize:'14px',fontWeight:'500'}}>Month:</label>
+                <button onClick={() => setOntimeMonthFilter('last30')}
+                  style={{padding:'8px 12px',border:'1px solid',borderColor: isTrailing ? '#1e40af' : '#d1d5db',borderRadius:'6px',fontSize:'13px',fontWeight:'600',cursor:'pointer',
+                    backgroundColor: isTrailing ? '#1e40af' : 'white',color: isTrailing ? 'white' : '#374151'}}>
+                  {ontimeMonthFilter.startsWith('last30:') ? `30 days to ${new Date(otAuditTo+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : 'Last 30 days'}
+                </button>
+                <label style={{fontSize:'14px',fontWeight:'500'}}>or month:</label>
                 <input type="month"
-                  value={ontimeMonthFilter}
-                  onChange={e => setOntimeMonthFilter(e.target.value)}
+                  value={isTrailing ? '' : ontimeMonthFilter}
+                  onChange={e => setOntimeMonthFilter(e.target.value || 'last30')}
                   style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px'}} />
                 {tcNames.length > 1 && (
                   <select value={ontimeTCFilter} onChange={e => setOntimeTCFilter(e.target.value)}
@@ -9792,8 +9817,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             {entries.length === 0 ? (
               <div style={{backgroundColor:'white',padding:'48px',borderRadius:'8px',textAlign:'center',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}}>
                 <div style={{fontSize:'48px',marginBottom:'16px'}}>⏱️</div>
-                <h3 style={{fontSize:'20px',fontWeight:'bold',color:'#202020',marginBottom:'8px'}}>No Data for This Month</h3>
-                <p style={{color:'#6b7280'}}>Follow-up contacts logged this month will appear here</p>
+                <h3 style={{fontSize:'20px',fontWeight:'bold',color:'#202020',marginBottom:'8px'}}>No Follow-Ups {isTrailing ? 'in This Window' : 'for This Month'}</h3>
+                <p style={{color:'#6b7280'}}>Scheduled follow-ups logged {auditWindowLabel} will appear here</p>
               </div>
             ) : (
               <>
@@ -9801,7 +9826,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{backgroundColor: pctBg(overallPct),border:`1px solid ${pctColor(overallPct)}`,padding:'20px 24px',borderRadius:'8px',marginBottom:'24px',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'12px'}}>
                   <div>
                     <div style={{fontWeight:'700',fontSize:'18px',color:'#202020'}}>Overall On-Time Rate</div>
-                    <div style={{fontSize:'14px',color:'#6b7280',marginTop:'4px'}}>{totalOnTime} of {entries.length} follow-ups completed on time</div>
+                    <div style={{fontSize:'14px',color:'#6b7280',marginTop:'4px'}}>{totalOnTime} of {entries.length} follow-ups completed on time {auditWindowLabel}</div>
                   </div>
                   <div style={{fontSize:'48px',fontWeight:'900',color: pctColor(overallPct)}}>{overallPct}%</div>
                 </div>
