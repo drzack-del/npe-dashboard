@@ -8,6 +8,7 @@
 // any file. Test keys only (sk_test_ / rk_test_): it refuses live keys until we go live.
 // Writes the resulting IDs (not secret) to scripts/stripe-test-ids.json.
 import { writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { PLANS, SURCHARGE_BPS } from '../src/signup/workflow.mjs';
 
@@ -35,12 +36,15 @@ function askHidden(question) {
     stdout.write(question);
     stdin.setRawMode?.(true); stdin.resume(); stdin.setEncoding('utf8');
     let value = '';
-    const onData = ch => {
-      if (ch === '\r' || ch === '\n' || ch === '\u0004') {
-        stdin.setRawMode?.(false); stdin.pause(); stdin.off('data', onData); stdout.write('\n'); resolve(value.trim());
-      } else if (ch === '\u0003') { stdout.write('\n'); process.exit(1); }
-      else if (ch === '\u007f' || ch === '\b') value = value.slice(0, -1);
-      else value += ch;
+    // Raw mode delivers a paste as one chunk, so walk it character by character.
+    const onData = chunk => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n' || ch === '\u0004') {
+          stdin.setRawMode?.(false); stdin.pause(); stdin.off('data', onData); stdout.write('\n'); resolve(value.trim()); return;
+        } else if (ch === '\u0003') { stdout.write('\n'); process.exit(1); }
+        else if (ch === '\u007f' || ch === '\b') value = value.slice(0, -1);
+        else value += ch;
+      }
     };
     stdin.on('data', onData);
   });
@@ -157,11 +161,23 @@ async function ensurePaymentMethods() {
 
 async function main() {
   console.log('\nCadenceIQ Stripe setup (test mode)\n');
-  const typed = process.env.STRIPE_SETUP_KEY || await askHidden('Paste your Stripe SANDBOX secret key (sk_test_…), then Enter: ');
+  console.log('Copy your Stripe SANDBOX secret key (sk_test_…), then either paste it here and press Enter,');
+  console.log('or just press Enter to read it straight from your clipboard.\n');
+  let typed = process.env.STRIPE_SETUP_KEY || await askHidden('Key (hidden): ');
+  if (!typed) {
+    try { typed = execFileSync('pbpaste', { encoding: 'utf8' }); } catch { typed = ''; }
+    console.log(typed ? 'Read the key from your clipboard.' : 'Your clipboard is empty.');
+  }
   // Terminals wrap pasted text in invisible markers (ESC[200~ … ESC[201~); keep just the key.
   KEY = (typed.match(/(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+/) || [typed.replace(/\x1b\[[0-9;~]*/g, '').trim()])[0];
   if (/^(sk|rk)_live_/.test(KEY)) { console.error('\nThat is a LIVE key. This script only runs on test keys for now.'); process.exit(1); }
-  if (!/^(sk|rk)_test_/.test(KEY)) { console.error('\nThat does not look like a Stripe test key (sk_test_… or rk_test_…).'); process.exit(1); }
+  if (!/^(sk|rk)_test_/.test(KEY)) {
+    // Say what arrived without showing it: only the kind of key (its public prefix) and length.
+    const kind = (KEY.match(/^[a-z]+_(?:test|live)_/) || [])[0];
+    console.error(`\nThat is not a Stripe secret test key. Got ${KEY ? (kind ? `a "${kind}…" key` : `${KEY.length} characters that don't start like a Stripe key`) : 'nothing'}.`);
+    if (kind?.startsWith('pk_')) console.error('That is the publishable key. Use the Secret key (sk_test_…) shown under it; click "Reveal test key".');
+    process.exit(1);
+  }
 
   let account = null;
   try { account = await stripe('GET', '/account'); } catch {}
