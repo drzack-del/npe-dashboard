@@ -5,11 +5,11 @@ const section = (title, body) => `<h2>${title}</h2><p>${body}</p>`;
 export const AGREEMENT_VERSION = 'draft-2026-10-06-v4';
 
 // The provider named in every agreement (the contracting party; "CadenceIQ" is the product
-// name, not a registered fictitious name). Bracketed values are still to be confirmed.
+// name, not a registered fictitious name).
 export const COMPANY = {
   legalName: 'Miller Orthodontics Technology LLC',
   formationState: 'Florida',
-  address: '[PRINCIPAL OFFICE ADDRESS]',
+  address: '1303 W Fletcher Ave, Tampa, FL 33612',
   noticeEmail: 'drzack@northtampabraces.com',
   venueCounty: 'Hillsborough',
 };
