@@ -10,7 +10,7 @@
 import { writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { PLANS, SURCHARGE_BPS } from '../src/signup/workflow.mjs';
+import { PLANS, SURCHARGE_BPS, achFeeCents, surchargeCents } from '../src/signup/workflow.mjs';
 
 const API_VERSION = '2026-09-30.endive';
 // Opaque Stripe tax codes from docs.stripe.com/tax/tax-codes. Prices are tax-exclusive so
@@ -28,6 +28,14 @@ const PRICES = [
   { lookup_key: 'cadenceiq_foundation_monthly', product: 'cadenceiq_subscription', nickname: PLANS.foundation.name, unit_amount: PLANS.foundation.monthlyFeeCents, recurring: 'month' },
   { lookup_key: 'cadenceiq_standard_monthly', product: 'cadenceiq_subscription', nickname: PLANS.standard.name, unit_amount: PLANS.standard.monthlyFeeCents, recurring: 'month' },
   { lookup_key: 'cadenceiq_setup_fee', product: 'cadenceiq_setup', nickname: 'One-time setup', unit_amount: PLANS.standard.setupFeeCents },
+  // Pass-through fees as fixed prices (one per plan, plus setup), so checkout only uses prices
+  // that exist here; the signup function checks each amount against workflow.mjs before use.
+  ...['foundation', 'standard'].flatMap(k => [
+    { lookup_key: `cadenceiq_ach_${k}_monthly`, product: 'cadenceiq_ach_processing', nickname: `ACH processing cost - ${PLANS[k].name}`, unit_amount: achFeeCents(PLANS[k].monthlyFeeCents), recurring: 'month' },
+    { lookup_key: `cadenceiq_card_${k}_monthly`, product: 'cadenceiq_card_surcharge', nickname: `Card surcharge - ${PLANS[k].name}`, unit_amount: surchargeCents(PLANS[k].monthlyFeeCents), recurring: 'month' },
+  ]),
+  { lookup_key: 'cadenceiq_ach_setup', product: 'cadenceiq_ach_processing', nickname: 'ACH processing cost - setup', unit_amount: achFeeCents(PLANS.standard.setupFeeCents) },
+  { lookup_key: 'cadenceiq_card_setup', product: 'cadenceiq_card_surcharge', nickname: 'Card surcharge - setup', unit_amount: surchargeCents(PLANS.standard.setupFeeCents) },
 ];
 
 function askHidden(question) {
@@ -102,7 +110,7 @@ async function ensurePrice(p) {
   const found = data[0];
   const same = found && found.unit_amount === p.unit_amount && found.product === p.product &&
     (found.recurring?.interval || null) === (p.recurring || null) && found.tax_behavior === 'exclusive';
-  if (same) { log('✓', `${p.nickname}: $${p.unit_amount / 100}${p.recurring ? '/' + p.recurring : ''} (already set up)`); return found.id; }
+  if (same) { log('✓', `${p.nickname}: $${(p.unit_amount / 100).toFixed(2)}${p.recurring ? '/' + p.recurring : ''} (already set up)`); return found.id; }
   // Prices can't change amount; make a new one, move the lookup key to it, retire the old one.
   const created = await stripe('POST', '/prices', {
     product: p.product, currency: 'usd', unit_amount: p.unit_amount, nickname: p.nickname,
@@ -110,7 +118,7 @@ async function ensurePrice(p) {
     recurring: p.recurring ? { interval: p.recurring } : undefined,
   });
   if (found) await stripe('POST', `/prices/${found.id}`, { active: false });
-  log(found ? '~' : '+', `${p.nickname}: $${p.unit_amount / 100}${p.recurring ? '/' + p.recurring : ''} (${found ? 'replaced' : 'created'})`);
+  log(found ? '~' : '+', `${p.nickname}: $${(p.unit_amount / 100).toFixed(2)}${p.recurring ? '/' + p.recurring : ''} (${found ? 'replaced' : 'created'})`);
   return created.id;
 }
 
