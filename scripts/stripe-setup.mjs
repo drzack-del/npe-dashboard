@@ -157,7 +157,9 @@ async function ensurePaymentMethods() {
 
 async function main() {
   console.log('\nCadenceIQ Stripe setup (test mode)\n');
-  KEY = process.env.STRIPE_SETUP_KEY || await askHidden('Paste your Stripe SANDBOX secret key (sk_test_…), then Enter: ');
+  const typed = process.env.STRIPE_SETUP_KEY || await askHidden('Paste your Stripe SANDBOX secret key (sk_test_…), then Enter: ');
+  // Terminals wrap pasted text in invisible markers (ESC[200~ … ESC[201~); keep just the key.
+  KEY = (typed.match(/(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+/) || [typed.replace(/\x1b\[[0-9;~]*/g, '').trim()])[0];
   if (/^(sk|rk)_live_/.test(KEY)) { console.error('\nThat is a LIVE key. This script only runs on test keys for now.'); process.exit(1); }
   if (!/^(sk|rk)_test_/.test(KEY)) { console.error('\nThat does not look like a Stripe test key (sk_test_… or rk_test_…).'); process.exit(1); }
 
