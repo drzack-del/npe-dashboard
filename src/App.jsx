@@ -255,13 +255,15 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
         // A practice's team list with the bonus rates this viewer may see merged in as
         // bonus_rates (null where they may not), so rate code downstream is unchanged.
         const fetchTeam = async (practiceId) => {
-          const [{ data, error }, { data: rates }] = await Promise.all([
+          const [{ data, error }, { data: rates, error: ratesError }] = await Promise.all([
             supabase.from('tc_users').select(TEAM_COLS).eq('practice_id', practiceId).order('created_at', { ascending: true }),
             supabase.rpc('team_bonus_rates', { p_practice_id: practiceId }),
           ]);
           if (error || !data) return null;
           const byId = new Map((rates || []).map(r => [r.id, r.bonus_rates]));
-          return data.map(u => ({ ...u, bonus_rates: byId.get(u.id) ?? null }));
+          // ratesMissing: the rate lookup failed, so bonus_rates is unknown (not $0). Rate
+          // editors refuse to save then, or they would write $0 over real rates.
+          return data.map(u => ({ ...u, bonus_rates: byId.get(u.id) ?? null, ratesMissing: !!ratesError }));
         };
 
         const generateId = () => crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); });
@@ -918,6 +920,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // caTiers: monthly Case Acceptance bonus, up to 3 levels [{ min: percent, amt: dollars }]
   // (see caseAcceptanceBonusFor).
   const ZERO_RATES = { sds: 0, ret: 0, white: 0, pif: 0, goalBelow: 0, goalMet: 0, goalBeat: 0, goalBelowRange: 5, goalBeatMin: 1, caTiers: [] };
+  const RATES_MISSING_MSG = "Bonus rates didn't load, so nothing was saved. Refresh the page and try again.";
   // Unsaved per-user rate edits in Settings, keyed by tc_users.id.
   const [userBonusDrafts, setUserBonusDrafts] = useState({});
   const [popupBonuses, setPopupBonuses] = useState([]);
@@ -1067,8 +1070,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [tcMgmtMsgType, setTcMgmtMsgType] = useState('info');
   const [teamAdding, setTeamAdding] = useState(false);
   const teamAddingRef = useRef(false);
-  const [tcSetPwInputs, setTcSetPwInputs] = useState({});
-  const [tcSetPwStatus, setTcSetPwStatus] = useState({});
   const [changePwForm, setChangePwForm] = useState({ current: '', next: '', confirm: '' });
   const [changePwMsg, setChangePwMsg] = useState('');
   const [changePwLoading, setChangePwLoading] = useState(false);
@@ -1117,8 +1118,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [allPracticesLoading, setAllPracticesLoading] = useState(false);
   const [practiceInviteOverride, setPracticeInviteOverride] = useState(null); // { userId, invite }
   const [passwordResetStatus, setPasswordResetStatus] = useState({}); // { [userId]: 'sending' | 'sent' | 'error' }
-  const [setPasswordInputs, setSetPasswordInputs] = useState({}); // { [userId]: string }
-  const [setPasswordStatus, setSetPasswordStatus] = useState({}); // { [userId]: 'saving' | 'saved' | 'error' }
   const [superadminOriginalUser, setSuperadminOriginalUser] = useState(null); // set while impersonating a practice
   const [managedPracticeId, setManagedPracticeId] = useState(null); // explicit practice_id override for all writes during impersonation
   const [switchingToPractice, setSwitchingToPractice] = useState(null); // id of practice currently being switched to
@@ -1445,7 +1444,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         dequeuePending(patient.id);
         clearSaveFailure(patient.id);
         if (dropped.length) {
-          setSaveError(`⚠️ ${patient.name} saved, but ${dropped.join(', ')} could not be stored — database update pending. Tell Dr. Miller.`);
+          setSaveError(`⚠️ ${patient.name} saved, but ${dropped.join(', ')} could not be stored — database update pending. Please use Report Issue to let us know.`);
           setTimeout(() => setSaveError(''), 15000);
         }
         return true;
@@ -1604,18 +1603,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
 
   // ── Settings (goals, bonus rates, TC list) ───────────────────────────
+  // Returns null when saved (or nothing to save: demo / view-only), else the error text, so
+  // callers only say "saved" when it was.
   const dbSaveSettings = async (key, value) => {
-    if (isViewOnly) return;
-    if (!supabase || currentUser?.id === 'demo') return;
+    if (isViewOnly) return null;
+    if (!supabase || currentUser?.id === 'demo') return null;
     const { error } = await supabase.from('settings').upsert(
       { key, value, practice_id: managedPracticeId || currentUser.practiceId },
       { onConflict: 'key,practice_id' }
     );
     if (error) {
       console.error('dbSaveSettings error:', error);
-      setSaveError('⚠️ Settings save failed — ' + (error.message || error.code || 'unknown error'));
+      const msg = error.message || error.code || 'unknown error';
+      setSaveError('⚠️ Settings save failed — ' + msg);
       setTimeout(() => setSaveError(''), 10000);
+      return msg;
     }
+    return null;
   };
 
   const dbLoadSettings = async (key) => {
@@ -1681,7 +1685,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     });
   }, [currentUser]);
 
-  const APP_URL = 'https://npe-dashboard.vercel.app';
+  const APP_URL = 'https://trycadenceiq.com/app';
 
   const handleAddPractice = async () => {
     if (!newPracticeName.trim() || !newPracticeDocName.trim() || !newPracticeDocEmail.trim()) {
@@ -1857,7 +1861,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // view only (a manager who may edit goals/settings can still edit, as the database allows).
   const seesMetrics = myRole === 'tc' ? !!teamVisibility.tcMetrics : myRole === 'manager' ? !!teamVisibility.managerMetrics : true;
   const metricsReadOnly = isViewOnly || myRole === 'tc' || (myRole === 'manager' && !canEditSetup);
-  const saveTeamVisibility = async (v) => { setTeamVisibility(v); await dbSaveSettings('team-visibility', v); };
+  const saveTeamVisibility = async (v) => {
+    const prev = teamVisibility;
+    setTeamVisibility(v);
+    const err = await dbSaveSettings('team-visibility', v);
+    if (err) setTeamVisibility(prev);
+    return err;
+  };
   const canManageTCs = !isViewOnly && (myRole === 'admin' || (myRole === 'manager' && practicePerms.manager_manage_tcs));
   const seesAllBonuses = myRole === 'admin' || myRole === 'consultant' || (myRole === 'manager' && practicePerms.manager_see_all_bonuses);
   // Team rows this viewer may invite, reset, (de)activate or remove: anyone for an admin,
@@ -1900,7 +1910,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       if (waiting > 0) return `${waiting} patient${waiting === 1 ? ' is' : 's are'} still Medicaid Pending. Change ${waiting === 1 ? 'their' : 'those patients\''} status first, then turn Medicaid off.`;
     }
     setMedicaidEnabled(on);
-    await dbSaveSettings('medicaid-enabled', on);
+    const err = await dbSaveSettings('medicaid-enabled', on);
+    if (err) { setMedicaidEnabled(!on); return `Couldn't save: ${err}`; }
     return null;
   };
   // Each returns null on success or the error text.
@@ -1919,6 +1930,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
 
   const saveBonusRatesFromSetup = async (drafts) => {
+    if (setupBonusUsers.some(u => drafts[u.id] && u.ratesMissing)) return RATES_MISSING_MSG;
     for (const u of setupBonusUsers) {
       if (!drafts[u.id]) continue;
       // New team rows start with bonus_enabled off, which pays $0 and hides Bonus Audit from
@@ -3895,7 +3907,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               await saveSetupState({ ...setupState, medicaidAnswered: true });
             }}
             practiceSoftware={practiceSoftware}
-            onSetSoftware={async v => { setPracticeSoftware(v); await dbSaveSettings('practice-software', v); }}
+            onSetSoftware={async v => { const prev = practiceSoftware; setPracticeSoftware(v); const err = await dbSaveSettings('practice-software', v); if (err) setPracticeSoftware(prev); return err; }}
             goalsStore={goalsStore}
             onSaveGoalsStore={saveGoalsStore}
             goalsSkipped={!!setupState?.goalsSkipped}
@@ -3927,7 +3939,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               : 'You set a temporary password and give it to them. They can change it in Settings.'}
             bonusUsers={setupBonusUsers}
             bonusesEnabled={bonusesEnabled}
-            onSetBonusesEnabled={async on => { setBonusesEnabled(on); await dbSaveSettings('bonuses-enabled', on); }}
+            onSetBonusesEnabled={async on => { setBonusesEnabled(on); const err = await dbSaveSettings('bonuses-enabled', on); if (err) setBonusesEnabled(!on); return err; }}
             onSaveBonusRates={saveBonusRatesFromSetup}
             patientCount={patients.length}
             onLogFirstExam={showFirstExamGuide}
@@ -7590,7 +7602,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <select value={newPatientForm.location}
                     onChange={e => setNewPatientForm({...newPatientForm, location: e.target.value})}
                     style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}>
-                    {(locations.length > 0 ? locations : ['Car', 'Apo']).map(loc => (
+                    {locations.length === 0 && <option value="">No offices yet: add one in Settings</option>}
+                    {locations.map(loc => (
                       <option key={loc} value={loc}>{loc}</option>
                     ))}
                   </select>
@@ -11450,45 +11463,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                           {isExpanded ? 'Hide' : '📋 Get Invite'}
                                         </button>
                                       )}
-                                      {hasAuth && !USE_COGNITO && (<>
-                                        <input
-                                          type="password"
-                                          placeholder="Set new password…"
-                                          value={setPasswordInputs[owner.id] || ''}
-                                          onChange={e => setSetPasswordInputs(s => ({ ...s, [owner.id]: e.target.value }))}
-                                          style={{padding:'4px 8px',border:'1px solid #475569',borderRadius:'6px',fontSize:'11px',backgroundColor:'#1e293b',color:'white',width:'140px'}}
-                                        />
-                                        <button
-                                          disabled={setPasswordStatus[owner.id] === 'saving' || !setPasswordInputs[owner.id]}
-                                          onClick={async () => {
-                                            // Same trim as the Team path -- see comment there.
-                                            const newPw = (setPasswordInputs[owner.id] || '').trim();
-                                            if (!newPw || newPw.length < 6) return alert('Password must be at least 6 characters');
-                                            setSetPasswordStatus(s => ({ ...s, [owner.id]: 'saving' }));
-                                            try {
-                                              if (!owner.auth_user_id) throw new Error('This user has no auth account yet (auth_user_id is missing). They need to sign up first.');
-                                              const res = await fetch(`${SUPABASE_URL}/functions/v1/set-user-password`, {
-                                                method: 'POST',
-                                                headers: { 'Content-Type': 'application/json', 'x-admin-secret': '5bfbc2bc4b279358db905e50da18d22d23c01cf048691c4620b7e1bcf3fe6e02' },
-                                                body: JSON.stringify({ targetUserId: owner.auth_user_id, newPassword: newPw }),
-                                              });
-                                              const result = await res.json();
-                                              if (result.success) {
-                                                setSetPasswordStatus(s => ({ ...s, [owner.id]: 'saved' }));
-                                                setSetPasswordInputs(s => ({ ...s, [owner.id]: '' }));
-                                              } else {
-                                                throw new Error(result.error || `HTTP ${res.status}`);
-                                              }
-                                            } catch(e) {
-                                              setSetPasswordStatus(s => ({ ...s, [owner.id]: 'error' }));
-                                              alert('Error setting password: ' + e.message);
-                                            }
-                                            setTimeout(() => setSetPasswordStatus(s => { const n = {...s}; delete n[owner.id]; return n; }), 3000);
-                                          }}
-                                          style={{padding:'4px 12px',backgroundColor: setPasswordStatus[owner.id]==='saved' ? '#16a34a' : setPasswordStatus[owner.id]==='error' ? '#dc2626' : '#334155',color:'white',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer',opacity:(!setPasswordInputs[owner.id]||setPasswordStatus[owner.id]==='saving')?0.5:1}}>
-                                          {setPasswordStatus[owner.id]==='saved' ? '✓ Saved' : setPasswordStatus[owner.id]==='error' ? '✗ Error' : setPasswordStatus[owner.id]==='saving' ? 'Saving…' : 'Set Password'}
-                                        </button>
-                                      </>)}
                                     </div>
                                   </div>
                                 ) : (
@@ -11505,15 +11479,25 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                     const confirmName = window.prompt(`This will permanently delete "${practice.name}" and ALL its patients, settings, and users.\n\nType the practice name to confirm:`);
                                     if (confirmName === null) return;
                                     if (confirmName.trim() !== practice.name.trim()) return alert('Name did not match. Nothing was deleted.');
-                                    try {
-                                      await supabase.from('patients').delete().eq('practice_id', practice.id);
-                                      await supabase.from('settings').delete().eq('practice_id', practice.id);
-                                      await supabase.from('tc_users').delete().eq('practice_id', practice.id);
-                                      await supabase.from('practices').delete().eq('id', practice.id);
-                                      await fetchAllPractices();
-                                    } catch(e) {
-                                      alert('Error deleting practice: ' + e.message);
+                                    // The client returns errors instead of throwing, so each step is
+                                    // checked and the delete stops at the first one that fails.
+                                    const steps = [
+                                      ['patients', () => supabase.from('patients').delete().eq('practice_id', practice.id)],
+                                      ['settings', () => supabase.from('settings').delete().eq('practice_id', practice.id)],
+                                      ['team members', () => supabase.from('tc_users').delete().eq('practice_id', practice.id)],
+                                      ['the practice', () => supabase.from('practices').delete().eq('id', practice.id).select('id')],
+                                    ];
+                                    const done = [];
+                                    for (const [label, run] of steps) {
+                                      const { data, error } = await run();
+                                      if (error || (label === 'the practice' && (!data || data.length === 0))) {
+                                        alert(`Stopped while deleting ${label}: ${error ? error.message : 'the database refused it'}.` + (done.length ? ` Already deleted: ${done.join(', ')}.` : ' Nothing was deleted.'));
+                                        await fetchAllPractices();
+                                        return;
+                                      }
+                                      done.push(label);
                                     }
+                                    await fetchAllPractices();
                                   }}
                                   style={{padding:'6px 12px',backgroundColor:'transparent',border:'1px solid #dc2626',color:'#ef4444',borderRadius:'6px',fontSize:'11px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
                                   🗑 Delete
@@ -11595,8 +11579,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </div>
                       <select value={practiceSoftware || ''} onChange={async e => {
                           const v = e.target.value || null;
+                          const prev = practiceSoftware;
                           setPracticeSoftware(v);
-                          await dbSaveSettings('practice-software', v);
+                          if (await dbSaveSettings('practice-software', v)) setPracticeSoftware(prev);
                         }}
                         style={{padding:'7px 10px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px'}}>
                         <option value="">Not set</option>
@@ -11613,7 +11598,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         onClick={async () => {
                           const next = !bonusesEnabled;
                           setBonusesEnabled(next);
-                          await dbSaveSettings('bonuses-enabled', next);
+                          if (await dbSaveSettings('bonuses-enabled', next)) setBonusesEnabled(!next);
                         }}
                         style={{padding:'7px 18px',backgroundColor: bonusesEnabled ? '#16a34a' : '#6b7280',color:'white',border:'none',borderRadius:'20px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap',flexShrink:0,marginLeft:'16px'}}>
                         {bonusesEnabled ? 'ON' : 'OFF'}
@@ -11632,7 +11617,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           max="12"
                           value={obsRecallMonths}
                           onChange={e => setObsRecallMonths(Math.max(1, Math.min(12, parseInt(e.target.value) || 4)))}
-                          onBlur={async e => { await dbSaveSettings('obs-recall-months', Math.max(1, Math.min(12, parseInt(e.target.value) || 4))); setSaveToast('✅ OBS lead time saved'); setTimeout(() => setSaveToast(''), 2500); }}
+                          onBlur={async e => { const err = await dbSaveSettings('obs-recall-months', Math.max(1, Math.min(12, parseInt(e.target.value) || 4))); if (err) return; setSaveToast('✅ OBS lead time saved'); setTimeout(() => setSaveToast(''), 2500); }}
                           style={{width:'60px',padding:'6px 8px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'14px',fontWeight:'700',textAlign:'center'}}
                         />
                         <span style={{fontSize:'13px',color:'#6b7280'}}>months before</span>
@@ -11670,8 +11655,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           onClick={async () => {
                             const parse = (s) => s.split(',').map(x => x.trim()).filter(Boolean);
                             const next = { to: parse(recipientToStr), cc: parse(recipientCcStr) };
+                            const err = await dbSaveSettings('consultant-recipients', next);
+                            if (err) return;
                             setConsultantRecipients(next);
-                            await dbSaveSettings('consultant-recipients', next);
                             setSaveToast('✅ Report recipients saved');
                             setTimeout(() => setSaveToast(''), 2500);
                           }}
@@ -11693,10 +11679,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             📍 {loc}
                             <button onClick={async () => {
                               const updated = locations.filter((_,j) => j !== i);
-                              setLocations(updated);
-                              localStorage.setItem(`npe-locations-${currentUser?.practiceId}`, JSON.stringify(updated));
-                              await supabase.from('settings').upsert({ key:'locations', value: updated, practice_id: managedPracticeId || currentUser.practiceId }, { onConflict:'key,practice_id' });
-                              setLocationMsg('Location removed.');
+                              const err = await saveLocationsList(updated);
+                              setLocationMsg(err ? `Error: Couldn't remove ${loc}: ${err}` : 'Location removed.');
                               setTimeout(() => setLocationMsg(''), 2000);
                             }} style={{background:'none',border:'none',cursor:'pointer',color:'#9ca3af',fontSize:'14px',lineHeight:1,padding:'0 2px'}}>×</button>
                           </div>
@@ -11714,12 +11698,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <button onClick={async () => {
                         const name = newLocationName.trim();
                         if (!name) return setLocationMsg('Error: Enter a location name.');
-                        if (locations.includes(name)) return setLocationMsg('Error: That location already exists.');
-                        const updated = [...locations, name];
-                        setLocations(updated);
-                        localStorage.setItem(`npe-locations-${currentUser?.practiceId}`, JSON.stringify(updated));
+                        if (locations.some(l => l.toLowerCase() === name.toLowerCase())) return setLocationMsg('Error: That location already exists.');
+                        const err = await saveLocationsList([...locations, name]);
+                        if (err) return setLocationMsg(`Error: Couldn't add "${name}": ${err}`);
                         setNewLocationName('');
-                        await supabase.from('settings').upsert({ key:'locations', value: updated, practice_id: managedPracticeId || currentUser.practiceId }, { onConflict:'key,practice_id' });
                         setLocationMsg(`"${name}" added.`);
                         setTimeout(() => setLocationMsg(''), 3000);
                       }} style={{padding:'9px 18px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'6px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
@@ -11897,43 +11879,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                         {inviteStatus[u.id]==='sent'?'✓ Sent':inviteStatus[u.id]==='error'?'✗ Error':inviteStatus[u.id]==='sending'?'Sending…':'Resend invite'}
                                       </button>
                                     )}
-                                    {!USE_COGNITO && u.auth_user_id && currentUser?.role === 'admin' && (<>
-                                      <input
-                                        type="password"
-                                        placeholder="New password…"
-                                        value={tcSetPwInputs[u.id] || ''}
-                                        onChange={e => setTcSetPwInputs(s => ({ ...s, [u.id]: e.target.value }))}
-                                        style={{padding:'4px 8px',border:'1px solid #d1d5db',borderRadius:'5px',fontSize:'11px',width:'120px'}}
-                                      />
-                                      <button
-                                        disabled={!tcSetPwInputs[u.id] || tcSetPwStatus[u.id] === 'saving'}
-                                        onClick={async () => {
-                                          // Trim before validating AND before sending: a pasted
-                                          // trailing space silently becomes part of the stored
-                                          // password and locks the person out.
-                                          const newPw = (tcSetPwInputs[u.id] || '').trim();
-                                          if (!newPw || newPw.length < 6) return alert('Password must be at least 6 characters');
-                                          setTcSetPwStatus(s => ({ ...s, [u.id]: 'saving' }));
-                                          try {
-                                            const res = await fetch(`${SUPABASE_URL}/functions/v1/set-user-password`, {
-                                              method: 'POST',
-                                              headers: { 'Content-Type': 'application/json', 'x-admin-secret': '5bfbc2bc4b279358db905e50da18d22d23c01cf048691c4620b7e1bcf3fe6e02' },
-                                              body: JSON.stringify({ targetUserId: u.auth_user_id, newPassword: newPw }),
-                                            });
-                                            const result = await res.json();
-                                            if (!result.success) throw new Error(result.error || `HTTP ${res.status}`);
-                                            setTcSetPwStatus(s => ({ ...s, [u.id]: 'saved' }));
-                                            setTcSetPwInputs(s => ({ ...s, [u.id]: '' }));
-                                          } catch(e) {
-                                            setTcSetPwStatus(s => ({ ...s, [u.id]: 'error' }));
-                                            alert('Error: ' + e.message);
-                                          }
-                                          setTimeout(() => setTcSetPwStatus(s => { const n = {...s}; delete n[u.id]; return n; }), 3000);
-                                        }}
-                                        style={{fontSize:'11px',padding:'4px 10px',border:'none',borderRadius:'5px',cursor:'pointer',fontWeight:'600',backgroundColor: tcSetPwStatus[u.id]==='saved'?'#16a34a':tcSetPwStatus[u.id]==='error'?'#dc2626':'#374151',color:'white',opacity:(!tcSetPwInputs[u.id]||tcSetPwStatus[u.id]==='saving')?0.5:1}}>
-                                        {tcSetPwStatus[u.id]==='saved'?'✓ Saved':tcSetPwStatus[u.id]==='error'?'✗ Error':tcSetPwStatus[u.id]==='saving'?'Saving…':'Set Password'}
-                                      </button>
-                                    </>)}
                                     {mayManageMember(u) && (
                                     <button onClick={async () => {
                                       const newStatus = u.status === 'active' ? 'inactive' : 'active';
@@ -12131,6 +12076,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       );
                       return (
                         <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'16px'}}>
+                          {eligible.some(u => u.ratesMissing) && (
+                            <div style={{padding:'10px 14px',borderRadius:'6px',fontSize:'13px',fontWeight:'600',backgroundColor:'#fef2f2',color:'#b91c1c',border:'1px solid #fecaca'}}>
+                              Bonus rates didn't load, so the amounts below may show $0. Refresh the page before changing anything.
+                            </div>
+                          )}
                           {eligible.map(u => {
                             const enabled = u.bonus_enabled !== false;
                             const effective = userBonusDrafts[u.id] || { ...ZERO_RATES, ...(u.bonus_rates || {}) };
@@ -12151,7 +12101,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                       onClick={async () => {
                                         const newVal = !enabled;
                                         setTcUsers(prev => prev.map(x => x.id === u.id ? { ...x, bonus_enabled: newVal } : x));
-                                        await supabase.from('tc_users').update({ bonus_enabled: newVal }).eq('id', u.id);
+                                        const { data: rows, error } = await supabase.from('tc_users').update({ bonus_enabled: newVal }).eq('id', u.id).select('id');
+                                        if (error || !rows || rows.length === 0) {
+                                          setTcUsers(prev => prev.map(x => x.id === u.id ? { ...x, bonus_enabled: enabled } : x));
+                                          setSaveToast(`❌ Couldn't change ${u.name}'s bonuses${error ? ': ' + error.message : ''}. Nothing was saved.`);
+                                          setTimeout(() => setSaveToast(''), 5000);
+                                        }
                                       }}
                                       style={{position:'relative',width:'34px',height:'18px',cursor:'pointer',flexShrink:0}}
                                     >
@@ -12286,13 +12241,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     })()}
                     <button
                       onClick={async () => {
+                        // Only the people whose rates were edited are written, and nothing is
+                        // written when the rates didn't load (bonus_rates would read as $0).
+                        const edited = tcUsers.filter(u => (u.role === 'tc' || u.role === 'manager') && u.status !== 'inactive' && userBonusDrafts[u.id]);
+                        if (edited.some(u => u.ratesMissing)) {
+                          setSaveToast('❌ ' + RATES_MISSING_MSG);
+                          setTimeout(() => setSaveToast(''), 6000);
+                          return;
+                        }
+                        if (edited.length === 0) {
+                          setSaveToast('Nothing to save: no rates were changed.');
+                          setTimeout(() => setSaveToast(''), 3000);
+                          return;
+                        }
                         setSaveToast('⏳ Saving bonus rates...');
-                        // Persist explicit rates for every eligible user so nobody
-                        // silently depends on legacy practice-wide defaults.
-                        const eligible = tcUsers.filter(u => (u.role === 'tc' || u.role === 'manager') && u.status !== 'inactive');
                         let userError = null;
-                        for (const u of eligible) {
-                          const draft = userBonusDrafts[u.id] || { ...ZERO_RATES, ...(u.bonus_rates || {}) };
+                        for (const u of edited) {
+                          const draft = userBonusDrafts[u.id];
                           const effective = { ...draft, caTiers: cleanTiers(draft.caTiers) };
                           const { error: uErr } = await supabase.from('tc_users').update({ bonus_rates: effective }).eq('id', u.id);
                           if (uErr) userError = uErr;
@@ -12473,8 +12438,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       onClick={async () => {
                         const newBonus = { ...popupBonusForm, id: Date.now().toString(), createdAt: new Date().toISOString() };
                         const updated = [...popupBonuses, newBonus];
+                        if (await dbSaveSettings('popup-bonuses', updated)) return; // form kept; error banner shown
                         setPopupBonuses(updated);
-                        await dbSaveSettings('popup-bonuses', updated);
                         setPopupBonusForm({ name: '', startDate: '', endDate: '', description: '', tcFilter: 'All', amtSDS: 0, amtPending: 0, amtScheduled: 0, amtRetainer: 0, amtWhitening: 0, goalThreshold: 0, replacesBase: false });
                         setSaveToast('🎯 Popup bonus campaign created!');
                         setTimeout(() => setSaveToast(''), 3000);
@@ -12537,8 +12502,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           onClick={async () => {
                             if (!window.confirm(`Delete campaign "${bonus.name}"?`)) return;
                             const updated = popupBonuses.filter(b => b.id !== bonus.id);
+                            if (await dbSaveSettings('popup-bonuses', updated)) return;
                             setPopupBonuses(updated);
-                            await dbSaveSettings('popup-bonuses', updated);
                           }}
                           style={{padding:'6px 12px',backgroundColor:'transparent',border:'1px solid #fca5a5',color:'#dc2626',borderRadius:'4px',fontSize:'12px',cursor:'pointer'}}
                         >
@@ -12610,11 +12575,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   <p style={{fontSize:'13px',color:'#9ca3af',marginTop:'4px'}}>Set monthly and quarterly targets for each year. Past months are locked. Each year starts with no goals until you set them.</p>
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:'12px'}}>
-                  {goalsSaveMsg && <span style={{color:'#10b981',fontWeight:'600',fontSize:'15px'}}>{goalsSaveMsg}</span>}
+                  {goalsSaveMsg && <span style={{color: goalsSaveMsg.startsWith('❌') ? '#dc2626' : '#10b981',fontWeight:'600',fontSize:'15px'}}>{goalsSaveMsg}</span>}
                   <button
                     onClick={async () => {
-                      await dbSaveSettings('goals', goalsStore);
-                      setGoalsSaveMsg('✅ Goals saved!');
+                      const err = await dbSaveSettings('goals', goalsStore);
+                      setGoalsSaveMsg(err ? `❌ Goals not saved: ${err}` : '✅ Goals saved!');
                       setTimeout(() => setGoalsSaveMsg(''), 3000);
                     }}
                     style={{padding:'10px 24px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer',fontSize:'15px'}}>
@@ -12717,8 +12682,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   </React.Fragment>
                                 ))}
                                 <td style={{padding:'8px',textAlign:'center'}}>
-                                  <input type="number" value={goals.monthly[i].convGoal || 70} readOnly={isPast}
-                                    onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, convGoal: Number(e.target.value)} : m)})}
+                                  <input type="number" value={goals.monthly[i].convGoal === '' ? '' : (goals.monthly[i].convGoal || 70)} readOnly={isPast}
+                                    onChange={e => !isPast && setGoals({...goals, monthly: goals.monthly.map((m,j) => j===i ? {...m, convGoal: e.target.value === '' ? '' : Number(e.target.value)} : m)})}
                                     style={{width:'60px',padding:'6px',border: isPast ? '1px solid #f3f4f6' : '1px solid #fed7aa',borderRadius:'4px',textAlign:'center',color: isPast ? '#9ca3af' : '#2563EB',fontWeight:'600',backgroundColor: isPast ? '#f3f4f6' : 'white',cursor: isPast ? 'not-allowed' : 'auto'}} />
                                 </td>
                               </tr>
@@ -12803,14 +12768,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               <div style={{marginTop:'24px',paddingTop:'24px',borderTop:'1px solid #e5e7eb',display:'flex',alignItems:'center',gap:'16px'}}>
                 <button
                   onClick={async () => {
-                    await dbSaveSettings('goals', goalsStore);
-                    setGoalsSaveMsg('✅ Goals saved!');
+                    const err = await dbSaveSettings('goals', goalsStore);
+                    setGoalsSaveMsg(err ? `❌ Goals not saved: ${err}` : '✅ Goals saved!');
                     setTimeout(() => setGoalsSaveMsg(''), 3000);
                   }}
                   style={{padding:'12px 32px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer',fontSize:'16px'}}>
                   💾 Save All Goals
                 </button>
-                {goalsSaveMsg && <span style={{color:'#10b981',fontWeight:'600',fontSize:'15px'}}>{goalsSaveMsg}</span>}
+                {goalsSaveMsg && <span style={{color: goalsSaveMsg.startsWith('❌') ? '#dc2626' : '#10b981',fontWeight:'600',fontSize:'15px'}}>{goalsSaveMsg}</span>}
               </div>
             </div></>)}</>)}
 
@@ -14309,9 +14274,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   onChange={(e) => setEditForm({...editForm, location: e.target.value})}
                   style={{width:'100%',padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
                 >
-                  {(locations.length > 0 ? locations : ['Car', 'Apo']).map(loc => (
+                  {(locations.includes(editForm.location) || !editForm.location ? locations : [editForm.location, ...locations]).map(loc => (
                     <option key={loc} value={loc}>{loc}</option>
                   ))}
+                  {locations.length === 0 && !editForm.location && <option value="">No offices yet: add one in Settings</option>}
                 </select>
               </div>
               <div>
