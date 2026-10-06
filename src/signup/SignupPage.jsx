@@ -2,11 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { documentPackage, printablePackage } from './documents.mjs';
 import { chargeSummary, money, practiceDetailErrors, signupProgress, stageLabel } from './workflow.mjs';
 import { fakeBackend } from './fakeBackend.mjs';
+import { apiBackend } from './apiBackend.mjs';
 
-// Which backend the page talks to. Locally (npm run dev) it uses the in-browser fake so the
-// whole flow can be clicked through. The live site shows "opening soon" until the AWS
-// sign-up function exists.
-const backend = import.meta.env.DEV ? fakeBackend : null;
+// Which backend the page talks to: the AWS signup function when VITE_SIGNUP_API is set (its
+// /functions/v1/signup address); otherwise, locally (npm run dev), the in-browser fake so the
+// whole flow can be clicked through. The live site without it shows "opening soon".
+const SIGNUP_API = import.meta.env.VITE_SIGNUP_API;
+const backend = SIGNUP_API ? apiBackend(SIGNUP_API) : import.meta.env.DEV ? fakeBackend : null;
+const returnedFromCheckout = (() => { try { return new URLSearchParams(window.location.search).get('checkout'); } catch { return null; } })();
 
 const blankDetails = { legalName: '', dba: '', officeAddress: '', city: '', state: '', postalCode: '',
   signerName: '', signerTitle: '', signerEmail: '', billingEmail: '', locations: [], practiceManagementSystem: '' };
@@ -34,12 +37,29 @@ export default function SignupPage() {
     } catch (e) { setMessage(e.message); }
     setLoading(false);
   };
-  useEffect(() => { if (backend) load(); else setLoading(false); }, []);
+  useEffect(() => {
+    if (!backend) { setLoading(false); return; }
+    load();
+    if (returnedFromCheckout === 'success') setMessage('Payment received. Setting up your practice…');
+    if (returnedFromCheckout === 'canceled') setMessage('Checkout was canceled. Nothing was charged; you can choose a payment method again.');
+  }, []);
+  // After Stripe, the practice is created a few seconds later (card) or when the bank payment
+  // clears (ACH). Check back every few seconds while this page is open.
+  useEffect(() => {
+    if (!record || record.stage !== 'payment_pending') return;
+    const t = setInterval(async () => { try { const r = await backend.get(); if (r) setRecord(r); } catch {} }, 5000);
+    return () => clearInterval(t);
+  }, [record?.stage]);
 
   const docs = useMemo(() => record ? documentPackage({ ...record, details: form }) : [], [record, form]);
   const run = async (label, fn) => {
     setBusy(true); setMessage(label);
-    try { await fn(); } catch (e) { setMessage(e.message || 'Something went wrong. Please try again.'); }
+    try { await fn(); } catch (e) {
+      // The server can send back field errors, or the current record (e.g. the price changed).
+      if (e.fieldErrors) setFieldErrors(e.fieldErrors);
+      if (e.record) { setRecord(e.record); setForm({ ...blankDetails, ...e.record.details }); setReviewedDocs(['order-form']); setSignature(''); setAuthorized(false); }
+      setMessage(e.message || 'Something went wrong. Please try again.');
+    }
     setBusy(false);
   };
 
@@ -66,7 +86,7 @@ export default function SignupPage() {
       return setMessage('The signature must match the authorized signer name, and the consent box must be checked.');
     }
     run('Recording signature…', async () => {
-      setRecord(await backend.sign(signature));
+      setRecord(await backend.sign(signature, record.plan.key));
       setMessage('Agreements signed. Choose how you would like to pay.');
     });
   };
@@ -182,7 +202,14 @@ export default function SignupPage() {
           Signed by {record.signatureName} on {new Date(record.signedAt).toLocaleString()}</div>}
       </>}
 
-      {record.signedAt && <>
+      {record.signedAt && record.paymentStatus === 'processing' && <>
+        <hr style={hr} />
+        <div style={{ padding: 18, background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: 10 }}>
+          <strong style={{ color: '#1e40af' }}>Your bank payment is clearing</strong>
+          <div style={{ fontSize: 13, color: '#475569', marginTop: 6 }}>Bank (ACH) payments take a few business days. As soon as it clears, we will email {form.signerEmail} a link to create your CadenceIQ login. You can close this page.</div>
+        </div>
+      </>}
+      {record.signedAt && record.paymentStatus !== 'processing' && <>
         <hr style={hr} />
         <h2 style={h2}>3. Payment</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 12 }}>

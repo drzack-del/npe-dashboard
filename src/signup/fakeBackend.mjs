@@ -28,10 +28,11 @@ export const fakeBackend = {
     if (Object.keys(practiceDetailErrors(details)).length) fail('Required practice information is incomplete.');
     return write({ ...r, details, stage: 'information_complete' });
   },
-  async sign(signatureName) {
+  async sign(signatureName, planKey) {
     const r = read();
     if (r?.stage !== 'information_complete') fail('Complete the practice information first.');
     if (signatureName.trim().toLowerCase() !== String(r.details.signerName).trim().toLowerCase()) fail('Signature must match the authorized signer.');
+    if (planKey && planKey !== r.plan.key) fail('The price changed. Please review the Order Form and sign again.');
     return write({ ...r, stage: 'signed', signatureName: signatureName.trim(), signedAt: new Date().toISOString(), agreementVersion: AGREEMENT_VERSION });
   },
   // The real function returns a Stripe Checkout link; the test pretends payment cleared.
