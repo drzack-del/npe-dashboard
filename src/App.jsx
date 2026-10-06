@@ -1835,8 +1835,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   // ── Roles (aws/infra/sql/08_roles.sql) ─────────────────────────────────
   // Office Manager switches for this practice (practice_permissions). A practice without a
-  // row gets these defaults, the same as the database's.
-  const PERM_DEFAULTS = { manager_delete_patients: true, manager_see_all_bonuses: true, manager_edit_goals_settings: false, manager_manage_tcs: true };
+  // row gets these defaults, the same as the database's (10_manager_bonuses_default_off.sql:
+  // pay is need-to-know, so "see every bonus" starts off).
+  const PERM_DEFAULTS = { manager_delete_patients: true, manager_see_all_bonuses: false, manager_edit_goals_settings: false, manager_manage_tcs: true };
   const [practicePerms, setPracticePerms] = useState(PERM_DEFAULTS);
   const loadPracticePerms = async () => {
     if (!supabase || !currentUser?.practiceId || currentUser.id === 'demo') return;
@@ -5496,10 +5497,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
             </div>
 
-            {/* Active popup bonus banner */}
-            {bonusesEnabled && (() => {
+            {/* Active popup bonus banner — the whole team's earnings only for those who see every
+                 bonus; everyone else sees their own, and only with their bonus display on. */}
+            {bonusesEnabled && !currentUser?.locationScope && (seesAllBonuses || currentUser?.bonusEnabled) && (() => {
               const todayStr = localToday();
-              const myTC = currentUser?.role === 'tc' ? currentUser.name : null;
+              const myTC = seesAllBonuses ? null : currentUser?.name;
               const activeBonuses = popupBonuses.filter(b =>
                 todayStr >= b.startDate && todayStr <= b.endDate &&
                 (b.tcFilter === 'All' || myTC === null || b.tcFilter === myTC)
@@ -6531,10 +6533,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               )}
             </div>
 
-            {/* Active popup bonus banner */}
-            {bonusesEnabled && (() => {
+            {/* Active popup bonus banner — the whole team's earnings only for those who see every
+                 bonus; everyone else sees their own, and only with their bonus display on. */}
+            {bonusesEnabled && !currentUser?.locationScope && (seesAllBonuses || currentUser?.bonusEnabled) && (() => {
               const todayStr = localToday();
-              const myTC = currentUser?.role === 'tc' ? currentUser.name : null;
+              const myTC = seesAllBonuses ? null : currentUser?.name;
               const activeBonuses = popupBonuses.filter(b =>
                 todayStr >= b.startDate && todayStr <= b.endDate &&
                 (b.tcFilter === 'All' || myTC === null || b.tcFilter === myTC)
