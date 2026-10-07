@@ -181,7 +181,8 @@ function askLine(question) {
 
 async function main() {
   console.log(`\nCadenceIQ Stripe setup (${LIVE ? 'LIVE mode: real customers and real money' : 'test mode'})\n`);
-  console.log(`Copy your Stripe ${LIVE ? 'LIVE' : 'SANDBOX'} secret key (sk_${MODE}_…), then either paste it here and press Enter,`);
+  console.log(`Copy your Stripe ${LIVE ? 'LIVE' : 'SANDBOX'} setup key (sk_${MODE}_… or a "Full access except sensitive operations"`);
+  console.log(`key, rk_${MODE}_…), then either paste it here and press Enter,`);
   console.log('or just press Enter to read it straight from your clipboard.\n');
   let typed = process.env.STRIPE_SETUP_KEY || await askHidden('Key (hidden): ');
   if (!typed) {
@@ -192,12 +193,11 @@ async function main() {
   KEY = (typed.match(/(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+/) || [typed.replace(/\x1b\[[0-9;~]*/g, '').trim()])[0];
   if (!LIVE && /^(sk|rk)_live_/.test(KEY)) { console.error('\nThat is a LIVE key. For live mode run: node scripts/stripe-setup.mjs --live'); process.exit(1); }
   if (LIVE && /^(sk|rk)_test_/.test(KEY)) { console.error('\nThat is a TEST key, but you ran live mode. Copy the key from your live account (sk_live_…).'); process.exit(1); }
-  if (!new RegExp(`^sk_${MODE}_`).test(KEY)) {
+  if (!new RegExp(`^(sk|rk)_${MODE}_`).test(KEY)) {
     // Say what arrived without showing it: only the kind of key (its public prefix) and length.
     const kind = (KEY.match(/^[a-z]+_(?:test|live)_/) || [])[0];
     console.error(`\nThat is not a Stripe secret ${MODE} key. Got ${KEY ? (kind ? `a "${kind}…" key` : `${KEY.length} characters that don't start like a Stripe key`) : 'nothing'}.`);
     if (kind?.startsWith('pk_')) console.error(`That is the publishable key. Use the Secret key (sk_${MODE}_…) shown under it.`);
-    if (kind?.startsWith('rk_')) console.error(`That is a restricted key. Use the Secret key (sk_${MODE}_…, Full access) for this one-time setup.`);
     process.exit(1);
   }
 
