@@ -121,9 +121,11 @@ export default function SignupPage() {
 
   const plan = record.plan;
   const complete = record.stage === 'provisioned';
-  const cardAllowed = record.cardSurchargeAvailable;
+  // Cards are on for everyone; the surcharge applies only in states cleared for it (bps > 0).
+  const cardAllowed = record.cardAvailable ?? record.cardSurchargeAvailable;
+  const cardSurcharged = (record.cardSurchargeBps || 0) > 0;
   const ach = chargeSummary(plan, 'us_bank_account');
-  const card = chargeSummary(plan, 'card', record.cardSurchargeBps);
+  const card = chargeSummary(plan, 'card', record.cardSurchargeBps || 0);
   const chosen = paymentMethod === 'card' ? card : ach;
 
   return <Shell testMode={backend.testMode}>
@@ -210,12 +212,14 @@ export default function SignupPage() {
         <hr style={hr} />
         <h2 style={h2}>3. Payment</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 12 }}>
-          <PaymentChoice active={paymentMethod === 'us_bank_account'} onClick={() => setPaymentMethod('us_bank_account')} title="Bank account (ACH)" badge="Lower cost"
+          <PaymentChoice active={paymentMethod === 'us_bank_account'} onClick={() => setPaymentMethod('us_bank_account')} title="Bank account (ACH)" badge="ACH"
             lines={[['Monthly subscription', money(plan.monthlyFeeCents)], ['ACH processing cost', money(ach.monthlyExtra)], ['Monthly total', money(ach.monthlyTotal)]]}
             note="Recovers Stripe's 0.8% ACH fee, $5 maximum per payment. Bank payments can take a few business days to clear." />
-          <PaymentChoice active={paymentMethod === 'card'} disabled={!cardAllowed} onClick={() => setPaymentMethod('card')} title="Credit card" badge="Surcharge"
-            lines={[['Monthly subscription', money(plan.monthlyFeeCents)], ['Card surcharge', money(card.monthlyExtra)], ['Monthly total', money(card.monthlyTotal)]]}
-            note={cardAllowed ? 'Surcharge equals our card processing cost (2.9% + $0.30), never more than 3%. Credit cards only; debit and prepaid cards are not accepted.' : 'Card payment is not available in your state yet. Please use a bank account.'} />
+          <PaymentChoice active={paymentMethod === 'card'} disabled={!cardAllowed} onClick={() => setPaymentMethod('card')} title="Card" badge={cardSurcharged ? 'Surcharge' : 'No surcharge'}
+            lines={[['Monthly subscription', money(plan.monthlyFeeCents)], ['Card surcharge', cardSurcharged ? money(card.monthlyExtra) : 'None'], ['Monthly total', money(card.monthlyTotal)]]}
+            note={!cardAllowed ? 'Card payment is not available right now. Please use a bank account.'
+              : cardSurcharged ? 'Surcharge equals our card processing cost (2.9% + $0.30), never more than 3%. Credit cards only; debit and prepaid cards are not accepted.'
+              : 'Credit or debit card. No surcharge.'} />
         </div>
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 18, display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginTop: 14, alignItems: 'center' }}>
           <div><strong>Due today: {money(chosen.dueToday)}</strong>

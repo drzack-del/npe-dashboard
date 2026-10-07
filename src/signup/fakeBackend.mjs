@@ -2,7 +2,7 @@
 // Everything lives in this browser's localStorage; nothing is sent anywhere and nothing is charged.
 // Same actions and response shape the real function will have.
 import { AGREEMENT_VERSION } from './documents.mjs';
-import { planFor, practiceDetailErrors, SURCHARGE_BPS } from './workflow.mjs';
+import { planFor, practiceDetailErrors } from './workflow.mjs';
 
 const KEY = 'cadenceiq-signup-test';
 const read = () => { try { return JSON.parse(window.localStorage.getItem(KEY)); } catch { return null; } };
@@ -20,7 +20,7 @@ export const fakeBackend = {
     const plan = planFor(FOUNDATION_TAKEN);
     return write({ id: 'test-signup', stage: 'started', testMode: true, plan, company,
       foundationSpotsLeft: Math.max(0, 5 - FOUNDATION_TAKEN), details: details || {},
-      cardSurchargeAvailable: true, cardSurchargeBps: SURCHARGE_BPS, createdAt: new Date().toISOString() });
+      cardAvailable: true, cardSurchargeAvailable: false, cardSurchargeBps: 0, createdAt: new Date().toISOString() });
   },
   async saveDetails(details) {
     const r = read() || await this.start();
