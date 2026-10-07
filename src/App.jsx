@@ -2226,6 +2226,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [bondRescheduleDate, setBondRescheduleDate] = useState({});
   // OBS check-in notes + reschedule UI state
   const [obsCheckNotes, setObsCheckNotes] = useState({});
+  const [obsCheckNextDate, setObsCheckNextDate] = useState({}); // optional override of the next OBS call date
   const [obsRescheduleOpen, setObsRescheduleOpen] = useState({});
   const [obsRescheduleDate, setObsRescheduleDate] = useState({});
 
@@ -2884,6 +2885,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     }
     return `${o.outcome || 'Follow-up'}. `;
   };
+  // Suggested note for an OBS (observation) patient's Log Contact — they aren't Pending,
+  // so the draft speaks to the observation booking / recheck instead.
+  const composeObsRecapDraft = (p, f) => {
+    const ad = f.obsAnticipatedDate || p.obsAnticipatedDate;
+    if (f.reachedPatient === 'Left voicemail') return `OBS — left voicemail to book observation appt${ad ? ` (due ~${recapMdy(ad)})` : ''}. `;
+    if (f.reachedPatient === 'No answer') return `OBS — no answer on observation booking call. `;
+    if (f.outcome === 'OBS is now scheduled!') return `OBS appt scheduled ${recapMdy(f.obsApptDate) || '(date)'}. `;
+    if (f.outcome === 'Still on track — update anticipated date') return `OBS — still observing${ad ? `, next recheck ~${recapMdy(ad)}` : ''}. `;
+    if (f.outcome === 'Not ready yet — will recheck after appointment') return `OBS — not ready yet, recheck after appt. `;
+    if (/Ready to start/.test(f.outcome || '')) return `OBS — ready to start treatment! `;
+    return `OBS — observation follow-up. `;
+  };
   // Fine-grained outcome of a Today's Activity entry: start | future | pending | notx | other.
   const recapDispoOf = (e) => {
     if (e.dispo) return e.dispo;
@@ -3094,6 +3107,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       // patient stuck on the list and showing overdue every day after.
       if (p.OBS && !newObsApptDate && nextDate && nextDate <= todayStr) {
         nextDate = addDays(todayStr, OBS_NO_REACH_REPEAT);
+      }
+      // A date the TC picked overrides the automatic OBS date
+      if (p.OBS && !newObsApptDate && contactForm.nextTouchDate) {
+        nextDate = skipWeekend(contactForm.nextTouchDate);
       }
       const result = {
         ...p,
@@ -3461,13 +3478,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
 
   // OBS check-in: patient attended but not ready → clear appt, schedule next recall
-  const handleOBSAttended = async (patient, notes = '') => {
+  const handleOBSAttended = async (patient, notes = '', overrideDate = '') => {
     const todayStr = localToday();
+    const nextDate = overrideDate ? skipWeekend(overrideDate) : addMonths(todayStr, obsRecallMonths);
     const logEntry = {
       date: todayStr,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
       reachedPatient: 'Attended OBS appointment',
-      outcome: `Attended OBS appointment — not ready yet. Next re-check in ${obsRecallMonths} month${obsRecallMonths !== 1 ? 's' : ''}.`,
+      outcome: overrideDate
+        ? `Attended OBS appointment — not ready yet. Next re-check ${nextDate}.`
+        : `Attended OBS appointment — not ready yet. Next re-check in ${obsRecallMonths} month${obsRecallMonths !== 1 ? 's' : ''}.`,
       sentText: false,
       notes,
       logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
@@ -3475,20 +3495,21 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const updatedPatient = {
       ...patient,
       obsApptDate: '',
-      nextTouchDate: addMonths(todayStr, obsRecallMonths),
+      nextTouchDate: nextDate,
       lastContactDate: todayStr,
       contact_log: [...(patient.contact_log || []), logEntry]
     };
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
     const saveOk = await dbUpsert(updatedPatient);
     setObsCheckNotes(prev => ({ ...prev, [patient.id]: '' }));
+    setObsCheckNextDate(prev => ({ ...prev, [patient.id]: '' }));
     saveToastFor(saveOk, `♻️ ${patient.name} — re-check scheduled for ${new Date(updatedPatient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`);
   };
 
   // OBS check-in: no-show → clear appt, reschedule call the next business day
-  const handleOBSNoShow = async (patient, notes = '') => {
+  const handleOBSNoShow = async (patient, notes = '', overrideDate = '') => {
     const todayStr = localToday();
-    const nextDate = addDays(todayStr, 1);
+    const nextDate = overrideDate ? skipWeekend(overrideDate) : addDays(todayStr, 1);
     const logEntry = {
       date: todayStr,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
@@ -3511,6 +3532,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
     const saveOk = await dbUpsert(updatedPatient);
     setObsCheckNotes(prev => ({ ...prev, [patient.id]: '' }));
+    setObsCheckNextDate(prev => ({ ...prev, [patient.id]: '' }));
     saveToastFor(saveOk, `⚠️ ${patient.name} — no-show logged, follow-up scheduled for ${new Date(nextDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
   };
 
@@ -6955,6 +6977,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             rows={2}
                           />
                         </div>
+                        <div style={{marginBottom:'12px'}}>
+                          <label style={{fontSize:'13px',fontWeight:'500',display:'block',marginBottom:'4px',color:'#374151'}}>
+                            Next call date <span style={{color:'#6b7280',fontWeight:'400'}}>(optional — leave blank for automatic: {obsRecallMonths} months if not ready, next business day if no-show)</span>
+                          </label>
+                          <input
+                            type="date"
+                            value={obsCheckNextDate[patient.id] || ''}
+                            onChange={(e) => setObsCheckNextDate(prev => ({...prev, [patient.id]: e.target.value ? skipWeekend(e.target.value) : ''}))}
+                            style={{padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
+                          />
+                        </div>
                         <div style={{display:'flex',gap:'12px',flexWrap:'wrap'}}>
                           <button
                             onClick={() => handleMarkStarted(patient)}
@@ -6963,13 +6996,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             ✅ Yes — Ready to Start!
                           </button>
                           <button
-                            onClick={() => { if (confirm(`${patient.name} attended but isn't ready yet? This will schedule the next re-check in ${obsRecallMonths} month${obsRecallMonths!==1?'s':''}.`)) handleOBSAttended(patient, obsCheckNotes[patient.id] || ''); }}
+                            onClick={() => { const od = obsCheckNextDate[patient.id] || ''; if (confirm(`${patient.name} attended but isn't ready yet? This will schedule the next re-check ${od ? `for ${new Date(od + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}` : `in ${obsRecallMonths} month${obsRecallMonths!==1?'s':''}`}.`)) handleOBSAttended(patient, obsCheckNotes[patient.id] || '', od); }}
                             style={{padding:'12px 24px',backgroundColor:'#6366f1',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'15px'}}
                           >
                             🔄 Attended — Not Ready Yet
                           </button>
                           <button
-                            onClick={() => handleOBSNoShow(patient, obsCheckNotes[patient.id] || '')}
+                            onClick={() => handleOBSNoShow(patient, obsCheckNotes[patient.id] || '', obsCheckNextDate[patient.id] || '')}
                             style={{padding:'12px 24px',backgroundColor:'#ef4444',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'15px'}}
                           >
                             ❌ No-Show
@@ -7525,7 +7558,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       {renderRecapField(
                         contactForm.recap,
                         (val) => setContactForm({...contactForm, recap: val}),
-                        composeRecapDraft(
+                        patient.OBS ? composeObsRecapDraft(patient, contactForm) : composeRecapDraft(
                           contactForm.scheduleType === 'dp' ? 'start'
                             : /schedul/i.test(contactForm.outcome || '') ? 'future'
                             : /converted to No Treatment|Not interested/i.test(contactForm.outcome || '') ? 'notx'
@@ -7537,8 +7570,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       {/* Single Notes box above (renderRecapField). No separate Notes textarea —
                           its text is mirrored into the log's notes field on save. */}
 
-                      {/* Next touch date — hidden for OBS (always auto +6mo) and when scheduling without DP (bond date drives it) */}
-                      {!patient.OBS && contactForm.scheduleType !== 'no_dp' && (
+                      {/* Next touch date — optional override; hidden when an OBS appt is being booked or scheduling without DP (those dates drive it) */}
+                      {(!patient.OBS || (!patient.obsApptDate && contactForm.outcome !== 'OBS is now scheduled!' && contactForm.outcome !== 'Ready to start treatment! 🎉')) && contactForm.scheduleType !== 'no_dp' && (
                         <div style={{marginBottom:'12px'}}>
                           <label style={{fontSize:'13px',fontWeight:'500',display:'block',marginBottom:'4px'}}>
                             Next Touch Date <span style={{color:'#6b7280',fontWeight:'400'}}>(optional — leave blank to auto-calculate)</span>
@@ -7553,8 +7586,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             }}
                             style={{padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px'}}
                           />
-                          {/* #3: formatted auto-date preview */}
-                          {!contactForm.nextTouchDate && (
+                          {/* #3: formatted auto-date preview (OBS shows its own preview below) */}
+                          {!contactForm.nextTouchDate && !patient.OBS && (
                             <span style={{fontSize:'12px',color:'#10b981',marginLeft:'8px'}}>
                               Auto: {(() => {
                                 const p = patients.find(x => x.id === showContactLog);
@@ -7570,6 +7603,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                       )}
                       {patient.OBS && !patient.obsApptDate && (() => {
+                        if (contactForm.nextTouchDate && contactForm.outcome !== 'OBS is now scheduled!') {
+                          return <div style={{marginBottom:'12px',padding:'8px 12px',backgroundColor:'#eff6ff',borderRadius:'6px',fontSize:'12px',color:'#1e40af',fontWeight:'500'}}>📅 Saving will schedule the next call for {new Date(contactForm.nextTouchDate+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})} (your date — replaces the automatic one)</div>;
+                        }
                         if (OBS_UNREACHED.includes(contactForm.reachedPatient)) {
                           const n = obsMissedCalls(patient) + 1;
                           const nd = addDays(localToday(), OBS_NO_REACH_DAYS[n - 1] || OBS_NO_REACH_REPEAT);
