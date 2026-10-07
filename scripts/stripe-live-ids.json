@@ -1,0 +1,25 @@
+{
+  "note": "Stripe LIVE mode IDs for practice sign-up. Not secret. Written by scripts/stripe-setup.mjs.",
+  "account": "acct_1UNLSPF1yDfWaP3F",
+  "apiVersion": "2026-09-30.endive",
+  "products": [
+    "cadenceiq_subscription",
+    "cadenceiq_setup",
+    "cadenceiq_card_surcharge",
+    "cadenceiq_ach_processing"
+  ],
+  "prices": {
+    "cadenceiq_foundation_monthly": "price_1UNw8oF1yDfWaP3F0eXLUAY6",
+    "cadenceiq_standard_monthly": "price_1UNw8nF1yDfWaP3FAL3O2m6i",
+    "cadenceiq_setup_fee": "price_1UNw8mF1yDfWaP3FMO0JV9aE",
+    "cadenceiq_ach_foundation_monthly": "price_1UNw8kF1yDfWaP3Fqy2DOiy5",
+    "cadenceiq_card_foundation_monthly": "price_1UNw8lF1yDfWaP3FlRTnXHeE",
+    "cadenceiq_ach_standard_monthly": "price_1UNw8jF1yDfWaP3F97xzhZLr",
+    "cadenceiq_card_standard_monthly": "price_1UNw8jF1yDfWaP3F6fSMEA32",
+    "cadenceiq_ach_setup": "price_1UNw8jF1yDfWaP3FWIL9xgyP",
+    "cadenceiq_card_setup": "price_1UNw8jF1yDfWaP3Fy3FjMNem"
+  },
+  "portalConfiguration": "bpc_1UNwIcF1yDfWaP3FSAbqcUYN",
+  "paymentMethodConfiguration": "pmc_1UNLSvF1yDfWaP3FOVsXjCBX",
+  "updatedAt": "2026-10-07T14:58:31.335Z"
+}
