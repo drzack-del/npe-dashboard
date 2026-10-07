@@ -2829,6 +2829,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     return checkDate === selectedWeekDay;
   });
 
+  // OBS booking/reschedule calls get their own section; everything else stays in Follow-Up Contacts
+  const selectedOBSCalls = selectedFollowUps.filter(p => p.OBS);
+  const selectedRegularFollowUps = selectedFollowUps.filter(p => !p.OBS);
+
   const selectedDayPatients = [...selectedOBSCheckins, ...selectedBondCheckins, ...selectedFollowUps];
 
   const getWeekMonday = (offset) => {
@@ -3481,11 +3485,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     saveToastFor(saveOk, `♻️ ${patient.name} — re-check scheduled for ${new Date(updatedPatient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`);
   };
 
-  // OBS check-in: no-show → clear appt, push back into follow-up queue for reschedule call
+  // OBS check-in: no-show → clear appt, reschedule call the next business day
   const handleOBSNoShow = async (patient, notes = '') => {
     const todayStr = localToday();
-    const d = new Date(todayStr + 'T12:00:00'); d.setDate(d.getDate() + 14);
-    const nextDate = skipWeekend(localDateStr(d));
+    const nextDate = addDays(todayStr, 1);
     const logEntry = {
       date: todayStr,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
@@ -7114,21 +7117,36 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {/* FOLLOW-UP CONTACTS */}
               {selectedFollowUps.length > 0 && (
                 <div>
-                  {selectedBondCheckins.length > 0 && (
-                    <h4 style={{fontSize:'16px',fontWeight:'700',color:'#1e40af',marginBottom:'12px',display:'flex',alignItems:'center',gap:'8px'}}>
-                      <span style={{padding:'4px 12px',backgroundColor:'#dbeafe',border:'1px solid #93c5fd',borderRadius:'20px'}}>🔔 Follow-Up Contacts ({selectedFollowUps.length})</span>
-                    </h4>
-                  )}
-                  {selectedFollowUps.map(patient => {
+                  {[...selectedOBSCalls, ...selectedRegularFollowUps].map((patient, idx) => {
                     const npeDateSafe = patient.npeDate || today;
                     const daysOld = Math.floor((new Date() - new Date(npeDateSafe + 'T12:00:00')) / 86400000);
                     const priority = daysOld <= 7 ? 'NEW' : daysOld <= 21 ? 'ACTIVE' : 'OVERDUE';
+                    // OBS patients are months past their exam, so their tag shows how late the call is instead
+                    const obsDue = patient.OBS ? skipWeekend(patient.nextTouchDate) : '';
+                    const obsDaysLate = obsDue && obsDue < today ? Math.floor((new Date(today + 'T12:00:00') - new Date(obsDue + 'T12:00:00')) / 86400000) : 0;
+                    const sectionHeader = idx === 0 && selectedOBSCalls.length > 0
+                      ? <h4 style={{fontSize:'16px',fontWeight:'700',color:'#166534',marginBottom:'12px',display:'flex',alignItems:'center',gap:'8px'}}>
+                          <span style={{padding:'4px 12px',backgroundColor:'#dcfce7',border:'1px solid #86efac',borderRadius:'20px'}}>📞 OBS Scheduling Calls ({selectedOBSCalls.length})</span>
+                        </h4>
+                      : idx === selectedOBSCalls.length && (selectedOBSCalls.length > 0 || selectedOBSCheckins.length > 0 || selectedBondCheckins.length > 0)
+                      ? <h4 style={{fontSize:'16px',fontWeight:'700',color:'#1e40af',marginBottom:'12px',display:'flex',alignItems:'center',gap:'8px'}}>
+                          <span style={{padding:'4px 12px',backgroundColor:'#dbeafe',border:'1px solid #93c5fd',borderRadius:'20px'}}>🔔 Follow-Up Contacts ({selectedRegularFollowUps.length})</span>
+                        </h4>
+                      : null;
                     return (
-                <div key={patient.id} style={{backgroundColor:'white',padding:'20px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'16px'}}>
+                <React.Fragment key={patient.id}>
+                {sectionHeader}
+                <div style={{backgroundColor:'white',padding:'20px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'16px'}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'start',marginBottom:'12px'}}>
                     <div>
                       <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',marginBottom:'4px'}}>
                         <h4 style={{fontSize:'18px',fontWeight:'bold',color:'#202020',margin:0}}>{patient.name}</h4>
+                        {patient.OBS ? (
+                          <span style={{padding:'3px 8px', fontSize:'12px', fontWeight:'600', borderRadius:'4px',
+                            backgroundColor: obsDaysLate > 0 ? '#fee2e2' : '#dcfce7', color: obsDaysLate > 0 ? '#991b1b' : '#166534'}}>
+                            {obsDaysLate > 0 ? `🔴 ${obsDaysLate}d late` : obsDue === today ? '📞 Due today' : `📞 Due ${new Date(obsDue + 'T12:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}`}
+                          </span>
+                        ) : (
                         <span style={{
                           padding:'3px 8px', fontSize:'12px', fontWeight:'600', borderRadius:'4px',
                           backgroundColor: priority === 'OVERDUE' ? '#fee2e2' : priority === 'ACTIVE' ? '#fed7aa' : '#dcfce7',
@@ -7136,6 +7154,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         }}>
                           {priority === 'OVERDUE' ? '🔴 OVERDUE' : priority === 'ACTIVE' ? '🟡 ACTIVE' : '🟢 NEW'} — {daysOld}d
                         </span>
+                        )}
                         {/* Status badge */}
                         {patient.OBS && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#f0fdf4',color:'#166534',borderRadius:'4px',fontWeight:'600'}}>
                           {patient.obsApptDate
@@ -7686,6 +7705,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     </div>
                   )}
                 </div>
+                </React.Fragment>
               ); })}
                 </div>
               )}
