@@ -4,9 +4,9 @@
 //
 //   node scripts/stripe-setup.mjs
 //
-// It asks for a Stripe key with typing hidden, so the key never lands in shell history or
-// any file. Test keys only (sk_test_ / rk_test_): it refuses live keys until we go live.
-// Writes the resulting IDs (not secret) to scripts/stripe-test-ids.json.
+// It asks for a Stripe key with typing hidden (or reads the clipboard), so the key never lands
+// in shell history or any file. Test keys by default; live mode only with --live, a live key,
+// and typing LIVE. Writes the resulting IDs (not secret) to scripts/stripe-<mode>-ids.json.
 import { writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -167,9 +167,21 @@ async function ensurePaymentMethods() {
   return def.id;
 }
 
+// Live mode is deliberate: `node scripts/stripe-setup.mjs --live`, a live key, and typing LIVE.
+const LIVE = process.argv.includes('--live');
+const MODE = LIVE ? 'live' : 'test';
+
+function askLine(question) {
+  return new Promise(resolve => {
+    process.stdout.write(question);
+    process.stdin.resume(); process.stdin.setEncoding('utf8');
+    process.stdin.once('data', d => { process.stdin.pause(); resolve(String(d).trim()); });
+  });
+}
+
 async function main() {
-  console.log('\nCadenceIQ Stripe setup (test mode)\n');
-  console.log('Copy your Stripe SANDBOX secret key (sk_test_…), then either paste it here and press Enter,');
+  console.log(`\nCadenceIQ Stripe setup (${LIVE ? 'LIVE mode: real customers and real money' : 'test mode'})\n`);
+  console.log(`Copy your Stripe ${LIVE ? 'LIVE' : 'SANDBOX'} secret key (sk_${MODE}_…), then either paste it here and press Enter,`);
   console.log('or just press Enter to read it straight from your clipboard.\n');
   let typed = process.env.STRIPE_SETUP_KEY || await askHidden('Key (hidden): ');
   if (!typed) {
@@ -178,18 +190,26 @@ async function main() {
   }
   // Terminals wrap pasted text in invisible markers (ESC[200~ … ESC[201~); keep just the key.
   KEY = (typed.match(/(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+/) || [typed.replace(/\x1b\[[0-9;~]*/g, '').trim()])[0];
-  if (/^(sk|rk)_live_/.test(KEY)) { console.error('\nThat is a LIVE key. This script only runs on test keys for now.'); process.exit(1); }
-  if (!/^(sk|rk)_test_/.test(KEY)) {
+  if (!LIVE && /^(sk|rk)_live_/.test(KEY)) { console.error('\nThat is a LIVE key. For live mode run: node scripts/stripe-setup.mjs --live'); process.exit(1); }
+  if (LIVE && /^(sk|rk)_test_/.test(KEY)) { console.error('\nThat is a TEST key, but you ran live mode. Copy the key from your live account (sk_live_…).'); process.exit(1); }
+  if (!new RegExp(`^sk_${MODE}_`).test(KEY)) {
     // Say what arrived without showing it: only the kind of key (its public prefix) and length.
     const kind = (KEY.match(/^[a-z]+_(?:test|live)_/) || [])[0];
-    console.error(`\nThat is not a Stripe secret test key. Got ${KEY ? (kind ? `a "${kind}…" key` : `${KEY.length} characters that don't start like a Stripe key`) : 'nothing'}.`);
-    if (kind?.startsWith('pk_')) console.error('That is the publishable key. Use the Secret key (sk_test_…) shown under it; click "Reveal test key".');
+    console.error(`\nThat is not a Stripe secret ${MODE} key. Got ${KEY ? (kind ? `a "${kind}…" key` : `${KEY.length} characters that don't start like a Stripe key`) : 'nothing'}.`);
+    if (kind?.startsWith('pk_')) console.error(`That is the publishable key. Use the Secret key (sk_${MODE}_…) shown under it.`);
+    if (kind?.startsWith('rk_')) console.error(`That is a restricted key. Use the Secret key (sk_${MODE}_…, Full access) for this one-time setup.`);
     process.exit(1);
   }
 
   let account = null;
   try { account = await stripe('GET', '/account'); } catch {}
-  console.log(`\nAccount: ${account?.settings?.dashboard?.display_name || account?.business_profile?.name || '(name hidden for this key)'}${account?.id ? ` (${account.id})` : ''}\n`);
+  console.log(`\nAccount: ${account?.settings?.dashboard?.display_name || account?.business_profile?.name || '(name hidden for this key)'}${account?.id ? ` (${account.id})` : ''}`);
+  if (LIVE) {
+    console.log(`Can take payments: ${account?.charges_enabled ? 'yes' : 'NO (finish activating the account in the Stripe Dashboard)'}   Payouts to your bank: ${account?.payouts_enabled ? 'yes' : 'NO'}`);
+    const ok = await askLine('\nThis changes your LIVE Stripe account. Type LIVE and press Enter to continue: ');
+    if (ok !== 'LIVE') { console.log('Stopped. Nothing was changed.'); process.exit(1); }
+  }
+  console.log('');
 
   console.log('Products');
   for (const p of PRODUCTS) await ensureProduct(p);
@@ -201,12 +221,12 @@ async function main() {
   console.log('\nPayment methods');
   const pmc = await ensurePaymentMethods();
 
-  const out = { note: 'Stripe TEST mode IDs for practice sign-up. Not secret. Written by scripts/stripe-setup.mjs.',
+  const out = { note: `Stripe ${MODE.toUpperCase()} mode IDs for practice sign-up. Not secret. Written by scripts/stripe-setup.mjs.`,
     account: account?.id || null, apiVersion: API_VERSION, products: PRODUCTS.map(p => p.id), prices, portalConfiguration: portal,
     paymentMethodConfiguration: pmc, updatedAt: new Date().toISOString() };
-  const file = fileURLToPath(new URL('./stripe-test-ids.json', import.meta.url));
-  writeFileSync(file, JSON.stringify(out, null, 2) + '\n');
-  console.log(`\nDone. IDs saved to scripts/stripe-test-ids.json\n`);
+  const name = `stripe-${MODE}-ids.json`;
+  writeFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), JSON.stringify(out, null, 2) + '\n');
+  console.log(`\nDone. IDs saved to scripts/${name}\n`);
 }
 
 main().catch(e => { console.error(`\nStopped: ${e.message}`); process.exit(1); });
