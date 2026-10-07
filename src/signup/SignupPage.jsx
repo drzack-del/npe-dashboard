@@ -178,9 +178,6 @@ export default function SignupPage() {
           <h2 style={{ ...h2, margin: 0 }}>2. Review and sign</h2>
           <button onClick={printDocs} style={secondary}>Print / save PDF</button>
         </div>
-        <div style={{ padding: '10px 12px', background: '#fffbeb', border: '1px solid #f59e0b', color: '#92400e', borderRadius: 8, fontSize: 12, fontWeight: 700, marginTop: 14 }}>
-          DRAFT LEGAL LANGUAGE — to be replaced with attorney-approved documents before accepting a real practice.
-        </div>
         <div style={{ display: 'flex', gap: 7, marginTop: 14, flexWrap: 'wrap' }}>
           {docs.map(doc => <button key={doc.id} onClick={() => { setOpenDoc(doc.id); setReviewedDocs(old => old.includes(doc.id) ? old : [...old, doc.id]); }}
             style={{ ...secondary, background: openDoc === doc.id ? '#dbeafe' : 'white', color: openDoc === doc.id ? '#1d4ed8' : '#475569' }}>

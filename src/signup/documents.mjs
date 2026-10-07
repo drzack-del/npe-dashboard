@@ -2,7 +2,9 @@ import { achFeeCents, money, surchargeCents, MAX_LOCATIONS } from './workflow.mj
 
 const safe = value => String(value || '').replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#039;'}[c]));
 const section = (title, body) => `<h2>${title}</h2><p>${body}</p>`;
-export const AGREEMENT_VERSION = 'draft-2026-10-06-v4';
+// Approved by counsel word for word on 2026-10-07 (same text as draft v4). Any change to the
+// agreement text must get a new version so earlier signatures stay tied to what was signed.
+export const AGREEMENT_VERSION = '2026-10-07-v1';
 
 // The provider named in every agreement (the contracting party; "CadenceIQ" is the product
 // name, not a registered fictitious name).
@@ -78,5 +80,5 @@ export function documentPackage(onboarding) {
 
 export function printablePackage(onboarding) {
   const docs=documentPackage(onboarding);
-  return `<!doctype html><html><head><meta charset="utf-8"><title>CadenceIQ Agreement Package</title><style>body{font:14px/1.55 Arial,sans-serif;color:#172033;max-width:800px;margin:40px auto;padding:0 24px}h1{font-size:24px}h2{font-size:16px;margin-top:22px}.doc{page-break-after:always}.draft{padding:10px;border:2px solid #b45309;background:#fffbeb;color:#92400e;font-weight:700}.sig{margin-top:40px;border-top:1px solid #999;padding-top:16px}</style></head><body><div class="draft">DRAFT — requires review by licensed healthcare/SaaS counsel before production use. Version ${AGREEMENT_VERSION}</div>${docs.map(x=>`<section class="doc">${x.body}</section>`).join('')}<section class="sig"><strong>Electronic signature:</strong> ${safe(onboarding.signatureName||'Not signed')}<br><strong>Title:</strong> ${safe(onboarding.details?.signerTitle)}<br><strong>Date:</strong> ${safe(onboarding.signedAt||'')}<br><strong>Agreement version:</strong> ${AGREEMENT_VERSION}</section></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>CadenceIQ Agreement Package</title><style>body{font:14px/1.55 Arial,sans-serif;color:#172033;max-width:800px;margin:40px auto;padding:0 24px}h1{font-size:24px}h2{font-size:16px;margin-top:22px}.doc{page-break-after:always}.ver{font-size:12px;color:#64748b}.sig{margin-top:40px;border-top:1px solid #999;padding-top:16px}</style></head><body><div class="ver">Agreement version ${AGREEMENT_VERSION}</div>${docs.map(x=>`<section class="doc">${x.body}</section>`).join('')}<section class="sig"><strong>Electronic signature:</strong> ${safe(onboarding.signatureName||'Not signed')}<br><strong>Title:</strong> ${safe(onboarding.details?.signerTitle)}<br><strong>Date:</strong> ${safe(onboarding.signedAt||'')}<br><strong>Agreement version:</strong> ${AGREEMENT_VERSION}</section></body></html>`;
 }
