@@ -1009,6 +1009,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [feedbackList, setFeedbackList] = useState([]);
   const [feedbackListLoading, setFeedbackListLoading] = useState(false);
   const [newFeedbackCount, setNewFeedbackCount] = useState(0);
+  // Platform owner: practice sign-ups from trycadenceiq.com/signup (null = not loaded yet)
+  const [signupsList, setSignupsList] = useState(null);
+  const [signupsLoading, setSignupsLoading] = useState(false);
+  const [signupsError, setSignupsError] = useState('');
+  const [showUnfinishedSignups, setShowUnfinishedSignups] = useState(false);
   const [showFeedbackAlert, setShowFeedbackAlert] = useState(false);
 
   // Password visibility toggles (#10)
@@ -1664,6 +1669,27 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setFeedbackListLoading(false);
   };
 
+  // Sign-ups come from two read-only database functions only platform owners may call.
+  const loadSignups = async () => {
+    if (!supabase || !currentUser?.isPlatformOwner) return;
+    setSignupsLoading(true); setSignupsError('');
+    const { data, error } = await supabase.rpc('platform_signups');
+    if (error) setSignupsError('Sign-ups could not be loaded. Try Refresh in a moment.');
+    else setSignupsList(Array.isArray(data) ? data : []);
+    setSignupsLoading(false);
+  };
+  const openSignedAgreement = async (id) => {
+    // Open the window first (before awaiting) so pop-up blockers allow it.
+    const w = window.open('', '_blank');
+    if (!w) { setSaveToast('Allow pop-ups to view the signed agreement.'); setTimeout(() => setSaveToast(''), 3000); return; }
+    w.opener = null;
+    w.document.write('<p style="font-family:sans-serif;padding:24px">Loading the signed agreement…</p>');
+    const { data, error } = await supabase.rpc('platform_signup_agreement', { p_id: id });
+    w.document.open();
+    w.document.write(error || !data ? '<p style="font-family:sans-serif;padding:24px">This agreement could not be loaded.</p>' : data);
+    w.document.close();
+  };
+
   const deleteFeedback = async (id) => {
     if (!supabase) return;
     await supabase.from('feedback').delete().eq('id', id);
@@ -1820,6 +1846,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   useEffect(() => {
     if (currentUser?.isPlatformOwner && currentView === 'settings') {
       fetchAllPractices();
+      loadSignups();
     }
   }, [currentUser?.isPlatformOwner, currentView]);
 
@@ -13173,6 +13200,106 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 {goalsSaveMsg && <span style={{color: goalsSaveMsg.startsWith('❌') ? '#dc2626' : '#10b981',fontWeight:'600',fontSize:'15px'}}>{goalsSaveMsg}</span>}
               </div>
             </div></>)}</>)}
+
+            {/* ── Practice Sign-ups (platform owner only) ── */}
+            {currentUser?.isPlatformOwner && (() => {
+              const list = signupsList || [];
+              const unfinished = s => s.stage === 'started' || s.stage === 'information_complete';
+              const status = s => {
+                if (s.stage === 'provisioned') {
+                  if (s.subscriptionStatus === 'canceled') return ['Canceled', '#f3f4f6', '#4b5563'];
+                  if (s.subscriptionStatus === 'past_due' || s.subscriptionStatus === 'unpaid') return ['Payment failed', '#fee2e2', '#991b1b'];
+                  if (s.cancelAtPeriodEnd) return ['Canceling', '#fef3c7', '#92400e'];
+                  return ['Active', '#dcfce7', '#166534'];
+                }
+                if (s.paymentStatus === 'failed') return ['Bank payment failed', '#fee2e2', '#991b1b'];
+                if (s.stage === 'payment_pending') return s.paymentStatus === 'processing' ? ['Bank payment clearing', '#dbeafe', '#1e40af'] : ['At checkout', '#fef3c7', '#92400e'];
+                if (s.stage === 'signed') return ['Signed, not paid', '#fef3c7', '#92400e'];
+                if (s.stage === 'information_complete') return ['Details entered', '#f3f4f6', '#4b5563'];
+                return ['Started', '#f3f4f6', '#4b5563'];
+              };
+              const day = d => d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
+              const fmt = c => `$${((Number(c) || 0) / 100).toFixed(0)}`;
+              const active = list.filter(s => s.stage === 'provisioned' && !['canceled'].includes(s.subscriptionStatus));
+              const inProgress = list.filter(s => !unfinished(s) && s.stage !== 'provisioned');
+              const foundationPaid = list.filter(s => s.planKey === 'foundation' && s.stage === 'provisioned').length;
+              const foundationHeld = list.filter(s => s.planKey === 'foundation' && (s.stage === 'signed' || s.stage === 'payment_pending')).length;
+              const shown = list.filter(s => showUnfinishedSignups || !unfinished(s));
+              return (
+              <div style={{backgroundColor:'white',padding:'24px',borderRadius:'8px',boxShadow:'0 1px 3px rgba(0,0,0,0.1)',marginBottom:'24px'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'14px',flexWrap:'wrap',gap:'10px'}}>
+                  <div>
+                    <h3 style={{fontSize:'18px',fontWeight:'bold',color:'#202020',margin:0}}>🧾 Practice Sign-ups</h3>
+                    <p style={{fontSize:'13px',color:'#9ca3af',marginTop:'4px'}}>From trycadenceiq.com/signup, newest first.</p>
+                  </div>
+                  <button onClick={loadSignups} disabled={signupsLoading}
+                    style={{padding:'8px 18px',backgroundColor:'#202020',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer',fontSize:'13px',opacity:signupsLoading?0.6:1}}>
+                    {signupsLoading ? '⏳ Loading…' : '🔄 Refresh'}
+                  </button>
+                </div>
+                {signupsError && <div style={{padding:'10px 12px',backgroundColor:'#fef2f2',color:'#991b1b',borderRadius:'6px',fontSize:'13px',marginBottom:'12px'}}>{signupsError}</div>}
+                {signupsList && (
+                  <div style={{display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'14px'}}>
+                    {[[`${active.length} active`, '#dcfce7', '#166534'], [`${inProgress.length} in progress`, '#fef3c7', '#92400e'],
+                      [`Foundation spots: ${foundationPaid} paid · ${foundationHeld} on hold · ${Math.max(0, 5 - foundationPaid - foundationHeld)} open`, '#eff6ff', '#1e40af']].map(([t, bg, fg]) => (
+                      <span key={t} style={{fontSize:'12px',fontWeight:'700',padding:'4px 10px',backgroundColor:bg,color:fg,borderRadius:'999px'}}>{t}</span>
+                    ))}
+                  </div>
+                )}
+                {signupsList && shown.length === 0 && (
+                  <div style={{textAlign:'center',padding:'24px',color:'#9ca3af',fontSize:'14px'}}>
+                    {list.length === 0 ? 'No sign-ups yet.' : 'No paid or in-progress sign-ups yet.'}
+                  </div>
+                )}
+                <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+                  {shown.map(s => {
+                    const [label, bg, fg] = status(s);
+                    const dates = [['Started', day(s.createdAt)], ['Signed', day(s.signedAt)], ['Paid', day(s.paidAt)],
+                      [s.cancelAtPeriodEnd ? 'Ends' : 'Renews', s.stage === 'provisioned' && s.subscriptionStatus !== 'canceled' ? day(s.currentPeriodEnd) : null]].filter(([, d]) => d);
+                    return (
+                      <div key={s.id} style={{padding:'14px 16px',backgroundColor:'#f9fafb',border:'1px solid #e5e7eb',borderRadius:'8px'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',marginBottom:'6px'}}>
+                          <span style={{fontSize:'15px',fontWeight:'700',color:'#202020'}}>{s.practiceName || 'Practice name not entered yet'}</span>
+                          <span style={{fontSize:'12px',fontWeight:'700',padding:'2px 8px',backgroundColor:bg,color:fg,borderRadius:'4px'}}>{label}</span>
+                          {s.planName && <span style={{fontSize:'12px',color:'#6b7280',fontWeight:'600'}}>{s.planName}{s.monthlyFeeCents ? ` · ${fmt(s.monthlyFeeCents)}/mo` : ''}</span>}
+                          {s.paymentMethodType && <span style={{fontSize:'12px',color:'#6b7280'}}>· {s.paymentMethodType === 'card' ? 'Card' : 'Bank (ACH)'}</span>}
+                        </div>
+                        {(s.signerName || s.signerEmail) && (
+                          <div style={{fontSize:'13px',color:'#374151',marginBottom:'4px'}}>
+                            {[s.signerName && `${s.signerName}${s.signerTitle ? ` (${s.signerTitle})` : ''}`, s.signerEmail, [s.city, s.state].filter(Boolean).join(', '),
+                              Array.isArray(s.locations) && s.locations.length ? `Offices: ${s.locations.join(', ')}` : null].filter(Boolean).join(' · ')}
+                          </div>
+                        )}
+                        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px',flexWrap:'wrap'}}>
+                          <span style={{fontSize:'12px',color:'#9ca3af'}}>{dates.map(([k, d]) => `${k} ${d}`).join(' · ')}</span>
+                          <span style={{display:'flex',gap:'8px'}}>
+                            {s.signedAt && (
+                              <button onClick={() => openSignedAgreement(s.id)}
+                                style={{padding:'5px 12px',backgroundColor:'white',color:'#374151',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>
+                                Signed agreement
+                              </button>
+                            )}
+                            {s.stripeCustomerId && (
+                              <a href={`https://dashboard.stripe.com/customers/${s.stripeCustomerId}`} target="_blank" rel="noopener noreferrer"
+                                style={{padding:'5px 12px',backgroundColor:'white',color:'#374151',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'12px',fontWeight:'600',textDecoration:'none'}}>
+                                Open in Stripe
+                              </a>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {signupsList && list.some(unfinished) && (
+                  <button onClick={() => setShowUnfinishedSignups(v => !v)}
+                    style={{marginTop:'12px',background:'none',border:'none',color:'#6b7280',textDecoration:'underline',cursor:'pointer',fontSize:'12px',padding:0}}>
+                    {showUnfinishedSignups ? 'Hide' : 'Show'} unfinished sign-ups ({list.filter(unfinished).length})
+                  </button>
+                )}
+              </div>
+              );
+            })()}
 
             {/* ── Support Inbox (superadmin only) ── */}
             {currentUser?.isPlatformOwner && (
