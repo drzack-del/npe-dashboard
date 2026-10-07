@@ -96,6 +96,30 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
           'Scheduling / Logistics':              [2, 7, 14],
         };
         const DEFAULT_CADENCE = [1, 3, 7, 14];
+        // Missed initial bond → back to Pending on this cadence (call today, then +3, +7, +14
+        // after each attempt) instead of the patient's obstacle cadence, until someone actually
+        // speaks with them. Their real obstacle is kept for reporting.
+        const NO_SHOW_CADENCE = [1, 3, 7, 14];
+        const inNoShowMode = (p) => {
+          const log = p.contact_log || [];
+          for (let i = log.length - 1; i >= 0; i--) {
+            if (log[i].reachedPatient === 'Spoke with patient') return false;
+            if (log[i].reachedPatient === 'Missed appointment') return true;
+          }
+          return false;
+        };
+        const cadenceFor = (p) => (p.PEN && inNoShowMode(p)) ? NO_SHOW_CADENCE : (CADENCES[p.obstacle] || DEFAULT_CADENCE);
+        // OBS patient not reached on a booking/reschedule call: retry after 2, 5, then 10 days,
+        // then every 14 days with a "not reaching them" flag on the card. Counted from the
+        // contact log (obsRetry on each entry), not contactAttempts, which belongs to the PEN cadence.
+        const OBS_NO_REACH_DAYS = [2, 5, 10];
+        const OBS_NO_REACH_REPEAT = 14;
+        const OBS_UNREACHED = ['Left voicemail', 'No answer'];
+        const obsMissedCalls = (p) => {
+          const log = p.contact_log || [];
+          const last = log[log.length - 1];
+          return last && OBS_UNREACHED.includes(last.reachedPatient) ? (last.obsRetry || 0) : 0;
+        };
         // `obstacle` (patient.obstacle / DB column `obstacle`) is historical reporting data —
         // it feeds the Conversion Breakdown "by obstacle" KPI (see showConvBreakdown below) and
         // must survive PEN -> SCH -> ST transitions. Never reset it to '' as part of a workflow
@@ -236,6 +260,12 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
           return skipWeekend(localDateStr(d));
         };
 
+        const addDays = (dateStr, days) => {
+          const d = new Date(dateStr + 'T12:00:00');
+          d.setDate(d.getDate() + days);
+          return skipWeekend(localDateStr(d));
+        };
+
         // Standalone Supabase settings helpers (usable before login / outside NPEDashboard)
         const loadSetting = async (key) => {
           if (!supabase) return null;
@@ -356,8 +386,8 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
           ];
         };
 
-        const calcNextTouchDate = (npeDate, obstacle, contactAttempts, lastContactDate) => {
-          const cadence = CADENCES[obstacle] || DEFAULT_CADENCE;
+        const calcNextTouchDate = (npeDate, obstacle, contactAttempts, lastContactDate, cadenceOverride) => {
+          const cadence = cadenceOverride || CADENCES[obstacle] || DEFAULT_CADENCE;
           const todayStr = localToday();
 
           if (contactAttempts >= cadence.length) return '__MAX__';
@@ -3014,6 +3044,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       const isSkipMedicaid = contactForm.reachedPatient === "Waiting on Medicaid — didn't call";
       const isObsScheduling = p.OBS && contactForm.outcome === 'OBS is now scheduled!';
       const isObsAnticipatedUpdate = p.OBS && !p.obsApptDate && contactForm.outcome === 'Still on track — update anticipated date';
+      const isObsUnreached = p.OBS && !p.obsApptDate && OBS_UNREACHED.includes(contactForm.reachedPatient);
+      const obsRetry = isObsUnreached ? obsMissedCalls(p) + 1 : 0;
       const newAttempts = (p.OBS || isSkipMedicaid) ? p.contactAttempts : p.contactAttempts + 1;
       const logEntry = {
         date: todayStr,
@@ -3025,6 +3057,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         notes: contactForm.recap || '',
         recap: contactForm.recap || '',
         dispo: isObsScheduling ? 'other' : 'pending',
+        ...(isObsUnreached ? { obsRetry } : {}),
         logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
       };
       const updatedObstacle = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
@@ -3036,6 +3069,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         newObsApptDate = contactForm.obsApptDate;
         newObsAnticipatedDate = '';
         nextDate = getOBSCheckDate({ OBS: true, obsApptDate: contactForm.obsApptDate }) || '';
+      } else if (isObsUnreached) {
+        // Couldn't reach an OBS patient to book — short retries, not the 4-month recall
+        nextDate = addDays(todayStr, OBS_NO_REACH_DAYS[obsRetry - 1] || OBS_NO_REACH_REPEAT);
       } else if (isObsAnticipatedUpdate && contactForm.obsAnticipatedDate) {
         // TC updated the anticipated date — recalculate the pre-booking call
         newObsAnticipatedDate = contactForm.obsAnticipatedDate;
@@ -3047,7 +3083,13 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             || (p.OBS && p.obsAnticipatedDate
                 ? (getOBSBookingCallDate(p.obsAnticipatedDate, obsRecallMonths) || addMonths(todayStr, obsRecallMonths))
                 : p.OBS ? addMonths(todayStr, obsRecallMonths)
-                : calcNextTouchDate(p.npeDate, effectiveObstacle, newAttempts, todayStr));
+                : calcNextTouchDate(p.npeDate, effectiveObstacle, newAttempts, todayStr,
+                    p.PEN && inNoShowMode({ contact_log: [...(p.contact_log || []), logEntry] }) ? NO_SHOW_CADENCE : undefined));
+      }
+      // An OBS booking call must never land back on today (or earlier) — that left the
+      // patient stuck on the list and showing overdue every day after.
+      if (p.OBS && !newObsApptDate && nextDate && nextDate <= todayStr) {
+        nextDate = addDays(todayStr, OBS_NO_REACH_REPEAT);
       }
       const result = {
         ...p,
@@ -3373,19 +3415,21 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       notes: notes,
       logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
     };
+    // Obstacle is kept (reporting data); the no-show cadence drives the calls instead.
+    // First call is today — the check-in is when the team learns they missed.
     const updatedPatient = {
       ...patient,
       SCH: false,
       PEN: true,
       bondDate: '',
-      obstacle: 'Getting a Second Opinion',
       contactAttempts: 0,
-      nextTouchDate: calcNextTouchDate(patient.npeDate, 'Getting a Second Opinion', 0, ''),
+      nextTouchDate: skipWeekend(todayStr),
       lastContactDate: todayStr,
       contact_log: [...(patient.contact_log || []), logEntry]
     };
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
-    await dbUpsert(updatedPatient);
+    const saveOk = await dbUpsert(updatedPatient);
+    saveToastFor(saveOk, `⚠️ ${patient.name} — missed bond logged, back in follow-ups today`);
   };
 
   const handleRescheduleBond = async (patient, newBondDate, notes = '') => {
@@ -3454,6 +3498,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const updatedPatient = {
       ...patient,
       obsApptDate: '',
+      // Keep a target date on file (the missed appointment) so the reschedule call is a
+      // booking call, not a 4-month recall
+      obsAnticipatedDate: patient.obsAnticipatedDate || patient.obsApptDate,
       nextTouchDate: nextDate,
       lastContactDate: todayStr,
       contact_log: [...(patient.contact_log || []), logEntry]
@@ -7015,7 +7062,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             ✅ Yes — Mark as Started
                           </button>
                           <button
-                            onClick={() => { if (confirm(`Mark ${patient.name} as missed appointment? They will return to Pending with obstacle "Getting a Second Opinion".`)) handleMissedBond(patient, bondCheckNotes[patient.id] || ''); }}
+                            onClick={() => { if (confirm(`Mark ${patient.name} as missed appointment? They will return to Pending and come up for a call today (then 3, 7 and 14 days later if not reached).`)) handleMissedBond(patient, bondCheckNotes[patient.id] || ''); }}
                             style={{padding:'12px 24px',backgroundColor:'#ef4444',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'15px'}}
                           >
                             ❌ No — Missed Appointment
@@ -7119,12 +7166,23 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       )}
                       <div style={{fontSize:'13px',color:'#6b7280',marginTop:'2px'}}>
                         {patient.OBS
-                          ? patient.obsAnticipatedDate
+                          ? (patient.contact_log || []).filter(l => !OBS_UNREACHED.includes(l.reachedPatient)).slice(-1)[0]?.reachedPatient === 'No-show'
+                            ? '⚠️ Missed OBS appointment — call to reschedule'
+                            : patient.obsAnticipatedDate
                             ? `📞 Call to book OBS appointment — anticipated: ${new Date(patient.obsAnticipatedDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
                             : '🔄 Observation — call to discuss scheduling'
-                          : `🎯 Attempt #${patient.contactAttempts + 1} of ${(CADENCES[patient.obstacle] || DEFAULT_CADENCE).length}: ${patient.contactAttempts === 0 ? 'Initial follow-up' : patient.contactAttempts === 1 ? 'Check-in call' : patient.contactAttempts === 2 ? 'Week follow-up — identify obstacles' : 'Final attempt'}`}
+                          : `${inNoShowMode(patient) ? '⚠️ Missed bond — ' : ''}🎯 Attempt #${patient.contactAttempts + 1} of ${cadenceFor(patient).length}: ${patient.contactAttempts === 0 ? 'Initial follow-up' : patient.contactAttempts === 1 ? 'Check-in call' : patient.contactAttempts === 2 ? 'Week follow-up — identify obstacles' : 'Final attempt'}`}
                         {!patient.OBS && patient.contactAttempts >= 4 && <span style={{marginLeft:'8px',padding:'2px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}}>⚠️ Max Attempts Reached</span>}
+                        {patient.OBS && !patient.obsApptDate && obsMissedCalls(patient) > 0 && obsMissedCalls(patient) < OBS_NO_REACH_DAYS.length && (
+                          <span style={{marginLeft:'8px',fontSize:'12px',color:'#92400e',fontWeight:'600'}}>{obsMissedCalls(patient)} call{obsMissedCalls(patient) !== 1 ? 's' : ''} unanswered</span>
+                        )}
                       </div>
+                      {patient.OBS && !patient.obsApptDate && obsMissedCalls(patient) >= OBS_NO_REACH_DAYS.length && (
+                        <div style={{marginTop:'8px',padding:'8px 12px',backgroundColor:'#fef2f2',border:'1px solid #fca5a5',borderRadius:'6px',display:'flex',alignItems:'center',gap:'8px'}}>
+                          <span style={{fontSize:'16px'}}>⚠️</span>
+                          <span style={{fontSize:'13px',fontWeight:'700',color:'#991b1b'}}>{obsMissedCalls(patient)} calls unanswered — try a text or a different number. Next try every {OBS_NO_REACH_REPEAT} days until reached.</span>
+                        </div>
+                      )}
                       {/* FINAL ATTEMPT warning banner */}
                       {!patient.OBS && patient.contactAttempts === 3 && (
                         <div style={{marginTop:'8px',padding:'8px 12px',backgroundColor:'#fef2f2',border:'1px solid #fca5a5',borderRadius:'6px',display:'flex',alignItems:'center',gap:'8px'}}>
@@ -7484,7 +7542,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 if (!p) return '—';
                                 const todayPreview = localToday();
                                 const eff = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
-                                const n = calcNextTouchDate(p.npeDate, eff, p.contactAttempts + 1, todayPreview);
+                                const n = calcNextTouchDate(p.npeDate, eff, p.contactAttempts + 1, todayPreview, p.PEN && contactForm.reachedPatient !== 'Spoke with patient' && inNoShowMode(p) ? NO_SHOW_CADENCE : undefined);
                                 if (n === '__MAX__') return '⚠️ Max attempts';
                                 return new Date(n + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
                               })()}
@@ -7493,6 +7551,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                       )}
                       {patient.OBS && !patient.obsApptDate && (() => {
+                        if (OBS_UNREACHED.includes(contactForm.reachedPatient)) {
+                          const n = obsMissedCalls(patient) + 1;
+                          const nd = addDays(localToday(), OBS_NO_REACH_DAYS[n - 1] || OBS_NO_REACH_REPEAT);
+                          return <div style={{marginBottom:'12px',padding:'8px 12px',backgroundColor:'#fff7ed',borderRadius:'6px',fontSize:'12px',color:'#9a3412',fontWeight:'500'}}>📞 Unanswered call #{n} — saving will schedule the next try for {new Date(nd+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}</div>;
+                        }
                         if (contactForm.outcome === 'OBS is now scheduled!' && contactForm.obsApptDate) {
                           return <div style={{marginBottom:'12px',padding:'8px 12px',backgroundColor:'#dcfce7',borderRadius:'6px',fontSize:'12px',color:'#166534',fontWeight:'500'}}>✅ Saving will book OBS appointment for {new Date(contactForm.obsApptDate+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}</div>;
                         }
@@ -10124,7 +10187,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               ✅ Started — Enter Details
                             </button>
                             <button
-                              onClick={() => { if (confirm(`Mark ${patient.name} as missed appointment? They will return to Pending with obstacle "Getting a Second Opinion".`)) handleMissedBond(patient, bondCheckNotes[patient.id] || ''); }}
+                              onClick={() => { if (confirm(`Mark ${patient.name} as missed appointment? They will return to Pending and come up for a call today (then 3, 7 and 14 days later if not reached).`)) handleMissedBond(patient, bondCheckNotes[patient.id] || ''); }}
                               style={{padding:'8px 16px',backgroundColor:'#ef4444',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'13px'}}
                             >
                               ❌ Missed Appointment
