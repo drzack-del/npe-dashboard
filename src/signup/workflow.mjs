@@ -57,7 +57,7 @@ export const surchargeCents = (cents, bps = SURCHARGE_BPS) => {
   const c = Number(cents) || 0;
   return Math.min(Math.round(c * bps / 10000), Math.round(c * CARD_COST_BPS / 10000) + CARD_COST_FIXED_CENTS);
 };
-// ACH: recovers Stripe's 0.8% fee (grossed up so the fee on the fee is covered), $5 maximum per debit.
+// ACH fee pass-through: no longer charged (kept for the Stripe setup script's existing prices).
 export const ACH_FEE_BPS = 80;
 export const ACH_FEE_CAP_CENTS = 500;
 export const achFeeCents = (cents, bps = ACH_FEE_BPS, capCents = ACH_FEE_CAP_CENTS) =>
@@ -65,7 +65,8 @@ export const achFeeCents = (cents, bps = ACH_FEE_BPS, capCents = ACH_FEE_CAP_CEN
 
 // What a practice pays at checkout and then each month, for one payment method.
 export const chargeSummary = (plan, method, surchargeBps = SURCHARGE_BPS) => {
-  const extra = cents => method === 'card' ? surchargeCents(cents, surchargeBps) : achFeeCents(cents);
+  // Bank account (ACH) payments carry no fee (Dr. Miller dropped the ACH pass-through, 2026-10-07).
+  const extra = cents => method === 'card' ? surchargeCents(cents, surchargeBps) : 0;
   const monthlyExtra = extra(plan.monthlyFeeCents), setupExtra = extra(plan.setupFeeCents);
   return {
     monthlyExtra, setupExtra,

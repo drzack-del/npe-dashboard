@@ -213,8 +213,8 @@ export default function SignupPage() {
         <h2 style={h2}>3. Payment</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 12 }}>
           <PaymentChoice active={paymentMethod === 'us_bank_account'} onClick={() => setPaymentMethod('us_bank_account')} title="Bank account (ACH)" badge="ACH"
-            lines={[['Monthly subscription', money(plan.monthlyFeeCents)], ['ACH processing cost', money(ach.monthlyExtra)], ['Monthly total', money(ach.monthlyTotal)]]}
-            note="Recovers Stripe's 0.8% ACH fee, $5 maximum per payment. Bank payments can take a few business days to clear." />
+            lines={[['Monthly subscription', money(plan.monthlyFeeCents)], ['Processing fee', 'None'], ['Monthly total', money(ach.monthlyTotal)]]}
+            note="No fee. Bank payments can take a few business days to clear." />
           <PaymentChoice active={paymentMethod === 'card'} disabled={!cardAllowed} onClick={() => setPaymentMethod('card')} title="Card" badge={cardSurcharged ? 'Surcharge' : 'No surcharge'}
             lines={[['Monthly subscription', money(plan.monthlyFeeCents)], ['Card surcharge', cardSurcharged ? money(card.monthlyExtra) : 'None'], ['Monthly total', money(card.monthlyTotal)]]}
             note={!cardAllowed ? 'Card payment is not available right now. Please use a bank account.'
