@@ -7286,7 +7286,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             ? `📞 Call to book OBS appointment — anticipated: ${new Date(patient.obsAnticipatedDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
                             : '🔄 Observation — call to discuss scheduling'
                           : patient.MP
-                          ? `🏥 Medicaid check-in call${patient.contactAttempts > 0 ? ' (retry — not reached last time)' : ''} — after this, no calls until the decision comes back`
+                          ? (patient.contactAttempts > 0
+                              ? '🏥 Medicaid follow-up — still waiting on the decision. Pick a Next Touch Date to call again, or leave it blank to wait for the decision.'
+                              : '🏥 Medicaid check-in call (2 days after exam) — after this, no calls until the decision comes back unless you pick a date')
                           : `${inNoShowMode(patient) ? '⚠️ Missed bond — ' : ''}🎯 Attempt #${patient.contactAttempts + 1} of ${cadenceFor(patient).length}: ${patient.contactAttempts === 0 ? 'Initial follow-up' : patient.contactAttempts === 1 ? 'Check-in call' : patient.contactAttempts === 2 ? 'Week follow-up — identify obstacles' : 'Final attempt'}`}
                         {!patient.OBS && !patient.MP && patient.contactAttempts >= 4 && <span style={{marginLeft:'8px',padding:'2px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}}>⚠️ Max Attempts Reached</span>}
                         {patient.OBS && !patient.obsApptDate && obsMissedCalls(patient) > 0 && obsMissedCalls(patient) < OBS_NO_REACH_DAYS.length && (
