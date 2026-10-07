@@ -88,7 +88,9 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
           'Co-Parenting / Other Parent':         [3, 10, 21, 45],
           'Getting a Second Opinion':            [2, 7, 21, 45],
           'Insurance / Benefits Pending':        [2, 5, 10, 21],
-          'Waiting to Hear from Medicaid':       [14, 5, 10, 21],
+          // Medicaid pending: a check-in call 2 days after the exam (one retry if not reached), then
+          // no more calls until the decision comes back — the Medicaid Pipeline owns the decision call.
+          'Waiting to Hear from Medicaid':       [2, 2],
           'Dental Work Needed First':            [7, 30, 60, 90],
           'Waiting on Finances':                 [3, 14, 30, 60],
           'Timing / Life Event':                 [7, 30, 90],
@@ -100,6 +102,14 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
         // after each attempt) instead of the patient's obstacle cadence, until someone actually
         // speaks with them. Their real obstacle is kept for reporting.
         const NO_SHOW_CADENCE = [1, 3, 7, 14];
+        const MEDICAID_DENIED_OUTCOME = 'Medicaid denied — converting to Pending';
+        // A Medicaid-pending patient with no call scheduled is waiting on the decision, not stuck
+        const isMedicaidParked = (p) => p.MP && p.nextTouchDate === '__MAX__';
+        // Unanswered calls made to give a patient their Medicaid decision (pipeline column 3)
+        const medicaidDecisionAttempts = (p) => {
+          const since = (p.insuranceWorkflow || {}).decisionDate || '';
+          return (p.contact_log || []).filter(e => e.medicaidDecisionCall && e.reachedPatient !== 'Spoke with patient' && (e.date || '') >= since).length;
+        };
         const inNoShowMode = (p) => {
           const log = p.contact_log || [];
           for (let i = log.length - 1; i >= 0; i--) {
@@ -1278,7 +1288,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       return false;
     });
     if (toFix.length === 0) return;
+    const fixIds = new Set(toFix.map(p => p.id));
     const fixed = patients.map(p => {
+      // Only touch the patients that need it — this used to recalculate EVERY Medicaid
+      // patient's date in memory, wiping dates staff had picked (and saving the wrong
+      // date the next time anyone logged a contact on them).
+      if (!fixIds.has(p.id)) return p;
       if (p.MP) {
         const effObstacle = p.obstacle || 'Waiting to Hear from Medicaid';
         const correctNext = calcNextTouchDate(p.npeDate, effObstacle, p.contactAttempts || 0, p.lastContactDate || '');
@@ -3054,11 +3069,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       alert('Please select whether you reached the patient before saving.');
       return;
     }
+    if (contactForm.outcome === MEDICAID_DENIED_OUTCOME && (!contactForm.obstacle || contactForm.obstacle === 'Waiting to Hear from Medicaid')) {
+      alert("Pick the patient's new obstacle (why they still need time) before saving — it sets their follow-up calls.");
+      return;
+    }
     const todayStr = localToday();
     let updatedPatient = null;
     const updated = patients.map(p => {
       if (p.id !== patientId) return p;
       const isSkipMedicaid = contactForm.reachedPatient === "Waiting on Medicaid — didn't call";
+      const isMedicaidDenied = p.MP && contactForm.outcome === MEDICAID_DENIED_OUTCOME;
+      // Reached and still waiting (or skipped): no more calls until the decision is entered in the pipeline
+      const parkForMedicaid = p.MP && !isMedicaidDenied && (isSkipMedicaid || contactForm.outcome === 'Still waiting on Medicaid approval');
       const isObsScheduling = p.OBS && contactForm.outcome === 'OBS is now scheduled!';
       const isObsAnticipatedUpdate = p.OBS && !p.obsApptDate && contactForm.outcome === 'Still on track — update anticipated date';
       const isObsUnreached = p.OBS && !p.obsApptDate && OBS_UNREACHED.includes(contactForm.reachedPatient);
@@ -3112,7 +3134,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       if (p.OBS && !newObsApptDate && contactForm.nextTouchDate) {
         nextDate = skipWeekend(contactForm.nextTouchDate);
       }
-      const result = {
+      if (parkForMedicaid && !contactForm.nextTouchDate) nextDate = '__MAX__';
+      let result = {
         ...p,
         obstacle: updatedObstacle,
         contactAttempts: newAttempts,
@@ -3122,6 +3145,20 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         obsAnticipatedDate: newObsAnticipatedDate,
         contact_log: [...(p.contact_log || []), logEntry]
       };
+      if (isMedicaidDenied) {
+        // Denied and still deciding → Pending on the new obstacle's cadence, counted from today.
+        // The pipeline record is kept so the card can show "Medicaid denied".
+        const w = p.insuranceWorkflow || {};
+        result = {
+          ...result,
+          MP: false, PEN: true,
+          obstacle: contactForm.obstacle,
+          contactAttempts: 0,
+          nextTouchDate: contactForm.nextTouchDate ? skipWeekend(contactForm.nextTouchDate) : calcNextTouchDate(todayStr, contactForm.obstacle, 0, ''),
+          insuranceWorkflow: { ...w, decisionResult: 'denied', decisionDate: w.decisionDate || todayStr,
+            patientContactedDate: w.patientContactedDate || todayStr, patientDecision: 'needs_time', completedDate: todayStr },
+        };
+      }
       updatedPatient = result;
       return result;
     });
@@ -4342,6 +4379,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             queueScoped.forEach(p => {
               if (!p.PEN && !p.MP && !p.OBS) return;
               if (p.OBS && p.obsApptDate) return;          // appointment booked — not stuck
+              if (isMedicaidParked(p)) return;              // waiting on the Medicaid decision — the pipeline tracks it
               const maxedOut = p.nextTouchDate === '__MAX__';
               if (!maxedOut && !p.nextTouchDate) return;    // no cadence scheduled at all
               const key = p.obstacle || (p.MP ? 'Waiting to Hear from Medicaid' : 'No obstacle tagged');
@@ -6488,6 +6526,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const staleCutoffStr = localDateStr(staleCutoff);
           const staleCount = patients.filter(p => {
             if (!p.PEN && !p.MP) return false;
+            if (isMedicaidParked(p)) return false;
             const recentContact = (p.contact_log || []).some(e => e.date && e.date > staleCutoffStr);
             if (recentContact) return false;
             if (p.nextTouchDate && p.nextTouchDate !== '__MAX__' && p.nextTouchDate > todayStr) return false;
@@ -6930,6 +6969,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               </div>
             </div>
 
+            {/* Medicaid decision calls live in the Medicaid Pipeline — point to them here so none are missed */}
+            {medicaidEnabled && (() => {
+              const waiting = patients.filter(p => p.MP && (p.insuranceWorkflow || {}).decisionDate && !(p.insuranceWorkflow || {}).patientDecision
+                && (followupTCFilter === 'All' || p.tc === followupTCFilter));
+              if (!waiting.length) return null;
+              return (
+                <div style={{marginBottom:'16px',padding:'12px 16px',backgroundColor:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:'8px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:'12px',flexWrap:'wrap'}}>
+                  <span style={{fontSize:'14px',fontWeight:'600',color:'#5b21b6'}}>
+                    📞 {waiting.length} Medicaid decision call{waiting.length !== 1 ? 's' : ''} waiting — {waiting.map(p => p.name).slice(0, 3).join(', ')}{waiting.length > 3 ? ` +${waiting.length - 3} more` : ''}
+                  </span>
+                  <button onClick={() => setCurrentView('medicaid')}
+                    style={{padding:'6px 14px',backgroundColor:'#7c3aed',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',fontSize:'13px',cursor:'pointer'}}>
+                    Open Medicaid Pipeline →
+                  </button>
+                </div>
+              );
+            })()}
+
             {/* SELECTED DAY */}
             <div>
               <h3 style={{fontSize:'20px',fontWeight:'bold',color:'#202020',marginBottom:'12px'}}>
@@ -7197,6 +7254,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                               : `OBS — Pending schedule`}
                         </span>}
                         {medicaidEnabled && patient.MP && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#fef3c7',color:'#92400e',borderRadius:'4px',fontWeight:'600'}}>MEDICAID PENDING</span>}
+                        {!patient.MP && patient.insuranceWorkflow?.decisionResult === 'denied' && (
+                          <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontWeight:'700'}}>
+                            ❌ MEDICAID DENIED{patient.insuranceWorkflow.decisionDate ? ` ${new Date(patient.insuranceWorkflow.decisionDate + 'T12:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}` : ''}
+                          </span>
+                        )}
                         {/* Treatment type badges */}
                         {[['BR','Braces'],['INV','Invisalign'],['PH1','Phase 1'],['PH2','Phase 2'],['LTD','Limited']].filter(([k]) => patient[k]).map(([k,l]) => (
                           <span key={k} style={{fontSize:'11px',padding:'2px 6px',backgroundColor:'#dbeafe',color:'#1e40af',borderRadius:'3px',fontWeight:'600'}}>{l}</span>
@@ -7223,8 +7285,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             : patient.obsAnticipatedDate
                             ? `📞 Call to book OBS appointment — anticipated: ${new Date(patient.obsAnticipatedDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
                             : '🔄 Observation — call to discuss scheduling'
+                          : patient.MP
+                          ? `🏥 Medicaid check-in call${patient.contactAttempts > 0 ? ' (retry — not reached last time)' : ''} — after this, no calls until the decision comes back`
                           : `${inNoShowMode(patient) ? '⚠️ Missed bond — ' : ''}🎯 Attempt #${patient.contactAttempts + 1} of ${cadenceFor(patient).length}: ${patient.contactAttempts === 0 ? 'Initial follow-up' : patient.contactAttempts === 1 ? 'Check-in call' : patient.contactAttempts === 2 ? 'Week follow-up — identify obstacles' : 'Final attempt'}`}
-                        {!patient.OBS && patient.contactAttempts >= 4 && <span style={{marginLeft:'8px',padding:'2px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}}>⚠️ Max Attempts Reached</span>}
+                        {!patient.OBS && !patient.MP && patient.contactAttempts >= 4 && <span style={{marginLeft:'8px',padding:'2px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}}>⚠️ Max Attempts Reached</span>}
                         {patient.OBS && !patient.obsApptDate && obsMissedCalls(patient) > 0 && obsMissedCalls(patient) < OBS_NO_REACH_DAYS.length && (
                           <span style={{marginLeft:'8px',fontSize:'12px',color:'#92400e',fontWeight:'600'}}>{obsMissedCalls(patient)} call{obsMissedCalls(patient) !== 1 ? 's' : ''} unanswered</span>
                         )}
@@ -7417,7 +7481,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             /* #7: MP-specific outcomes */
                             <>
                               <div style={{fontSize:'13px',fontWeight:'500',marginBottom:'8px'}}>Medicaid status update?</div>
-                              {['Still waiting on Medicaid approval', 'Medicaid denied — converting to Pending', 'Medicaid approved — ready to schedule! 🎉'].map(option => (
+                              {['Still waiting on Medicaid approval', MEDICAID_DENIED_OUTCOME, 'Medicaid approved — ready to schedule! 🎉'].map(option => (
                                 <label key={option} style={{display:'block',marginBottom:'4px',cursor:'pointer'}}>
                                   <input type="radio" name={`outcome-${patient.id}`} value={option}
                                     checked={contactForm.outcome === option}
@@ -7531,16 +7595,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       {/* #6: Obstacle update field for PEN/MP patients — hide when scheduling without DP */}
                       {(patient.PEN || patient.MP) && contactForm.scheduleType !== 'no_dp' && (
                         <div style={{marginBottom:'12px'}}>
+                          {contactForm.outcome === MEDICAID_DENIED_OUTCOME ? (
+                            <label style={{fontSize:'13px',fontWeight:'600',display:'block',marginBottom:'4px',color:'#991b1b'}}>
+                              New obstacle <span style={{fontWeight:'400'}}>(required — why they still need time; sets their follow-up calls)</span>
+                            </label>
+                          ) : (
                           <label style={{fontSize:'13px',fontWeight:'500',display:'block',marginBottom:'4px'}}>
                             Update Obstacle <span style={{color:'#6b7280',fontWeight:'400'}}>(optional — leave blank to keep current)</span>
                           </label>
+                          )}
                           <select
                             value={contactForm.obstacle}
                             onChange={(e) => setContactForm({...contactForm, obstacle: e.target.value})}
-                            style={{padding:'8px',border:'1px solid #d1d5db',borderRadius:'4px',width:'100%',fontSize:'13px'}}
+                            style={{padding:'8px',border:`1px solid ${contactForm.outcome === MEDICAID_DENIED_OUTCOME && !contactForm.obstacle ? '#f87171' : '#d1d5db'}`,borderRadius:'4px',width:'100%',fontSize:'13px'}}
                           >
-                            <option value="">— Keep current: {patient.obstacle || 'None'} —</option>
-                            {obstacleOptions.map(o => <option key={o} value={o}>{o}</option>)}
+                            {contactForm.outcome === MEDICAID_DENIED_OUTCOME
+                              ? <option value="">— Pick the new obstacle —</option>
+                              : <option value="">— Keep current: {patient.obstacle || 'None'} —</option>}
+                            {obstacleOptions.filter(o => contactForm.outcome !== MEDICAID_DENIED_OUTCOME || o !== 'Waiting to Hear from Medicaid').map(o => <option key={o} value={o}>{o}</option>)}
                           </select>
                         </div>
                       )}
@@ -7593,9 +7665,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 const p = patients.find(x => x.id === showContactLog);
                                 if (!p) return '—';
                                 const todayPreview = localToday();
+                                if (p.MP && contactForm.outcome === MEDICAID_DENIED_OUTCOME) {
+                                  if (!contactForm.obstacle) return 'pick the new obstacle';
+                                  const d = calcNextTouchDate(todayPreview, contactForm.obstacle, 0, '');
+                                  return `${new Date(d + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'})} — moves to Pending`;
+                                }
+                                if (p.MP && contactForm.outcome === 'Still waiting on Medicaid approval') return '⏸ No more calls until the decision is entered in the Medicaid Pipeline';
                                 const eff = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
                                 const n = calcNextTouchDate(p.npeDate, eff, p.contactAttempts + 1, todayPreview, p.PEN && contactForm.reachedPatient !== 'Spoke with patient' && inNoShowMode(p) ? NO_SHOW_CADENCE : undefined);
-                                if (n === '__MAX__') return '⚠️ Max attempts';
+                                if (n === '__MAX__') return p.MP ? '⏸ No more calls until the decision is entered in the Medicaid Pipeline' : '⚠️ Max attempts';
                                 return new Date(n + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
                               })()}
                             </span>
@@ -8138,7 +8216,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {/* PEN: Obstacle */}
               {newPatientForm.status === 'PEN' && (
                 <div style={{marginBottom:'16px'}}>
-                  <label style={{display:'flex',alignItems:'center',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Obstacle * <HelpTip id="add-obstacle" tip={medicaidEnabled ? "The obstacle is WHY the patient didn't start today. It drives the entire follow-up schedule.\n\nExamples:\n• Price / Down Payment → calls at 1, 3, 7, 14 days\n• Spouse / Partner → calls at 1, 4, 10 days\n• Getting a Second Opinion → calls at 2, 7, 21, 45 days\n• Medicaid Pending → calls every 14 days\n\nChoose the most accurate obstacle and the system handles the rest." : "The obstacle is WHY the patient didn't start today. It drives the entire follow-up schedule.\n\nExamples:\n• Price / Down Payment → calls at 1, 3, 7, 14 days\n• Spouse / Partner → calls at 1, 4, 10 days\n• Getting a Second Opinion → calls at 2, 7, 21, 45 days\n\nChoose the most accurate obstacle and the system handles the rest."} /></label>
+                  <label style={{display:'flex',alignItems:'center',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Obstacle * <HelpTip id="add-obstacle" tip={medicaidEnabled ? "The obstacle is WHY the patient didn't start today. It drives the entire follow-up schedule.\n\nExamples:\n• Price / Down Payment → calls at 1, 3, 7, 14 days\n• Spouse / Partner → calls at 1, 4, 10 days\n• Getting a Second Opinion → calls at 2, 7, 21, 45 days\n• Medicaid Pending → one check-in call 2 days after the exam, then waits for the decision\n\nChoose the most accurate obstacle and the system handles the rest." : "The obstacle is WHY the patient didn't start today. It drives the entire follow-up schedule.\n\nExamples:\n• Price / Down Payment → calls at 1, 3, 7, 14 days\n• Spouse / Partner → calls at 1, 4, 10 days\n• Getting a Second Opinion → calls at 2, 7, 21, 45 days\n\nChoose the most accurate obstacle and the system handles the rest."} /></label>
                   <select value={newPatientForm.obstacle}
                     onChange={e => setNewPatientForm({...newPatientForm, obstacle: e.target.value})}
                     style={{width:'100%',padding:'8px',border:`1px solid ${!newPatientForm.obstacle ? '#f87171' : '#d1d5db'}`,borderRadius:'4px'}}>
@@ -8536,7 +8614,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         {patient.contactAttempts > 0 && (
                           <span style={{fontSize:'12px',color:'#6b7280'}}>({patient.contactAttempts} contact{patient.contactAttempts > 1 ? 's' : ''} logged)</span>
                         )}
-                        {(patient.nextTouchDate === '__MAX__' || patient.contactAttempts >= 4) && (
+                        {isMedicaidParked(patient) ? (
+                          <span style={{fontSize:'12px',padding:'3px 8px',backgroundColor:'#fef3c7',color:'#92400e',borderRadius:'4px',fontWeight:'600'}}>⏸ Waiting on Medicaid decision</span>
+                        ) : (patient.nextTouchDate === '__MAX__' || patient.contactAttempts >= 4) && (
                           <span style={{fontSize:'12px',padding:'3px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontWeight:'600'}}>⚠️ Max Attempts Reached</span>
                         )}
                       </div>
@@ -8879,31 +8959,61 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
           const saveWorkflow = async (patient, updates) => {
             const newWorkflow = { ...(patient.insuranceWorkflow || {}), ...updates };
-            let patientUpdates = { insuranceWorkflow: newWorkflow };
-
-            // Stage 4 — if scheduling, convert to SCH
-            if (updates.patientDecision === 'scheduling') {
-              patientUpdates = {
-                ...patientUpdates,
-                SCH: true, MP: false, PEN: false,
-                obstacle: '',
-                bondDate: updates.bondDate || '',
-              };
-            }
-            // If not interested / went elsewhere → NOTX
-            if (updates.patientDecision === 'not_interested' || updates.patientDecision === 'went_elsewhere') {
-              patientUpdates = { ...patientUpdates, NOTX: true, MP: false };
-            }
-            // Needs more time → stays MP but reset cadence
-            if (updates.patientDecision === 'needs_time') {
-              patientUpdates = { ...patientUpdates, MP: true };
-            }
-
-            const updated = { ...patient, ...patientUpdates };
+            const updated = { ...patient, insuranceWorkflow: newWorkflow };
             setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
             await dbUpsert(updated);
             setMedWfModal(null);
             setMedWfForm({});
+          };
+
+          // Columns 3-4: the call that tells the patient their Medicaid decision. Every call is
+          // logged in the contact history. Not reached → stays in "Call Patient" and the attempt
+          // is counted. Reached → their answer moves them out of the pipeline:
+          // scheduling → Scheduled (bond date required), needs time → Pending on the obstacle
+          // they pick (follow-up queue), not interested / elsewhere → No Treatment.
+          const saveDecisionCall = async (patient, stage) => {
+            const f = medWfForm;
+            const reached = stage === 4 ? 'Spoke with patient' : f.reached;
+            const w = patient.insuranceWorkflow || {};
+            const result = w.decisionResult === 'approved' ? 'approved' : 'denied';
+            const day = localToday();
+            const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+            const logged_by = currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '');
+            const notes = f.contactNotes || '';
+            if (reached !== 'Spoke with patient') {
+              const n = medicaidDecisionAttempts(patient) + 1;
+              const entry = { date: day, time, reachedPatient: reached, outcome: `Medicaid decision call (${result}) — not reached, attempt ${n}`,
+                sentText: false, notes, recap: notes, dispo: 'pending', medicaidDecisionCall: true, logged_by };
+              const updated = { ...patient, lastContactDate: day, contact_log: [...(patient.contact_log || []), entry] };
+              setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
+              const ok = await dbUpsert(updated);
+              setMedWfModal(null); setMedWfForm({});
+              saveToastFor(ok, `📞 ${patient.name} — attempt ${n} logged; stays in "Call Patient" until reached`);
+              return;
+            }
+            const d = f.patientDecision;
+            const said = { scheduling: 'ready to schedule', needs_time: `needs time — ${f.obstacle}`, not_interested: 'not interested in treatment', went_elsewhere: 'going to another practice' }[d];
+            const entry = { date: day, time, reachedPatient: 'Spoke with patient',
+              outcome: `Medicaid ${result} — ${said}${d === 'scheduling' ? `, bond ${f.bondDate}${f.dpCollected === 'yes' ? ', down payment collected' : ''}` : ''}`,
+              sentText: false, notes, recap: notes, dispo: d === 'scheduling' ? 'future' : d === 'needs_time' ? 'pending' : 'notx', medicaidDecisionCall: true, logged_by };
+            const doneWorkflow = { ...w, patientContactedDate: day, contactNotes: notes || w.contactNotes || '', patientDecision: d, completedDate: day };
+            const changes =
+              d === 'scheduling'
+                // obstacle kept on purpose — it's reporting data
+                ? { SCH: true, MP: false, PEN: false, bondDate: f.bondDate, nextTouchDate: getBondCheckDate({ SCH: true, bondDate: f.bondDate }) || '',
+                    contactAttempts: 0, fromPending: true, insuranceWorkflow: {} }
+              : d === 'needs_time'
+                ? { PEN: true, MP: false, obstacle: f.obstacle, contactAttempts: 0, nextTouchDate: calcNextTouchDate(day, f.obstacle, 0, ''), insuranceWorkflow: doneWorkflow }
+                : { NOTX: true, MP: false, PEN: false, nextTouchDate: '', insuranceWorkflow: doneWorkflow };
+            const updated = { ...patient, ...changes, lastContactDate: day, contact_log: [...(patient.contact_log || []), entry] };
+            setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
+            const ok = await dbUpsert(updated);
+            setMedWfModal(null); setMedWfForm({});
+            saveToastFor(ok,
+              d === 'scheduling' ? `📅 ${patient.name} scheduled — bond ${formatDate(f.bondDate)}`
+              : d === 'needs_time' ? `🔔 ${patient.name} moved to the follow-up queue — ${f.obstacle}`
+              : `${patient.name} moved to No Treatment`);
+            if (d === 'scheduling' && f.dpCollected === 'yes') handleMarkStarted(updated);
           };
 
           const formatDate = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
@@ -8957,6 +9067,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     {w.decisionResult === 'approved' ? '✅ Approved' : '❌ Denied'}
                   </div>
                 )}
+                {cfg.stage === 3 && medicaidDecisionAttempts(p) > 0 && (
+                  <div style={{fontSize:'11px',fontWeight:'700',color:'#92400e',marginBottom:'4px'}}>
+                    📞 {medicaidDecisionAttempts(p)} attempt{medicaidDecisionAttempts(p) !== 1 ? 's' : ''} — not reached yet
+                  </div>
+                )}
                 {cfg.stage >= 4 && w.contactNotes && (
                   <div style={{fontSize:'11px',color:'#6b7280',marginBottom:'4px',fontStyle:'italic'}}>
                     "{w.contactNotes.slice(0, 50)}{w.contactNotes.length > 50 ? '…' : ''}"
@@ -8977,8 +9092,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     style={{width:'100%',marginTop:'8px',padding:'7px 0',backgroundColor:cfg.color,color:'white',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'700',cursor:'pointer'}}>
                     {cfg.stage === 1 ? 'Mark Submitted →' :
                      cfg.stage === 2 ? 'Enter Decision →' :
-                     cfg.stage === 3 ? 'Log Call →'       :
-                     'Record Outcome →'}
+                     cfg.stage === 3 ? 'Call Patient →'   :
+                     'Record Decision →'}
                   </button>
                 )}
                 {/* Remove from pipeline — started patients just clear the flag (start is kept) */}
@@ -9153,13 +9268,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 const isStage2 = stage === 2;
                 const isStage3 = stage === 3;
                 const isStage4 = stage === 4;
+                const decisionSpoke = isStage4 || medWfForm.reached === 'Spoke with patient';
+                const decisionUnreached = isStage3 && !!medWfForm.reached && !decisionSpoke;
+                const d = medWfForm.patientDecision;
+                const blocked =
+                  (isStage2 && !medWfForm.decisionResult) ||
+                  (isStage3 && !medWfForm.reached) ||
+                  ((isStage3 || isStage4) && decisionSpoke && (!d ||
+                    (d === 'needs_time' && !medWfForm.obstacle) ||
+                    (d === 'scheduling' && (!medWfForm.bondDate || !medWfForm.dpCollected))));
 
                 return (
                   <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:'16px'}}>
                     <div style={{backgroundColor:'white',borderRadius:'12px',padding:'28px',width:'100%',maxWidth:'480px',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
                       <div style={{marginBottom:'20px'}}>
                         <div style={{fontSize:'11px',fontWeight:'700',textTransform:'uppercase',letterSpacing:'0.08em',color:'#9ca3af',marginBottom:'4px'}}>
-                          {isStage1 ? 'Stage 1 → 2' : isStage2 ? 'Stage 2 → 3' : isStage3 ? 'Stage 3 → 4' : 'Stage 4 → Complete'}
+                          {isStage1 ? 'Stage 1 → 2' : isStage2 ? 'Stage 2 → 3' : isStage3 ? 'Medicaid decision call' : 'Record patient decision'}
                         </div>
                         <h3 style={{fontSize:'20px',fontWeight:'800',color:'#111827',margin:0}}>{p.name}</h3>
                         <div style={{fontSize:'13px',color:'#6b7280',marginTop:'2px'}}>NPE: {formatDate(p.npeDate)} · {p.tc}</div>
@@ -9198,58 +9322,91 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                       )}
 
-                      {isStage3 && (
+                      {(isStage3 || isStage4) && (() => {
+                        const spoke = isStage4 || medWfForm.reached === 'Spoke with patient';
+                        const attempts = medicaidDecisionAttempts(p);
+                        const pill = (on, color) => ({padding:'10px 12px',border:`2px solid ${on ? color : '#e5e7eb'}`,borderRadius:'8px',backgroundColor: on ? '#f9fafb' : 'white',fontWeight:'600',fontSize:'13px',cursor:'pointer',color:'#374151',textAlign:'left'});
+                        return (
                         <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
                           <div style={{padding:'12px',borderRadius:'8px',backgroundColor: w.decisionResult==='approved'?'#f0fdf4':'#fef2f2',border:`1px solid ${w.decisionResult==='approved'?'#bbf7d0':'#fecaca'}`}}>
                             <span style={{fontWeight:'700',fontSize:'14px',color:w.decisionResult==='approved'?'#16a34a':'#dc2626'}}>
                               Decision: {w.decisionResult==='approved'?'✅ Approved':'❌ Denied'}
                             </span>
+                            {attempts > 0 && <span style={{fontSize:'12px',color:'#92400e',marginLeft:'8px',fontWeight:'600'}}>· {attempts} earlier attempt{attempts !== 1 ? 's' : ''} not reached</span>}
                           </div>
+                          {isStage3 && (
+                            <div>
+                              <div style={{fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'6px'}}>Did you reach the patient?</div>
+                              <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+                                {['Left voicemail', 'No answer', 'Spoke with patient'].map(opt => (
+                                  <button key={opt} onClick={() => setMedWfForm(f => ({...f, reached: opt}))} style={{...pill(medWfForm.reached === opt, '#2563eb'), flex:1}}>{opt}</button>
+                                ))}
+                              </div>
+                              {medWfForm.reached && !spoke && (
+                                <div style={{fontSize:'12px',color:'#92400e',marginTop:'6px'}}>The call is logged as attempt {attempts + 1}; they stay in "Call Patient" until you reach them.</div>
+                              )}
+                            </div>
+                          )}
+                          {spoke && (
+                            <div>
+                              <div style={{fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'8px'}}>What did the patient decide?</div>
+                              <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+                                {[
+                                  { value: 'scheduling', label: '🎉 Ready to schedule', color: '#16a34a' },
+                                  { value: 'needs_time', label: '⏳ Needs time to decide → follow-up queue', color: '#d97706' },
+                                  { value: 'not_interested', label: '❌ Not interested in treatment', color: '#dc2626' },
+                                  { value: 'went_elsewhere', label: '🏃 Going to another practice', color: '#6b7280' },
+                                ].map(opt => (
+                                  <button key={opt.value} onClick={() => setMedWfForm(f => ({...f, patientDecision: opt.value}))} style={{...pill(medWfForm.patientDecision === opt.value, opt.color), color: opt.color}}>
+                                    {opt.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {spoke && medWfForm.patientDecision === 'needs_time' && (
+                            <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
+                              Obstacle — why they still need time <span style={{color:'#dc2626'}}>*</span>
+                              <select value={medWfForm.obstacle || ''} onChange={e => setMedWfForm(f => ({...f, obstacle: e.target.value}))}
+                                style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box'}}>
+                                <option value="">— Pick the obstacle —</option>
+                                {obstacleOptions.filter(o => o !== 'Waiting to Hear from Medicaid').map(o => <option key={o} value={o}>{o}</option>)}
+                              </select>
+                              {medWfForm.obstacle && (() => {
+                                const first = calcNextTouchDate(todayStr, medWfForm.obstacle, 0, '');
+                                return <div style={{fontSize:'12px',color:'#166534',marginTop:'6px',fontWeight:'500'}}>🔔 First follow-up call: {formatDate(first)}</div>;
+                              })()}
+                            </label>
+                          )}
+                          {spoke && medWfForm.patientDecision === 'scheduling' && (
+                            <>
+                              <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
+                                Bond appointment date <span style={{color:'#dc2626'}}>*</span>
+                                <input type="date" value={medWfForm.bondDate || ''}
+                                  onChange={e => setMedWfForm(f => ({...f, bondDate: e.target.value}))}
+                                  style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box'}} />
+                              </label>
+                              <div>
+                                <div style={{fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'6px'}}>Down payment collected? <span style={{color:'#dc2626'}}>*</span></div>
+                                <div style={{display:'flex',gap:'8px'}}>
+                                  {[['yes','Yes — it\'s a start today'],['no','No — just scheduled']].map(([v, l]) => (
+                                    <button key={v} onClick={() => setMedWfForm(f => ({...f, dpCollected: v}))} style={{...pill(medWfForm.dpCollected === v, '#16a34a'), flex:1}}>{l}</button>
+                                  ))}
+                                </div>
+                              </div>
+                            </>
+                          )}
                           <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
-                            Date patient was contacted
-                            <input type="date" value={medWfForm.patientContactedDate || todayStr}
-                              onChange={e => setMedWfForm(f => ({...f, patientContactedDate: e.target.value}))}
-                              style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box'}} />
-                          </label>
-                          <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
-                            Notes from the call (optional)
+                            Notes from the call (optional — saved to contact history)
                             <textarea value={medWfForm.contactNotes || ''}
                               onChange={e => setMedWfForm(f => ({...f, contactNotes: e.target.value}))}
                               placeholder="What did the patient say?"
-                              rows={3}
+                              rows={2}
                               style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box',resize:'vertical'}} />
                           </label>
                         </div>
-                      )}
-
-                      {isStage4 && (
-                        <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
-                          <div>
-                            <div style={{fontSize:'13px',fontWeight:'600',color:'#374151',marginBottom:'8px'}}>What did the patient decide?</div>
-                            <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
-                              {[
-                                { value: 'scheduling', label: '🎉 Ready to schedule a start', color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0' },
-                                { value: 'needs_time', label: '⏳ Needs more time to think', color: '#d97706', bg: '#fffbeb', border: '#fde68a' },
-                                { value: 'not_interested', label: '❌ Not interested in treatment', color: '#dc2626', bg: '#fef2f2', border: '#fecaca' },
-                                { value: 'went_elsewhere', label: '🏃 Going to another practice', color: '#6b7280', bg: '#f9fafb', border: '#e5e7eb' },
-                              ].map(opt => (
-                                <button key={opt.value} onClick={() => setMedWfForm(f => ({...f, patientDecision: opt.value}))}
-                                  style={{padding:'12px 16px',border:`2px solid ${medWfForm.patientDecision===opt.value ? opt.border : '#e5e7eb'}`,borderRadius:'8px',backgroundColor: medWfForm.patientDecision===opt.value ? opt.bg : 'white',fontWeight:'600',fontSize:'14px',cursor:'pointer',color:opt.color,textAlign:'left'}}>
-                                  {opt.label}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                          {medWfForm.patientDecision === 'scheduling' && (
-                            <label style={{fontSize:'13px',fontWeight:'600',color:'#374151'}}>
-                              Bond appointment date (optional — can set later)
-                              <input type="date" value={medWfForm.bondDate || ''}
-                                onChange={e => setMedWfForm(f => ({...f, bondDate: e.target.value}))}
-                                style={{display:'block',marginTop:'6px',padding:'9px 12px',border:'1px solid #d1d5db',borderRadius:'7px',fontSize:'14px',width:'100%',boxSizing:'border-box'}} />
-                            </label>
-                          )}
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       <div style={{display:'flex',gap:'10px',marginTop:'24px'}}>
                         <button onClick={() => { setMedWfModal(null); setMedWfForm({}); }}
@@ -9257,19 +9414,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           Cancel
                         </button>
                         <button
-                          disabled={
-                            (isStage2 && !medWfForm.decisionResult) ||
-                            (isStage4 && !medWfForm.patientDecision)
-                          }
+                          disabled={blocked}
                           onClick={() => {
                             if (isStage1) saveWorkflow(p, { submittedDate: medWfForm.submittedDate || todayStr });
                             if (isStage2) saveWorkflow(p, { decisionDate: medWfForm.decisionDate || todayStr, decisionResult: medWfForm.decisionResult });
-                            if (isStage3) saveWorkflow(p, { patientContactedDate: medWfForm.patientContactedDate || todayStr, contactNotes: medWfForm.contactNotes || '' });
-                            if (isStage4) saveWorkflow(p, { patientDecision: medWfForm.patientDecision, bondDate: medWfForm.bondDate || '', completedDate: todayStr });
+                            if (isStage3 || isStage4) saveDecisionCall(p, stage);
                           }}
-                          style={{flex:2,padding:'11px',border:'none',borderRadius:'7px',fontSize:'14px',cursor:'pointer',fontWeight:'700',color:'white',
-                            backgroundColor: (isStage2 && !medWfForm.decisionResult)||(isStage4 && !medWfForm.patientDecision) ? '#9ca3af' : '#2563EB'}}>
-                          {isStage1 ? 'Confirm Submitted ✓' : isStage2 ? 'Save Decision' : isStage3 ? 'Patient Contacted ✓' : 'Save Outcome'}
+                          style={{flex:2,padding:'11px',border:'none',borderRadius:'7px',fontSize:'14px',cursor: blocked ? 'not-allowed' : 'pointer',fontWeight:'700',color:'white',
+                            backgroundColor: blocked ? '#9ca3af' : '#2563EB'}}>
+                          {isStage1 ? 'Confirm Submitted ✓' : isStage2 ? 'Save Decision' : decisionUnreached ? 'Log Attempt' : 'Save Outcome'}
                         </button>
                       </div>
                     </div>
