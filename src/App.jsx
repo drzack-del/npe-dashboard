@@ -105,6 +105,9 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
         const MEDICAID_DENIED_OUTCOME = 'Medicaid denied — converting to Pending';
         // A Medicaid-pending patient with no call scheduled is waiting on the decision, not stuck
         const isMedicaidParked = (p) => p.MP && p.nextTouchDate === '__MAX__';
+        // A Medicaid-pending patient whose decision hasn't been entered — if they schedule or
+        // start now, the claim still needs tracking in the pipeline
+        const medicaidClaimOpen = (p) => !!p.MP && !(p.insuranceWorkflow || {}).decisionDate;
         // Unanswered calls made to give a patient their Medicaid decision (pipeline column 3)
         const medicaidDecisionAttempts = (p) => {
           const since = (p.insuranceWorkflow || {}).decisionDate || '';
@@ -3413,7 +3416,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       SCH: true,
       PEN: false,
       MP: false,
-      insuranceWorkflow: {}, // clear stale Medicaid pipeline state when leaving the pipeline
+      // Scheduled before the Medicaid decision → stays in the pipeline; otherwise clear stale state
+      ...(contactForm.outcome !== 'Medicaid approved — ready to schedule! 🎉' && medicaidClaimOpen(patient)
+        ? { medicaidPipeline: true }
+        : { insuranceWorkflow: {} }),
       // obstacle is intentionally NOT cleared here — it's historical reporting data, see OBSTACLE_OPTIONS comment
       bondDate,
       nextTouchDate: checkDate || '',
@@ -3469,7 +3475,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       PEN: false,
       MP: false,
       OBS: false,
-      insuranceWorkflow: {}, // clear stale Medicaid pipeline state when leaving the pipeline
+      // Scheduled before the Medicaid decision → stays in the pipeline; otherwise clear stale state
+      ...(medicaidClaimOpen(patient) ? { medicaidPipeline: true } : { insuranceWorkflow: {} }),
       // obstacle is intentionally NOT cleared here — it's historical reporting data, see OBSTACLE_OPTIONS comment
       bondDate,
       obsApptDate: '',
@@ -3866,9 +3873,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       DBRETS: newPatientForm.status === 'DBRETS',
       // Medicaid segmentation — driven by the "Is this a Medicaid patient?" question
       isMedicaid: medicaidEnabled && newPatientForm.isMedicaid === 'yes',
-      // A Medicaid patient who started before the decision (SDS/ST) keeps the start AND rides
-      // the pipeline for claim tracking. MP-status patients enter the pipeline via MP itself.
-      medicaidPipeline: (medicaidEnabled && newPatientForm.isMedicaid === 'yes' && (isSameDay || isST)),
+      // A Medicaid patient who started (SDS/ST) or booked a bond (SCH) before the decision
+      // rides the pipeline so the claim is still submitted and tracked. MP-status patients
+      // enter the pipeline via MP itself.
+      medicaidPipeline: (medicaidEnabled && newPatientForm.isMedicaid === 'yes' && (isSameDay || isST || isSCH)),
       obstacle: newPatientForm.obstacle,
       notes: combinedRecap,
       bondDate: newPatientForm.bondDate || '',
@@ -8918,7 +8926,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           // A patient who started before Medicaid came back: keeps their start (MP is false),
           // but the claim still rides the pipeline. Their flow is submit → decision → done —
           // there's no "call patient to schedule" step because they already started.
-          const isStartedPipeline = p => p.medicaidPipeline && !p.MP;
+          const isStartedPipeline = p => p.medicaidPipeline && !p.MP && (p.ST || isSDS(p));
+          // Bond booked before Medicaid came back (or missed and back to Pending): tracked like MP —
+          // once the decision is in, the patient gets the decision call, since a denial changes
+          // their plans before they start.
+          const isScheduledPipeline = p => p.medicaidPipeline && !p.MP && !isStartedPipeline(p);
 
           // Stage helpers
           const getStage = p => {
@@ -8944,7 +8956,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
           const openModal = (patient, stage) => {
             setMedWfModal({ patient, stage });
-            setMedWfForm({});
+            setMedWfForm(patient.SCH && patient.bondDate ? { bondDate: patient.bondDate } : {});
           };
 
           const removeFromPipeline = async (patient, disposition, obstacle) => {
@@ -8972,7 +8984,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           // Started-pipeline patients: removing just clears the pipeline flag — the start
           // (and its bonus) is untouched. No disposition prompt; they aren't reverting to Pending.
           const clearStartedPipeline = async patient => {
-            if (!window.confirm(`Remove ${patient.name} from the Medicaid Pipeline? Their start credit is kept — this only stops claim tracking.`)) return;
+            if (!window.confirm(isScheduledPipeline(patient)
+              ? `Remove ${patient.name} from the Medicaid Pipeline? They stay Scheduled — this only stops claim tracking.`
+              : `Remove ${patient.name} from the Medicaid Pipeline? Their start credit is kept — this only stops claim tracking.`)) return;
             const updated = { ...patient, medicaidPipeline: false };
             setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
             await dbUpsert(updated);
@@ -9034,7 +9048,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               : d === 'needs_time'
                 ? { PEN: true, MP: false, obstacle: f.obstacle, contactAttempts: 0, nextTouchDate: calcNextTouchDate(day, f.obstacle, 0, ''), insuranceWorkflow: doneWorkflow }
                 : { NOTX: true, MP: false, PEN: false, nextTouchDate: '', insuranceWorkflow: doneWorkflow };
-            const updated = { ...patient, ...changes, lastContactDate: day, contact_log: [...(patient.contact_log || []), entry] };
+            const updated = { ...patient, ...changes, medicaidPipeline: false, lastContactDate: day, contact_log: [...(patient.contact_log || []), entry] };
             setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
             const ok = await dbUpsert(updated);
             setMedWfModal(null); setMedWfForm({});
@@ -9076,6 +9090,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 {isStartedPipeline(p) && (
                   <div style={{display:'inline-block',fontSize:'10px',fontWeight:'800',color:'#166534',backgroundColor:'#dcfce7',border:'1px solid #86efac',borderRadius:'4px',padding:'1px 6px',marginBottom:'6px'}}>
                     ✅ STARTED — claim tracking
+                  </div>
+                )}
+                {isScheduledPipeline(p) && p.SCH && (
+                  <div style={{display:'inline-block',fontSize:'10px',fontWeight:'800',color:'#1e40af',backgroundColor:'#dbeafe',border:'1px solid #93c5fd',borderRadius:'4px',padding:'1px 6px',marginBottom:'6px'}}>
+                    📅 SCHEDULED{p.bondDate ? ` — bond ${formatDate(p.bondDate)}` : ''}
                   </div>
                 )}
 
@@ -9126,7 +9145,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   </button>
                 )}
                 {/* Remove from pipeline — started patients just clear the flag (start is kept) */}
-                <button onClick={() => isStartedPipeline(p) ? clearStartedPipeline(p) : setMedRemoveModal({ patient: p })}
+                <button onClick={() => (isStartedPipeline(p) || isScheduledPipeline(p)) ? clearStartedPipeline(p) : setMedRemoveModal({ patient: p })}
                   style={{width:'100%',marginTop:'6px',padding:'5px 0',backgroundColor:'transparent',color:'#9ca3af',border:'1px solid #e5e7eb',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>
                   ✕ Remove from pipeline
                 </button>
@@ -9171,7 +9190,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
                 <button onClick={() => setMedAddStartedModal(true)}
                   style={{padding:'10px 16px',backgroundColor:'#16a34a',color:'white',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:'pointer',whiteSpace:'nowrap'}}>
-                  ＋ Add a started patient
+                  ＋ Add a started or scheduled patient
                 </button>
               </div>
 
@@ -9179,7 +9198,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 <div style={{backgroundColor:'white',borderRadius:'10px',padding:'48px',textAlign:'center',color:'#9ca3af',border:'1px solid #e5e7eb'}}>
                   <div style={{fontSize:'40px',marginBottom:'12px'}}>🏥</div>
                   <div style={{fontSize:'16px',fontWeight:'600'}}>No Medicaid patients yet</div>
-                  <div style={{fontSize:'13px',marginTop:'4px'}}>Add a patient with MP status, or use “＋ Add a started patient” for someone who started before Medicaid replied.</div>
+                  <div style={{fontSize:'13px',marginTop:'4px'}}>Add a patient with MP status, or use “＋ Add a started or scheduled patient” for someone who started or booked a bond before Medicaid replied.</div>
                 </div>
               )}
 
@@ -9462,24 +9481,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {/* Add-existing-started picker */}
               {medAddStartedModal && (() => {
                 const eligible = patients
-                  .filter(p => (isSDS(p) || p.ST) && !p.medicaidPipeline && !p.MP)
+                  .filter(p => (isSDS(p) || p.ST || p.SCH) && !p.medicaidPipeline && !p.MP)
                   .sort((a, b) => (b.startDate || b.npeDate || '').localeCompare(a.startDate || a.npeDate || ''));
                 return (
                   <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:'16px'}}>
                     <div style={{backgroundColor:'white',borderRadius:'12px',padding:'28px',width:'100%',maxWidth:'480px',maxHeight:'80vh',overflowY:'auto',boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
                       <div style={{marginBottom:'16px'}}>
-                        <h3 style={{fontSize:'20px',fontWeight:'800',color:'#111827',margin:0}}>Add a started patient</h3>
-                        <div style={{fontSize:'13px',color:'#6b7280',marginTop:'4px'}}>Pick a patient who already started but is still waiting on Medicaid. Their start credit is kept — this just tracks the claim.</div>
+                        <h3 style={{fontSize:'20px',fontWeight:'800',color:'#111827',margin:0}}>Add a started or scheduled patient</h3>
+                        <div style={{fontSize:'13px',color:'#6b7280',marginTop:'4px'}}>Pick a patient who started or booked their bond but is still waiting on Medicaid. Their status is kept — this just tracks the claim.</div>
                       </div>
                       {eligible.length === 0 ? (
-                        <div style={{padding:'24px',textAlign:'center',color:'#9ca3af',fontSize:'13px'}}>No started patients available to add.</div>
+                        <div style={{padding:'24px',textAlign:'center',color:'#9ca3af',fontSize:'13px'}}>No started or scheduled patients available to add.</div>
                       ) : (
                         <div style={{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'16px'}}>
                           {eligible.map(p => (
                             <button key={p.id} onClick={() => addStartedToPipeline(p)}
                               style={{padding:'12px 14px',border:'1px solid #e5e7eb',borderRadius:'8px',backgroundColor:'white',textAlign:'left',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px'}}>
                               <span style={{fontWeight:'700',fontSize:'14px',color:'#111827'}}>{p.name}</span>
-                              <span style={{fontSize:'11px',color:'#9ca3af',whiteSpace:'nowrap'}}>{p.tc}{p.startDate ? ` · Started ${formatDate(p.startDate)}` : ''}</span>
+                              <span style={{fontSize:'11px',color:'#9ca3af',whiteSpace:'nowrap'}}>{p.tc}{p.SCH ? (p.bondDate ? ` · Bond ${formatDate(p.bondDate)}` : ' · Scheduled') : p.startDate ? ` · Started ${formatDate(p.startDate)}` : ''}</span>
                             </button>
                           ))}
                         </div>
