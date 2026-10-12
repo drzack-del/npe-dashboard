@@ -103,6 +103,9 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
         // speaks with them. Their real obstacle is kept for reporting.
         const NO_SHOW_CADENCE = [1, 3, 7, 14];
         const MEDICAID_DENIED_OUTCOME = 'Medicaid denied — converting to Pending';
+        // While a patient waits on the Medicaid decision the TC keeps them on her list as a
+        // running reminder: a blank Next Touch Date means "remind me again in 14 days".
+        const MEDICAID_REMINDER_DAYS = 14;
         // A Medicaid-pending patient with no call scheduled is waiting on the decision, not stuck
         const isMedicaidParked = (p) => p.MP && p.nextTouchDate === '__MAX__';
         // A Medicaid-pending patient whose decision hasn't been entered — if they schedule or
@@ -3109,8 +3112,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       if (p.id !== patientId) return p;
       const isSkipMedicaid = contactForm.reachedPatient === "Waiting on Medicaid — didn't call";
       const isMedicaidDenied = p.MP && contactForm.outcome === MEDICAID_DENIED_OUTCOME;
-      // Reached and still waiting (or skipped): no more calls until the decision is entered in the pipeline
-      const parkForMedicaid = p.MP && !isMedicaidDenied && (isSkipMedicaid || contactForm.outcome === 'Still waiting on Medicaid approval');
+      // Still waiting on the decision (reached, or skipped without calling)
+      const stillWaitingOnMedicaid = p.MP && !isMedicaidDenied && (isSkipMedicaid || contactForm.outcome === 'Still waiting on Medicaid approval');
       const isObsScheduling = p.OBS && contactForm.outcome === 'OBS is now scheduled!';
       const isObsAnticipatedUpdate = p.OBS && !p.obsApptDate && contactForm.outcome === 'Still on track — update anticipated date';
       const isObsUnreached = p.OBS && !p.obsApptDate && OBS_UNREACHED.includes(contactForm.reachedPatient);
@@ -3147,7 +3150,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         nextDate = getOBSBookingCallDate(contactForm.obsAnticipatedDate, obsRecallMonths) || addMonths(todayStr, obsRecallMonths);
       } else {
         nextDate = isSkipMedicaid
-          ? skipWeekend(localDateStr(d14))
+          ? (contactForm.nextTouchDate ? skipWeekend(contactForm.nextTouchDate) : skipWeekend(localDateStr(d14)))
           : (contactForm.nextTouchDate ? skipWeekend(contactForm.nextTouchDate) : null)
             || (p.OBS && p.obsAnticipatedDate
                 ? (getOBSBookingCallDate(p.obsAnticipatedDate, obsRecallMonths) || addMonths(todayStr, obsRecallMonths))
@@ -3164,7 +3167,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       if (p.OBS && !newObsApptDate && contactForm.nextTouchDate) {
         nextDate = skipWeekend(contactForm.nextTouchDate);
       }
-      if (parkForMedicaid && !contactForm.nextTouchDate) nextDate = '__MAX__';
+      // Waiting on Medicaid never drops off the list: no picked date → reminder in 14 days
+      // (also once the 2-day check-in calls are used up)
+      if (p.MP && !isMedicaidDenied && !contactForm.nextTouchDate && (stillWaitingOnMedicaid || nextDate === '__MAX__')) {
+        nextDate = addDays(todayStr, MEDICAID_REMINDER_DAYS);
+      }
       let result = {
         ...p,
         obstacle: updatedObstacle,
@@ -7322,8 +7329,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                             : '🔄 Observation — call to discuss scheduling'
                           : patient.MP
                           ? (patient.contactAttempts > 0
-                              ? '🏥 Medicaid follow-up — still waiting on the decision. Pick a Next Touch Date to call again, or leave it blank to wait for the decision.'
-                              : '🏥 Medicaid check-in call (2 days after exam) — after this, no calls until the decision comes back unless you pick a date')
+                              ? '🏥 Medicaid follow-up — still waiting on the decision. Leave Next Touch Date blank for a reminder in 14 days, or pick a date.'
+                              : '🏥 Medicaid check-in call (2 days after exam) — then a reminder every 14 days until the decision comes back')
                           : `${inNoShowMode(patient) ? '⚠️ Missed bond — ' : ''}🎯 Attempt #${patient.contactAttempts + 1} of ${cadenceFor(patient).length}: ${patient.contactAttempts === 0 ? 'Initial follow-up' : patient.contactAttempts === 1 ? 'Check-in call' : patient.contactAttempts === 2 ? 'Week follow-up — identify obstacles' : 'Final attempt'}`}
                         {!patient.OBS && !patient.MP && patient.contactAttempts >= 4 && <span style={{marginLeft:'8px',padding:'2px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}}>⚠️ Max Attempts Reached</span>}
                         {patient.OBS && !patient.obsApptDate && obsMissedCalls(patient) > 0 && obsMissedCalls(patient) < OBS_NO_REACH_DAYS.length && (
@@ -7707,10 +7714,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                   const d = calcNextTouchDate(todayPreview, contactForm.obstacle, 0, '');
                                   return `${new Date(d + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'})} — moves to Pending`;
                                 }
-                                if (p.MP && contactForm.outcome === 'Still waiting on Medicaid approval') return '⏸ No more calls until the decision is entered in the Medicaid Pipeline';
+                                const reminder = () => `🔔 Reminder ${new Date(addDays(todayPreview, MEDICAID_REMINDER_DAYS) + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'})} (14 days) — or pick a date`;
+                                if (p.MP && (contactForm.outcome === 'Still waiting on Medicaid approval' || contactForm.reachedPatient === "Waiting on Medicaid — didn't call")) return reminder();
                                 const eff = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
                                 const n = calcNextTouchDate(p.npeDate, eff, p.contactAttempts + 1, todayPreview, p.PEN && contactForm.reachedPatient !== 'Spoke with patient' && inNoShowMode(p) ? NO_SHOW_CADENCE : undefined);
-                                if (n === '__MAX__') return p.MP ? '⏸ No more calls until the decision is entered in the Medicaid Pipeline' : '⚠️ Max attempts';
+                                if (n === '__MAX__') return p.MP ? reminder() : '⚠️ Max attempts';
                                 return new Date(n + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
                               })()}
                             </span>
