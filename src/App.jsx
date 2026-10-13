@@ -39,6 +39,10 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
         // Example: newFeature: ['miller-ortho', 'adams-practice-id']
         const BETA_FEATURES = {
           newDashboard: true,
+          // Pre Consult tab (Dr. Miller, 2026-10-13): Miller Orthodontics only. Its data comes
+          // from greyfinch-sync, which serves only that practice's staff. The fake demo-ortho
+          // practice gets it in the local dev server only (never in a built/published app).
+          preConsult: ['miller-ortho', ...(import.meta.env.DEV ? ['demo-ortho'] : [])],
         };
         // The "Try Demo" button on the sign-in page. Off until the demo has its own fake
         // patients loaded (Dr. Miller, 2026-10-01); set to true to bring the button back.
@@ -58,6 +62,7 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
         const USE_COGNITO = import.meta.env.VITE_AUTH_PROVIDER === 'cognito';
         const cognitoAuth = USE_COGNITO ? import('./cognitoAuth.js') : null;
         const CognitoLogin = USE_COGNITO ? lazy(() => import('./CognitoLogin.jsx')) : null;
+        const PreConsult = lazy(() => import('./PreConsult.jsx'));
         const supabase = (SUPABASE_URL.startsWith('http'))
           ? createClient(SUPABASE_URL, SUPABASE_ANON, USE_COGNITO
               // Data calls carry the Cognito access token; supabase.auth is unused in this mode.
@@ -1956,6 +1961,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // buttons show. Consultants and location owners read only.
   const myRole = currentUser?.role;
   const isViewOnly = !!currentUser?.locationScope || myRole === 'consultant';
+  // Pre Consult: practice staff (not location owners) of a practice with the feature, and
+  // not while the platform owner is viewing another practice.
+  const showPreConsult = hasFeature('preConsult', currentUser?.practiceId) && !currentUser?.locationScope
+    && !managedPracticeId && currentUser?.id !== 'demo';
   const canDeletePatients = !isViewOnly && (myRole === 'admin' || (myRole === 'manager' && practicePerms.manager_delete_patients));
   const canEditSetup = !isViewOnly && (myRole === 'admin' || (myRole === 'manager' && practicePerms.manager_edit_goals_settings));
   // Practice Metrics: TCs and Office Managers only when their practice's admin allows it, and then
@@ -4124,12 +4133,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             // A consultant reads every number of one practice and changes nothing: no
             // data-entry tabs, and Settings is their account panel only.
             : currentUser?.role === 'consultant'
-            ? ['dashboard', 'patients', ...(bonusesEnabled ? ['bonus'] : []), 'ontime', 'metrics', 'settings']
+            ? ['dashboard', ...(showPreConsult ? ['preconsult'] : []), 'patients', ...(bonusesEnabled ? ['bonus'] : []), 'ontime', 'metrics', 'settings']
             : currentUser?.role === 'tc'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', ...(seesMetrics ? ['metrics'] : []), 'settings']
+            ? ['dashboard', ...(showPreConsult ? ['preconsult'] : []), 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && currentUser?.bonusEnabled ? ['bonus'] : []), 'ontime', 'today', ...(seesMetrics ? ['metrics'] : []), 'settings']
             : currentUser?.role === 'manager'
-            ? ['dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && (currentUser?.bonusEnabled || seesAllBonuses) ? ['bonus'] : []), 'ontime', 'today', ...(seesMetrics ? ['metrics'] : []), 'settings']
-            : [...(showGetStarted ? ['getstarted'] : []), 'dashboard', 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled ? ['bonus'] : []), 'ontime', 'today', 'metrics', 'settings',
+            ? ['dashboard', ...(showPreConsult ? ['preconsult'] : []), 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled && (currentUser?.bonusEnabled || seesAllBonuses) ? ['bonus'] : []), 'ontime', 'today', ...(seesMetrics ? ['metrics'] : []), 'settings']
+            : [...(showGetStarted ? ['getstarted'] : []), 'dashboard', ...(showPreConsult ? ['preconsult'] : []), 'followup', 'add', 'patients', ...(medicaidEnabled ? ['medicaid'] : []), ...(bonusesEnabled ? ['bonus'] : []), 'ontime', 'today', 'metrics', 'settings',
                 ...(currentUser?.id === 'demo' ? ['benchmarks'] : [])]
           ).map(view => (
             <button
@@ -4154,6 +4163,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             >
               {view === 'getstarted' && `🚀 Get Started (${setupDoneCount}/${setupStepCount})`}
               {view === 'dashboard' && '📊 Dashboard'}
+              {view === 'preconsult' && '🗓️ Pre Consult'}
               {view === 'followup' && '🔔 Follow-Up Queue'}
               {view === 'add' && '➕ Add NPE'}
               {view === 'patients' && '👥 All Patients'}
@@ -10269,6 +10279,21 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         })()}
 
         {/* TODAY'S ACTIVITY */}
+        {currentView === 'preconsult' && showPreConsult && (
+          <div style={{maxWidth:'1400px',margin:'0 auto',padding:'16px'}}>
+            <Suspense fallback={<div style={{padding:'24px',color:'#6b7280'}}>Loading Pre Consult…</div>}>
+              <PreConsult
+                supabase={supabase}
+                callGreyfinch={callGreyfinch}
+                practiceId={currentUser.practiceId}
+                canEdit={!isViewOnly}
+                canSpotCheck={!isViewOnly && (myRole === 'admin' || myRole === 'manager')}
+                myName={currentUser?.name}
+              />
+            </Suspense>
+          </div>
+        )}
+
         {currentView === 'today' && (currentUser?.role === 'admin' || currentUser?.role === 'tc' || currentUser?.role === 'manager') && (() => {
           const isTC = currentUser?.role === 'tc';
           const myTCName = currentUser?.name || '';
