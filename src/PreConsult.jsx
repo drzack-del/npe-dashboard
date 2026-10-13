@@ -8,7 +8,7 @@
 // ones checked by the written cases in src/preconsult/*.test.mjs.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as FD from './preconsult/status.mjs';
-import { replay, stateOf, rowsFromPull } from './preconsult/state.mjs';
+import { replay, stateOf, rowsFromPull, isStale, AUTO_REFRESH_MS } from './preconsult/state.mjs';
 
 const CARRIERS = ['Delta Dental', 'Cigna', 'MetLife', 'Aetna', 'Guardian', 'United Concordia', 'UnitedHealthcare', 'Humana', 'Blue Cross / Florida Blue', 'Ameritas', 'Principal', 'Lincoln Financial', 'Sun Life', 'GEHA', 'Tricare', 'Liberty Dental', 'DentaQuest', 'MCNA', 'Sunshine Health', 'Simply Healthcare', 'Staywell / WellCare', 'Molina', 'Florida Healthy Kids', 'Medicaid', 'Other'];
 const COLS = [['bv', 'BV'], ['medical', 'Health hx'], ['welcome', 'Welcome call'], ['cardFront', 'Ins card front'], ['cardBack', 'Ins card back']];
@@ -82,6 +82,8 @@ export default function PreConsult({ supabase, callGreyfinch, practiceId, canEdi
   const [auditOpen, setAuditOpen] = useState(null);
   const [today, setToday] = useState(nyToday());
   const pending = useRef(0);
+  const pulling = useRef(false);
+  const lastPulledAt = useRef(null);
 
   // ── Load ────────────────────────────────────────────────────────────────────
   const loadEvents = useCallback(async () => {
@@ -100,11 +102,14 @@ export default function PreConsult({ supabase, callGreyfinch, practiceId, canEdi
   }, [supabase, practiceId]);
 
   const loadPull = useCallback(async () => {
+    if (pulling.current) return;   // one pull at a time
+    pulling.current = true;
     setLoading(true);
     setPullError('');
     try {
       const r = await callGreyfinch({ mode: 'preconsult' });
       setPull(r);
+      lastPulledAt.current = r?.pulledAt || new Date().toISOString();
       setToday(nyToday());
     } catch (e) {
       setPullError(/not connected/i.test(e.message)
@@ -113,17 +118,30 @@ export default function PreConsult({ supabase, callGreyfinch, practiceId, canEdi
           ? 'Pre Consult is available to practice staff only.'
           : 'Could not reach your practice software. Try Refresh in a minute.');
     } finally {
+      pulling.current = false;
       setLoading(false);
     }
   }, [callGreyfinch]);
 
   useEffect(() => { loadPull(); loadEvents(); }, [loadPull, loadEvents]);
+  // Teammates' checkmarks every minute; practice-software data every 10 minutes; both
+  // when someone comes back to the window (the data only if it's over 5 minutes old).
   useEffect(() => {
-    const t = setInterval(loadEvents, POLL_MS);
-    const onFocus = () => loadEvents();
-    window.addEventListener('focus', onFocus);
-    return () => { clearInterval(t); window.removeEventListener('focus', onFocus); };
-  }, [loadEvents]);
+    const ev = setInterval(loadEvents, POLL_MS);
+    const gf = setInterval(loadPull, AUTO_REFRESH_MS);
+    const onReturn = () => {
+      if (document.visibilityState === 'hidden') return;
+      loadEvents();
+      if (isStale(lastPulledAt.current)) loadPull();
+    };
+    window.addEventListener('focus', onReturn);
+    document.addEventListener('visibilitychange', onReturn);
+    return () => {
+      clearInterval(ev); clearInterval(gf);
+      window.removeEventListener('focus', onReturn);
+      document.removeEventListener('visibilitychange', onReturn);
+    };
+  }, [loadEvents, loadPull]);
 
   // ── Rows and state ──────────────────────────────────────────────────────────
   const rows = useMemo(() => rowsFromPull(pull, today), [pull, today]);

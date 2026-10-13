@@ -2,7 +2,7 @@
 //   node --test src/preconsult/state.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { replay, stateOf, rowsFromPull } from './state.mjs';
+import { replay, stateOf, rowsFromPull, isStale, AUTO_REFRESH_MS, STALE_ON_RETURN_MS } from './state.mjs';
 import * as FD from './status.mjs';
 
 const ev = (patient_key, action, item = null, value = null, by_name = 'Jess', t = 0) =>
@@ -75,4 +75,14 @@ test('rows from a broken or empty answer: nothing, no crash', () => {
   assert.deepEqual(rowsFromPull(null, '2026-10-14'), []);
   assert.deepEqual(rowsFromPull({ error: 'x' }, '2026-10-14'), []);
   assert.deepEqual(rowsFromPull({ bookings: [{ patientId: 'gone', appointmentId: 'a', date: '2026-10-20', state: 'SCHEDULED' }], patients: {} }, '2026-10-14'), []);
+});
+
+test('refresh timing: every 10 minutes; on return only if older than 5 minutes', () => {
+  assert.equal(AUTO_REFRESH_MS, 600000);
+  assert.equal(STALE_ON_RETURN_MS, 300000);
+  const now = Date.parse('2026-10-13T15:00:00Z');
+  assert.equal(isStale('2026-10-13T14:57:00Z', now), false, '3 minutes old: no re-check on return');
+  assert.equal(isStale('2026-10-13T14:54:00Z', now), true, '6 minutes old: re-check on return');
+  assert.equal(isStale(undefined, now), true, 'never pulled: re-check');
+  assert.equal(isStale('garbage', now), true);
 });

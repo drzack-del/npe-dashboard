@@ -52,3 +52,13 @@ export function rowsFromPull(pull, today) {
     return makeRow(base, p, responsible, ids, today);
   }).filter(Boolean);
 }
+
+// How fresh the practice-software data must be. While the tab is open it re-checks every
+// 10 minutes (Dr. Miller, 2026-10-13), and right away when someone comes back to the
+// window if the last pull is more than 5 minutes old.
+export const AUTO_REFRESH_MS = 10 * 60 * 1000;
+export const STALE_ON_RETURN_MS = 5 * 60 * 1000;
+export const isStale = (pulledAt, now = Date.now(), limit = STALE_ON_RETURN_MS) => {
+  const t = Date.parse(pulledAt || '');
+  return isNaN(t) || now - t > limit;
+};
