@@ -3326,15 +3326,20 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     };
   };
 
-  const handleMarkStarted = (patient) => {
-    // A start is dated by the day the down payment was paid, not the bond date and
-    // not the NPE date. Clicking Mark Started means the DP came in, so default to
-    // today; when the exact day could move the start between months or bonus
-    // campaigns (dpDateWindow), leave it blank so staff must enter the real date.
-    // Defaulting SCH patients to their bond date pushed Aiden Bridgers into September.
+  const handleMarkStarted = (patient, { atBondCheckIn = false } = {}) => {
+    // A start is dated by the day the down payment was paid, not the NPE date.
+    // Clicking Mark Started means the DP came in, so default to today; when the exact
+    // day could move the start between months or bonus campaigns (dpDateWindow), leave
+    // it blank so staff must enter the real date (Aiden Bridgers paid 8/25, bonded 9/10).
+    // From the bond check-in — which shows the day AFTER the bond (Monday for a Friday
+    // bond) — default to the bond date instead: a scheduled patient hasn't paid, so the
+    // DP comes in at the bond (Dr. Miller, 2026-10-14).
     const dpAsk = dpDateWindow(patient);
+    const today = localToday();
+    const bondDay = atBondCheckIn && patient.bondDate && patient.bondDate <= today ? patient.bondDate : '';
     setStartedForm({
-      startDate: dpAsk ? '' : localToday(),
+      startDate: dpAsk ? '' : (bondDay || today),
+      fromBondDate: dpAsk ? '' : bondDay,
       dpAsk,
       dp: patient.dp || '',
       contractAmount: patient.contractAmount || '',
@@ -7229,7 +7234,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                         <div style={{display:'flex',gap:'12px',flexWrap:'wrap'}}>
                           <button
-                            onClick={() => handleMarkStarted(patient)}
+                            onClick={() => handleMarkStarted(patient, { atBondCheckIn: true })}
                             style={{padding:'12px 24px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'15px'}}
                           >
                             ✅ Yes — Mark as Started
@@ -10500,7 +10505,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           </div>
                           <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
                             <button
-                              onClick={() => handleMarkStarted(patient)}
+                              onClick={() => handleMarkStarted(patient, { atBondCheckIn: true })}
                               style={{padding:'8px 16px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'6px',fontWeight:'700',cursor:'pointer',fontSize:'13px'}}
                             >
                               ✅ Started — Enter Details
@@ -14556,6 +14561,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   value={startedForm.startDate}
                   onChange={e => setStartedForm({...startedForm, startDate: e.target.value})}
                   style={{width:'100%',padding:'8px',border:'2px solid ' + (!startedForm.startDate ? '#f59e0b' : startedForm.startDate === showStartedModal.npeDate ? '#2563EB' : '#d1d5db'),borderRadius:'4px'}} />
+                {startedForm.fromBondDate && startedForm.startDate === startedForm.fromBondDate && (
+                  <div style={{fontSize:'12px',color:'#6b7280',marginTop:'4px'}}>Filled in from the bond date — change it if the DP was paid on another day.</div>
+                )}
               </div>
               <div>
                 <label style={{display:'block',fontSize:'14px',fontWeight:'500',marginBottom:'4px'}}>Down Payment *</label>
