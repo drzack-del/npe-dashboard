@@ -2953,6 +2953,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (/Ready to start/.test(f.outcome || '')) return `OBS — ready to start treatment! `;
     return `OBS — observation follow-up. `;
   };
+  // Log entries that record a missed appointment rather than a call.
+  const RECAP_MISSED = ['Missed appointment', 'No-show'];
   // Fine-grained outcome of a Today's Activity entry: start | future | pending | notx | other.
   const recapDispoOf = (e) => {
     // Before 2026-10-14 a patient added as Scheduled with a DP amount was logged as a
@@ -2964,18 +2966,29 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (e.reachedPatient === "Waiting on Medicaid — didn't call") return 'other';
     return 'pending';
   };
+  // An entry about an observation patient. New entries carry obs:true; older ones are
+  // recognised by their OBS-only fields and wording, or the patient still being OBS.
+  const isObsRecapEntry = (e) => !!(e.obs || e.patientOBS || e.obsRetry != null
+    || e.reachedPatient === 'Attended OBS appointment' || /\bOBS\b/.test(`${e.outcome || ''} ${e.recap || ''}`));
   // Place an entry into a top-level End-of-Day section (+ optional subcategory).
   // The key split: was this a consult TODAY (npeDate === the day being viewed), or
   // activity on someone who was already in the pipeline from a prior day? Fresh
   // consults (with their started / pending / future subcategories) are kept separate
   // from pending-list follow-ups and from prior-list patients who started today.
+  // Missed bonds and OBS no-shows get their own section (an alert, not a response —
+  // a missed-bond patient is listed there only, not also on the pending list), and
+  // observation patients are kept off the pending list (Dr. Miller, 2026-10-14).
   const recapSectionOf = (e, todayUTC) => {
     const dispo = recapDispoOf(e);
     if (e.patientNpeDate === todayUTC) {
       return { section: 'consult', sub: ['start', 'pending', 'future', 'notx'].includes(dispo) ? dispo : 'other' };
     }
+    if (RECAP_MISSED.includes(e.reachedPatient)) return { section: 'missed', sub: null };
     if (dispo === 'start') return { section: e.startedFrom === 'scheduled' ? 'scheduled' : 'converted', sub: null };
-    if (dispo === 'other') return { section: 'misc', sub: null };
+    if (isObsRecapEntry(e)) return { section: 'obs', sub: null };
+    // Neither a moved bond for a scheduled patient nor a patient entered after their
+    // consult day is a pending-list follow-up.
+    if (dispo === 'other' || e.reachedPatient === 'Rescheduled' || e.reachedPatient === 'New patient added') return { section: 'misc', sub: null };
     return { section: 'followup', sub: null };
   };
   // Bucket entries by section (and subcategory) for both the on-screen report and the email.
@@ -3027,11 +3040,20 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     ] },
     { key: 'converted', label: '✅ Started from the Pending List' },
     { key: 'scheduled', label: '📅 Scheduled Bonds — Started Today' },
-    { key: 'followup',  label: '⏳ Pending List — Responded Today' },
+    { key: 'missed',    label: '❌ Missed Appointments' },
+    { key: 'followup',  label: '⏳ Pending List — Followed Up Today' },
+    { key: 'obs',       label: '👀 Observation Patients' },
     { key: 'misc',      label: '📋 Other Activity' },
   ];
   const escapeHtml = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const recapLineText = (e) => (e.recap || e.outcome || e.notes || '').trim();
+  // Lead with the call result so the consultant can tell a reached patient from a voicemail.
+  const RECAP_CALL_RESULT = { 'Spoke with patient': 'Reached', 'Left voicemail': 'Left voicemail', 'No answer': 'No answer' };
+  const recapLineText = (e) => {
+    const text = (e.recap || e.outcome || e.notes || '').trim();
+    const call = RECAP_CALL_RESULT[e.reachedPatient];
+    if (!call) return text;
+    return `${call}${e.sentText ? ' + text' : ''}${text ? ` — ${text}` : ''}`;
+  };
   // Next scheduled follow-up date for a pending entry, e.g. "Fri, 7/17". Blank for
   // non-pending entries or when no follow-up is scheduled (__MAX__ / empty).
   const recapNextTouch = (e) => {
@@ -3141,6 +3163,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         notes: contactForm.recap || '',
         recap: contactForm.recap || '',
         dispo: isObsScheduling ? 'other' : 'pending',
+        ...(p.OBS ? { obs: true } : {}),
         ...(isObsUnreached ? { obsRetry } : {}),
         logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
       };
@@ -3574,6 +3597,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const logEntry = {
       date: todayStr,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      obs: true,
       reachedPatient: 'Attended OBS appointment',
       outcome: overrideDate
         ? `Attended OBS appointment — not ready yet. Next re-check ${nextDate}.`
@@ -3603,6 +3627,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const logEntry = {
       date: todayStr,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      obs: true,
       reachedPatient: 'No-show',
       outcome: `No-show for OBS appointment on ${patient.obsApptDate} — returned to follow-up queue`,
       sentText: false,
@@ -3633,6 +3658,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const logEntry = {
       date: todayStr,
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      obs: true,
       reachedPatient: 'Rescheduled',
       outcome: `OBS appointment rescheduled from ${patient.obsApptDate} to ${newApptDate}`,
       sentText: false,
@@ -10329,6 +10355,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   patientTC: p.tc,
                   patientNpeDate: p.npeDate,
                   patientNextTouch: p.nextTouchDate,
+                  patientOBS: !!p.OBS,
                   startedToday: isStartedToday(p),
                 }));
               // If patient started today but has no log entry today, inject a synthetic start entry
@@ -10360,7 +10387,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           const orphanEntries = isTC ? [] : todayActivity.filter(e => !visibleTCNames.includes(e.logged_by || e.patientTC));
           const displayTCNames = orphanEntries.length > 0 ? [...visibleTCNames, 'Unassigned'] : visibleTCNames;
           const totalReached = todayActivity.filter(e => e.reachedPatient === 'Spoke with patient').length;
-          const totalContacts = todayActivity.filter(e => !e.isSyntheticStart && !e.noCount && e.reachedPatient !== "Waiting on Medicaid — didn't call").length;
+          const totalContacts = todayActivity.filter(e => !e.isSyntheticStart && !e.noCount && e.reachedPatient !== "Waiting on Medicaid — didn't call" && !RECAP_MISSED.includes(e.reachedPatient)).length;
           const getEntriesForTC = (tcName) =>
             (tcName === 'Unassigned'
               ? orphanEntries
@@ -10603,7 +10630,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               {/* Per-TC sections */}
               {hasAnyActivity && displayTCNames.map(tcName => {
                 const entries = getEntriesForTC(tcName);
-                const contactCount = entries.filter(e => !e.isSyntheticStart && !e.noCount && e.reachedPatient !== "Waiting on Medicaid — didn't call").length;
+                const contactCount = entries.filter(e => !e.isSyntheticStart && !e.noCount && e.reachedPatient !== "Waiting on Medicaid — didn't call" && !RECAP_MISSED.includes(e.reachedPatient)).length;
                 const startCount = entries.filter(e => e.startedToday).length;
                 return (
                   <div key={tcName} style={{backgroundColor:'white',borderRadius:'12px',boxShadow:'0 1px 4px rgba(0,0,0,0.08)',padding:'20px 24px',marginBottom:'16px'}}>
