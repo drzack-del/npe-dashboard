@@ -2978,13 +2978,18 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // Missed bonds and OBS no-shows get their own section (an alert, not a response —
   // a missed-bond patient is listed there only, not also on the pending list), and
   // observation patients are kept off the pending list (Dr. Miller, 2026-10-14).
+  // Every start of the day — same-day, scheduled bond, or from the pending list — sits
+  // together at the top of the report so none is missed (Dr. Miller, 2026-10-14).
   const recapSectionOf = (e, todayUTC) => {
     const dispo = recapDispoOf(e);
-    if (e.patientNpeDate === todayUTC) {
-      return { section: 'consult', sub: ['start', 'pending', 'future', 'notx'].includes(dispo) ? dispo : 'other' };
+    const consultDay = e.patientNpeDate === todayUTC;
+    if (!consultDay && RECAP_MISSED.includes(e.reachedPatient)) return { section: 'missed', sub: null };
+    if (dispo === 'start') {
+      return { section: 'started', sub: consultDay ? 'sameday' : e.startedFrom === 'scheduled' ? 'scheduled' : 'converted' };
     }
-    if (RECAP_MISSED.includes(e.reachedPatient)) return { section: 'missed', sub: null };
-    if (dispo === 'start') return { section: e.startedFrom === 'scheduled' ? 'scheduled' : 'converted', sub: null };
+    if (consultDay) {
+      return { section: 'consult', sub: ['pending', 'future', 'notx'].includes(dispo) ? dispo : 'other' };
+    }
     if (isObsRecapEntry(e)) return { section: 'obs', sub: null };
     // Neither a moved bond for a scheduled patient nor a patient entered after their
     // consult day is a pending-list follow-up.
@@ -2992,10 +2997,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     return { section: 'followup', sub: null };
   };
   // Bucket entries by section (and subcategory) for both the on-screen report and the email.
+  const recapPatientKey = (e) => e.patientId || e.patientName;
   const groupRecapEntries = (entries, todayUTC) => {
     const buckets = {};
+    // A consult patient who started later the same day is listed under Started only.
+    const startedToday = new Set(entries.filter(e => recapSectionOf(e, todayUTC).section === 'started').map(recapPatientKey));
     entries.forEach((e) => {
       const { section, sub } = recapSectionOf(e, todayUTC);
+      if (section === 'consult' && startedToday.has(recapPatientKey(e))) return;
       const b = buckets[section] || (buckets[section] = { list: [], subs: {} });
       b.list.push(e);
       if (sub) (b.subs[sub] = b.subs[sub] || []).push(e);
@@ -3027,19 +3036,22 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     </div>
   );
   // ── End-of-Day report builder + consultant email ─────────────────────
-  // End-of-Day report sections, in display order. "Today's Consults" holds every
-  // patient whose NPE was today, split into subcategories; prior-list activity is
-  // kept in its own sections so fresh consults aren't mixed with pending work.
+  // End-of-Day report sections, in display order. Every start leads the report;
+  // "Today's Consults" holds the rest of today's consults (its count includes the
+  // same-day starts listed above it); prior-list activity is kept in its own sections
+  // so fresh consults aren't mixed with pending work.
   const RECAP_SECTIONS = [
+    { key: 'started', label: '🎉 Started Today', subs: [
+      ['sameday',   'Same-day starts'],
+      ['scheduled', 'Scheduled bond'],
+      ['converted', 'From the pending list'],
+    ] },
     { key: 'consult', label: "🗓️ Today's Consults", subs: [
-      ['start',   '🎉 Started'],
       ['pending', '⏳ Dropped to Pending'],
       ['future',  '📅 Initial Bond Scheduled — no DP'],
       ['notx',    '🚫 No Treatment'],
       ['other',   '📋 Other'],
     ] },
-    { key: 'converted', label: '✅ Started from the Pending List' },
-    { key: 'scheduled', label: '📅 Scheduled Bonds — Started Today' },
     { key: 'missed',    label: '❌ Missed Appointments' },
     { key: 'followup',  label: '⏳ Pending List — Followed Up Today' },
     { key: 'obs',       label: '👀 Observation Patients' },
@@ -3048,11 +3060,44 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const escapeHtml = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   // Lead with the call result so the consultant can tell a reached patient from a voicemail.
   const RECAP_CALL_RESULT = { 'Spoke with patient': 'Reached', 'Left voicemail': 'Left voicemail', 'No answer': 'No answer' };
-  const recapLineText = (e) => {
+  // A start after the consult day leads with where it came from, so a scheduled bond or
+  // pending conversion can't be mistaken for a same-day start.
+  const recapLineText = (e, todayUTC) => {
     const text = (e.recap || e.outcome || e.notes || '').trim();
+    const sub = todayUTC ? recapSectionOf(e, todayUTC) : null;
+    if (sub && sub.section === 'started' && sub.sub !== 'sameday' && e.patientNpeDate) {
+      const started = e.patientStartDate || todayUTC;
+      const when = started === todayUTC ? 'today' : recapMdy(started);
+      const days = Math.round((new Date(started + 'T12:00:00') - new Date(e.patientNpeDate + 'T12:00:00')) / 86400000);
+      const lead = sub.sub === 'scheduled'
+        ? `consult ${recapMdy(e.patientNpeDate)}, bonded ${when}`
+        : `from pending — consult ${recapMdy(e.patientNpeDate)}, started ${when} (${days} days)`;
+      return text ? `${lead} — ${text}` : lead;
+    }
     const call = RECAP_CALL_RESULT[e.reachedPatient];
     if (!call) return text;
     return `${call}${e.sentText ? ' + text' : ''}${text ? ` — ${text}` : ''}`;
+  };
+  // Section heading text: [title, the part shown in parentheses].
+  const recapHeading = (sec, buckets) => {
+    const b = buckets[sec.key];
+    const n = (k, key = sec.key) => ((buckets[key] && buckets[key].subs[k]) || []).length;
+    if (sec.key === 'started') {
+      const parts = [
+        n('sameday') && `${n('sameday')} same-day`,
+        n('scheduled') && `${n('scheduled')} scheduled bond${n('scheduled') === 1 ? '' : 's'}`,
+        n('converted') && `${n('converted')} from pending`,
+      ].filter(Boolean);
+      return [`${sec.label}: ${b.list.length}`, parts.join(' · ')];
+    }
+    if (sec.key === 'consult') {
+      // Counted by patient — someone can have two entries on their consult day.
+      const people = (list) => new Set(list.map(recapPatientKey)).size;
+      const sameDay = people(((buckets.started && buckets.started.subs.sameday) || []));
+      const total = people(b.list) + sameDay;
+      return [sec.label, sameDay ? `${total} — ${sameDay} started, listed above` : `${total}`];
+    }
+    return [sec.label, `${b.list.length}`];
   };
   // Next scheduled follow-up date for a pending entry, e.g. "Fri, 7/17". Blank for
   // non-pending entries or when no follow-up is scheduled (__MAX__ / empty).
@@ -3071,14 +3116,15 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       const nt = recapNextTouch(e);
       const ntText = nt ? ` — next follow-up: ${nt}` : '';
       const ntHtml = nt ? ` <span style="color:#c2410c">— next follow-up: ${escapeHtml(nt)}</span>` : '';
-      textParts.push(`${indent}• ${e.patientName}: ${recapLineText(e)}${ntText}${tc ? `  (${tc})` : ''}`);
-      htmlParts.push(`<li style="margin:3px 0;font-size:14px;color:#333"><strong>${escapeHtml(e.patientName)}</strong>: ${escapeHtml(recapLineText(e))}${ntHtml}${tc ? ` <span style="color:#9ca3af">(${escapeHtml(tc)})</span>` : ''}</li>`);
+      textParts.push(`${indent}• ${e.patientName}: ${recapLineText(e, todayUTC)}${ntText}${tc ? `  (${tc})` : ''}`);
+      htmlParts.push(`<li style="margin:3px 0;font-size:14px;color:#333"><strong>${escapeHtml(e.patientName)}</strong>: ${escapeHtml(recapLineText(e, todayUTC))}${ntHtml}${tc ? ` <span style="color:#9ca3af">(${escapeHtml(tc)})</span>` : ''}</li>`);
     };
     RECAP_SECTIONS.forEach((sec) => {
       const b = buckets[sec.key];
       if (!b || !b.list.length) return;
-      textParts.push(`\n${sec.label} (${b.list.length})`);
-      htmlParts.push(`<h3 style="margin:18px 0 4px;font-size:15px;color:#111">${sec.label} (${b.list.length})</h3>`);
+      const [title, count] = recapHeading(sec, buckets);
+      textParts.push(`\n${title} (${count})`);
+      htmlParts.push(`<h3 style="margin:18px 0 4px;font-size:15px;color:#111">${escapeHtml(title)} (${escapeHtml(count)})</h3>`);
       if (sec.subs) {
         sec.subs.forEach(([subKey, subLabel]) => {
           const sl = b.subs[subKey];
@@ -10360,6 +10406,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   patientTC: p.tc,
                   patientNpeDate: p.npeDate,
                   patientNextTouch: p.nextTouchDate,
+                  patientStartDate: p.startDate || '',
                   patientOBS: !!p.OBS,
                   startedToday: isStartedToday(p),
                 }));
@@ -10378,6 +10425,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   patientId: p.id,
                   patientTC: p.tc,
                   patientNpeDate: p.npeDate,
+                  patientStartDate: p.startDate || '',
                   startedToday: true,
                   isSyntheticStart: true,
                   // Legacy/untagged starts: infer origin from whatever flags survive.
@@ -10567,7 +10615,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   const nt = recapNextTouch(e);
                   return (
                     <div key={i} style={{fontSize:'14px',color:'#374151',padding:'3px 0 3px 8px',borderLeft:'2px solid #f3f4f6'}}>
-                      <strong>{e.patientName}</strong>: {recapLineText(e) || <span style={{color:'#d1d5db',fontStyle:'italic'}}>no recap</span>}
+                      <strong>{e.patientName}</strong>: {recapLineText(e, todayUTC) || <span style={{color:'#d1d5db',fontStyle:'italic'}}>no recap</span>}
                       {nt && <span style={{color:'#c2410c',fontWeight:500}}> — next follow-up: {nt}</span>}
                       {(e.logged_by || e.patientTC) && <span style={{color:'#9ca3af',fontSize:'12px'}}> ({e.logged_by || e.patientTC})</span>}
                     </div>
@@ -10604,9 +10652,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     {RECAP_SECTIONS.map((sec) => {
                       const b = buckets[sec.key];
                       if (!b || !b.list.length) return null;
+                      const [title, count] = recapHeading(sec, buckets);
                       return (
                         <div key={sec.key} style={{marginBottom:'14px'}}>
-                          <div style={{fontSize:'13px',fontWeight:700,color:'#111827',marginBottom:'5px'}}>{sec.label} <span style={{color:'#9ca3af',fontWeight:500}}>({b.list.length})</span></div>
+                          <div style={{fontSize: sec.key === 'started' ? '15px' : '13px',fontWeight:700,color: sec.key === 'started' ? '#166534' : '#111827',marginBottom:'5px'}}>{title} <span style={{color:'#9ca3af',fontWeight:500}}>({count})</span></div>
                           {sec.subs
                             ? sec.subs.map(([subKey, subLabel]) => {
                                 const sl = b.subs[subKey];
