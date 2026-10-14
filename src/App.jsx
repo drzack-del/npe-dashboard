@@ -2919,8 +2919,6 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     return parts.length ? ` w/${parts.join(' + ')}` : '';
   };
   const recapMdy = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) : '';
-  // A down payment (> $0) means it's a Start, not a Future Start.
-  const recapHasDP = (v) => (parseFloat(String(v || '').replace(/[^0-9.]/g, '')) || 0) > 0;
   // dispo: 'start' | 'future' | 'pending' | 'notx' | 'contact'
   const composeRecapDraft = (dispo, o = {}) => {
     const dp = recapMoney(o.dp);
@@ -2932,7 +2930,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       return `${lbl}${add}${bond}${dp ? ` ${dp} down` : ''}`.trim();
     }
     if (dispo === 'future') {
-      return `Future start — scheduled ${recapMdy(o.bondDate) || '(date)'}${dp ? `, ${dp} down` : ''}. `;
+      // The DP on a scheduled patient is the amount agreed, not money collected.
+      return `Future start — scheduled ${recapMdy(o.bondDate) || '(date)'}${dp ? `, ${dp} DP due` : ''}. `;
     }
     if (dispo === 'pending') {
       return `Pending${o.obstacle ? ` — ${o.obstacle}` : ''}. `;
@@ -2956,6 +2955,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   };
   // Fine-grained outcome of a Today's Activity entry: start | future | pending | notx | other.
   const recapDispoOf = (e) => {
+    // Before 2026-10-14 a patient added as Scheduled with a DP amount was logged as a
+    // start. That amount is only what was agreed — a DP paid at the consult makes the
+    // patient an SDS — so those old entries are Future Starts.
+    if (e.outcome === 'New patient added — Scheduled start') return 'future';
     if (e.dispo) return e.dispo;
     if (e.startedToday || e.isSyntheticStart || e.reachedPatient === 'Started treatment') return 'start';
     if (e.reachedPatient === "Waiting on Medicaid — didn't call") return 'other';
@@ -3832,12 +3835,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const isSameDay = newPatientForm.status === 'SDS';
     const isST = newPatientForm.status === 'ST';
     // Seed a metric-neutral entry (noCount) so this add shows in the End-of-Day report.
-    // A scheduled patient WITH a down payment is a Start (money committed); only a
-    // scheduled patient with NO down payment is a Future Start.
-    const addHasDP = recapHasDP(newPatientForm.dp);
-    const addDispo = (isSameDay || isST) ? 'start' : isSCH ? (addHasDP ? 'start' : 'future') : isPending ? 'pending' : (newPatientForm.status === 'NOTX') ? 'notx' : 'other';
-    const schLabel = addHasDP ? 'Scheduled start' : 'Scheduled — future start';
-    const addStatusLabel = { SDS: 'Same-day start', ST: 'Start', SCH: schLabel, PEN: 'Pending', MP: 'Medicaid pending', OBS: 'Observation', NOTX: 'No treatment', DBRETS: 'DB / retainers' }[newPatientForm.status] || 'New patient';
+    // A scheduled patient is always a Future Start: the start date is the day the DP is
+    // paid, and a DP paid at the consult would make them an SDS. The DP amount entered
+    // for a scheduled patient is what was agreed, not money collected.
+    const addDispo = (isSameDay || isST) ? 'start' : isSCH ? 'future' : isPending ? 'pending' : (newPatientForm.status === 'NOTX') ? 'notx' : 'other';
+    const addStatusLabel = { SDS: 'Same-day start', ST: 'Start', SCH: 'Scheduled — future start', PEN: 'Pending', MP: 'Medicaid pending', OBS: 'Observation', NOTX: 'No treatment', DBRETS: 'DB / retainers' }[newPatientForm.status] || 'New patient';
     // The Add Patient form now has a single free-text box (Day Recap). Its text is the
     // patient's note AND the End-of-Day recap line. When add-ons were skipped, append the
     // TC's reason so it surfaces on the End-of-Day report too.
@@ -8502,7 +8504,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 (val) => setNewPatientForm({...newPatientForm, recap: val}),
                 composeRecapDraft(
                   ['SDS','ST'].includes(newPatientForm.status) ? 'start'
-                    : newPatientForm.status === 'SCH' ? (recapHasDP(newPatientForm.dp) ? 'start' : 'future')
+                    : newPatientForm.status === 'SCH' ? 'future'
                     : ['PEN','MP'].includes(newPatientForm.status) ? 'pending'
                     : newPatientForm.status === 'NOTX' ? 'notx' : 'contact',
                   {
