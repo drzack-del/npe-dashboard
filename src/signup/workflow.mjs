@@ -27,14 +27,27 @@ export const MAX_LOCATIONS = 3;
 export const planFor = foundationTaken => foundationTaken < FOUNDATION_SPOTS ? PLANS.foundation : PLANS.standard;
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// US practices give a ZIP; Canadian practices a postal code (A1A 1A1) and a province code.
+const usZip = /^\d{5}(?:-\d{4})?$/;
+const caPostal = /^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z] ?\d[ABCEGHJ-NPRSTV-Z]\d$/i;
+const CA_PROVINCES = ['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'];
+// "m5v3l9" -> "M5V 3L9"; ZIP codes are left as typed.
+export const normalizePostalCode = raw => {
+  const v = String(raw || '').trim();
+  return caPostal.test(v) ? v.toUpperCase().replace(/\s+/g, '').replace(/^(...)/, '$1 ') : v;
+};
 export const practiceDetailErrors = (details = {}) => {
   const value = key => String(details[key] || '').trim();
   const errors = {};
   if (value('legalName').length < 2) errors.legalName = 'Enter the complete legal practice name.';
   if (value('officeAddress').length < 5) errors.officeAddress = 'Enter the practice street address.';
   if (value('city').length < 2) errors.city = 'Enter the city.';
-  if (!/^[A-Za-z]{2}$/.test(value('state'))) errors.state = 'Use the two-letter state code, such as FL.';
-  if (!/^\d{5}(?:-\d{4})?$/.test(value('postalCode'))) errors.postalCode = 'Enter a 5-digit ZIP code or ZIP+4.';
+  const state = value('state').toUpperCase(), postal = value('postalCode');
+  const canadian = caPostal.test(postal);
+  if (!/^[A-Z]{2}$/.test(state)) errors.state = 'Use the two-letter state or province code, such as FL or ON.';
+  else if (canadian && !CA_PROVINCES.includes(state)) errors.state = 'Use the two-letter province code, such as ON or BC.';
+  if (!usZip.test(postal) && !canadian) errors.postalCode = 'Enter a 5-digit ZIP code, or a Canadian postal code such as M5V 3L9.';
+  else if (!canadian && CA_PROVINCES.includes(state)) errors.postalCode = 'Enter the Canadian postal code, such as M5V 3L9.';
   if (value('signerName').split(/\s+/).length < 2) errors.signerName = 'Enter the authorized signer’s first and last name.';
   if (value('signerTitle').length < 2) errors.signerTitle = 'Enter the signer’s title.';
   if (!emailPattern.test(value('signerEmail'))) errors.signerEmail = 'Enter a valid signer email address.';

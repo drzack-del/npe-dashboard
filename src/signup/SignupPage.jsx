@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { documentPackage, printablePackage } from './documents.mjs';
-import { chargeSummary, money, practiceDetailErrors, signupProgress, stageLabel } from './workflow.mjs';
+import { chargeSummary, money, normalizePostalCode, practiceDetailErrors, signupProgress, stageLabel } from './workflow.mjs';
 import { fakeBackend } from './fakeBackend.mjs';
 import { apiBackend } from './apiBackend.mjs';
 
@@ -64,7 +64,7 @@ export default function SignupPage() {
   };
 
   const saveDetails = () => {
-    const details = { ...form, locations: (form.locations || []).map(x => x.trim()).filter(Boolean) };
+    const details = { ...form, postalCode: normalizePostalCode(form.postalCode), locations: (form.locations || []).map(x => x.trim()).filter(Boolean) };
     setForm(details);
     const errors = practiceDetailErrors(details);
     setFieldErrors(errors);
@@ -157,7 +157,7 @@ export default function SignupPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 14 }}>
           {[
             ['legalName', 'Legal practice name *'], ['dba', 'Public name (DBA)'],
-            ['officeAddress', 'Street address *'], ['city', 'City *'], ['state', 'State *'], ['postalCode', 'ZIP code *'],
+            ['officeAddress', 'Street address *'], ['city', 'City *'], ['state', 'State / province *'], ['postalCode', 'ZIP / postal code *'],
             ['signerName', 'Authorized signer *'], ['signerTitle', 'Signer title *'],
             ['signerEmail', 'Signer email *', 'email'], ['billingEmail', 'Billing email *', 'email'],
           ].map(([name, label, type]) => <Field key={name} name={name} label={label} type={type} error={fieldErrors[name]} value={form[name]}
