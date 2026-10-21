@@ -148,6 +148,42 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
           const last = log[log.length - 1];
           return last && OBS_UNREACHED.includes(last.reachedPatient) ? (last.obsRetry || 0) : 0;
         };
+        // Patient was reached but couldn't book a new OBS date on the call: stays on the
+        // scheduling-call list with a call back (2 days unless the TC picks a date).
+        const OBS_RESCHEDULE_OUTCOME = 'Wants to reschedule OBS appointment';
+        const OBS_RESCHEDULE_CALLBACK_DAYS = 2;
+        // An OBS date that was given up: no-show, check-in reschedule, a reschedule request,
+        // or a changed anticipated date. New entries carry obsDateFrom / obsDateTo ('' = not
+        // booked yet); older reschedules and no-shows only have the dates in their wording.
+        const obsMoveOf = (e) => {
+          if (e.obsDateFrom) return { from: e.obsDateFrom, to: e.obsDateTo || '' };
+          const r = /rescheduled from (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})/.exec(e.outcome || '');
+          if (r) return r[1] === r[2] ? null : { from: r[1], to: r[2] };
+          const n = /^No-show for OBS appointment on (\d{4}-\d{2}-\d{2})/.exec(e.outcome || '');
+          return n ? { from: n[1], to: '' } : null;
+        };
+        // Moves in the current observation round — an attended OBS visit starts a new round
+        const obsMovesThisRound = (p) => {
+          const log = p.contact_log || [];
+          let start = 0;
+          for (let i = log.length - 1; i >= 0; i--) {
+            if (log[i].reachedPatient === 'Attended OBS appointment') { start = i + 1; break; }
+          }
+          return log.slice(start).map(obsMoveOf).filter(Boolean);
+        };
+        // What the OBS card says about the date: booked, missed, asked to reschedule,
+        // anticipated, or none — plus the first date of the round and how many dates moved.
+        const obsDateStatus = (p) => {
+          const moves = obsMovesThisRound(p);
+          const moved = [...new Set(moves.map(m => m.from))];
+          const base = { original: moved[0] || '', movedCount: moved.length };
+          const lastCall = (p.contact_log || []).filter(l => !OBS_UNREACHED.includes(l.reachedPatient)).slice(-1)[0];
+          if (p.obsApptDate) return { ...base, kind: 'appt', date: p.obsApptDate };
+          if (lastCall?.outcome === OBS_RESCHEDULE_OUTCOME) return { ...base, kind: 'requested', requestedOn: lastCall.date };
+          if (lastCall?.reachedPatient === 'No-show') return { ...base, kind: 'missed', date: obsMoveOf(lastCall)?.from || p.obsAnticipatedDate };
+          if (p.obsAnticipatedDate) return { ...base, kind: 'anticipated', date: p.obsAnticipatedDate };
+          return { ...base, kind: 'none' };
+        };
         // `obstacle` (patient.obstacle / DB column `obstacle`) is historical reporting data —
         // it feeds the Conversion Breakdown "by obstacle" KPI (see showConvBreakdown below) and
         // must survive PEN -> SCH -> ST transitions. Never reset it to '' as part of a workflow
@@ -2954,12 +2990,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     if (OBS_UNREACHED.includes(f.reachedPatient)) {
       if (p.obsApptDate) return `Call about the ${recapMdy(p.obsApptDate)} OBS appt. `;
       const lastCall = (p.contact_log || []).filter(l => !OBS_UNREACHED.includes(l.reachedPatient)).slice(-1)[0];
-      const aim = lastCall?.reachedPatient === 'No-show' && p.obsAnticipatedDate ? `to rebook missed ${recapMdy(p.obsAnticipatedDate)} appt`
+      const aim = lastCall?.outcome === OBS_RESCHEDULE_OUTCOME ? 'to book their new date'
+        : lastCall?.reachedPatient === 'No-show' && p.obsAnticipatedDate ? `to rebook missed ${recapMdy(p.obsAnticipatedDate)} appt`
         : p.obsAnticipatedDate ? `target ~${recapMdy(p.obsAnticipatedDate)}` : 'no target date yet';
       return `Booking call #${obsMissedCalls(p) + 1} — ${aim}. `;
     }
     if (f.reachedPatient !== 'Spoke with patient') return '';
     if (f.outcome === 'OBS is now scheduled!') return `OBS appt scheduled ${recapMdy(f.obsApptDate) || '(date)'}. `;
+    if (f.outcome === OBS_RESCHEDULE_OUTCOME) {
+      const back = f.nextTouchDate ? skipWeekend(f.nextTouchDate) : addDays(localToday(), OBS_RESCHEDULE_CALLBACK_DAYS);
+      return `Wants to reschedule${p.obsAnticipatedDate ? ` (was ${recapMdy(p.obsAnticipatedDate)})` : ''} — call back ${recapMdy(back)}. `;
+    }
     if (f.outcome === 'Still on track — update anticipated date') {
       if (f.obsAnticipatedDate && f.obsAnticipatedDate !== p.obsAnticipatedDate) return `Still observing — new target ~${recapMdy(f.obsAnticipatedDate)}. `;
       return `Still observing${p.obsAnticipatedDate ? ` — target ~${recapMdy(p.obsAnticipatedDate)}` : ''}. `;
@@ -3018,6 +3059,30 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   });
   // The note a form saves: the suggestion, unless the TC has typed their own
   const recapToSave = (form, draft) => (form.recapEdited ? (form.recap || '') : (draft || '')).trim();
+  // OBS cards: the date the observation visit is booked for / anticipated at, and — when it
+  // has moved this round — the original date and how many dates have been given up.
+  const renderObsDateLine = (p) => {
+    const s = obsDateStatus(p);
+    const long = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    const short = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const text = s.kind === 'appt' ? <>Appointment <strong>{long(s.date)}</strong></>
+      : s.kind === 'missed' ? <>Missed appointment <strong>{short(s.date)}</strong> — call to rebook</>
+      : s.kind === 'requested' ? <>New date <strong>not booked yet</strong> — patient asked to reschedule on {recapMdy(s.requestedOn)}</>
+      : s.kind === 'anticipated' ? <>Anticipated around <strong>{short(s.date)}</strong></>
+      : <>No OBS date set yet</>;
+    // A single no-show is already said by "Missed appointment" — no need to repeat it
+    const showMoved = s.movedCount > 0 && !(s.kind === 'missed' && s.movedCount === 1);
+    return (
+      <div style={{fontSize:'14px',color:'#166534',marginTop:'4px',fontWeight:'500'}}>
+        🗓️ OBS date: {text}
+        {showMoved && (
+          <span style={{marginLeft:'8px',padding:'2px 8px',backgroundColor:'#fef3c7',color:'#92400e',border:'1px solid #fcd34d',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}}>
+            ↪ Originally {short(s.original)} · moved {s.movedCount}×
+          </span>
+        )}
+      </div>
+    );
+  };
   // Log entries that record a missed appointment rather than a call.
   const RECAP_MISSED = ['Missed appointment', 'No-show'];
   // Fine-grained outcome of a Today's Activity entry: start | future | pending | notx | other.
@@ -3271,6 +3336,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       const isObsAnticipatedUpdate = p.OBS && !p.obsApptDate && contactForm.outcome === 'Still on track — update anticipated date';
       const isObsUnreached = p.OBS && !p.obsApptDate && OBS_UNREACHED.includes(contactForm.reachedPatient);
       const obsRetry = isObsUnreached ? obsMissedCalls(p) + 1 : 0;
+      const isObsRescheduleRequest = p.OBS && !p.obsApptDate && contactForm.reachedPatient === 'Spoke with patient' && contactForm.outcome === OBS_RESCHEDULE_OUTCOME;
+      // The OBS date this call gives up (shown on the card as "originally …")
+      const obsMove = isObsRescheduleRequest && p.obsAnticipatedDate ? { obsDateFrom: p.obsAnticipatedDate, obsDateTo: '' }
+        : isObsAnticipatedUpdate && p.obsAnticipatedDate && contactForm.obsAnticipatedDate && contactForm.obsAnticipatedDate !== p.obsAnticipatedDate
+          ? { obsDateFrom: p.obsAnticipatedDate, obsDateTo: contactForm.obsAnticipatedDate }
+        : null;
       const newAttempts = (p.OBS || isSkipMedicaid) ? p.contactAttempts : p.contactAttempts + 1;
       const logEntry = {
         date: todayStr,
@@ -3284,6 +3355,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         dispo: isObsScheduling ? 'other' : 'pending',
         ...(p.OBS ? { obs: true } : {}),
         ...(isObsUnreached ? { obsRetry } : {}),
+        ...(obsMove || {}),
         logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
       };
       const updatedObstacle = (contactForm.obstacle || p.obstacle) || (p.MP ? 'Waiting to Hear from Medicaid' : '');
@@ -3298,6 +3370,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       } else if (isObsUnreached) {
         // Couldn't reach an OBS patient to book — short retries, not the 4-month recall
         nextDate = addDays(todayStr, OBS_NO_REACH_DAYS[obsRetry - 1] || OBS_NO_REACH_REPEAT);
+      } else if (isObsRescheduleRequest) {
+        // Reached but no new date booked — call back soon to book it (a picked date wins below)
+        nextDate = addDays(todayStr, OBS_RESCHEDULE_CALLBACK_DAYS);
       } else if (isObsAnticipatedUpdate && contactForm.obsAnticipatedDate) {
         // TC updated the anticipated date — recalculate the pre-booking call
         newObsAnticipatedDate = contactForm.obsAnticipatedDate;
@@ -3750,6 +3825,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       obs: true,
       reachedPatient: 'No-show',
       outcome: `No-show for OBS appointment on ${patient.obsApptDate} — returned to follow-up queue`,
+      ...(patient.obsApptDate ? { obsDateFrom: patient.obsApptDate, obsDateTo: '' } : {}),
       sentText: false,
       notes,
       logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
@@ -3781,6 +3857,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       obs: true,
       reachedPatient: 'Rescheduled',
       outcome: `OBS appointment rescheduled from ${patient.obsApptDate} to ${newApptDate}`,
+      ...(patient.obsApptDate && patient.obsApptDate !== newApptDate ? { obsDateFrom: patient.obsApptDate, obsDateTo: newApptDate } : {}),
       sentText: false,
       notes,
       logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
@@ -7219,9 +7296,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           <div style={{fontSize:'14px',color:'#6b7280'}}>
                             📅 NPE: {new Date(patient.npeDate + 'T12:00:00').toLocaleDateString()} • 📍 {patient.location} • 👤 {patient.tc}
                           </div>
-                          <div style={{fontSize:'14px',color:'#166534',marginTop:'4px',fontWeight:'500'}}>
-                            🔄 OBS appointment was scheduled for: <strong>{new Date(patient.obsApptDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</strong>
-                          </div>
+                          {renderObsDateLine(patient)}
                         </div>
                         <p style={{fontSize:'14px',color:'#374151',marginBottom:'12px',fontStyle:'italic'}}>Did the patient attend their observation appointment?</p>
                         <div style={{marginBottom:'12px'}}>
@@ -7447,11 +7522,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         )}
                         {/* Status badge */}
                         {patient.OBS && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#f0fdf4',color:'#166534',borderRadius:'4px',fontWeight:'600'}}>
-                          {patient.obsApptDate
-                            ? `OBS — Appt ${new Date(patient.obsApptDate+'T12:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}`
-                            : patient.obsAnticipatedDate
-                              ? `OBS — Book call for ${new Date(patient.obsAnticipatedDate+'T12:00:00').toLocaleDateString('en-US',{month:'numeric',year:'2-digit'})}`
-                              : `OBS — Pending schedule`}
+                          {/* The date itself is on the "OBS date" line below */}
+                          {patient.obsApptDate ? 'OBS — Appointment booked' : 'OBS — Scheduling call'}
                         </span>}
                         {medicaidEnabled && patient.MP && <span style={{fontSize:'11px',padding:'2px 8px',backgroundColor:'#fef3c7',color:'#92400e',borderRadius:'4px',fontWeight:'600'}}>MEDICAID PENDING</span>}
                         {!patient.MP && patient.insuranceWorkflow?.decisionResult === 'denied' && (
@@ -7472,6 +7544,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       <div style={{fontSize:'13px',color:'#6b7280',marginBottom:'2px'}}>
                         📅 NPE: {npeDateSafe ? new Date(npeDateSafe + 'T12:00:00').toLocaleDateString() : '—'} • 📍 {patient.location} • 👤 {patient.tc}
                       </div>
+                      {patient.OBS && renderObsDateLine(patient)}
                       {patient.obstacle && (
                         <div style={{fontSize:'13px',color:'#dc2626',fontWeight:'600',marginBottom:'2px'}}>🚧 Obstacle: {patient.obstacle}</div>
                       )}
@@ -7480,10 +7553,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       )}
                       <div style={{fontSize:'13px',color:'#6b7280',marginTop:'2px'}}>
                         {patient.OBS
-                          ? (patient.contact_log || []).filter(l => !OBS_UNREACHED.includes(l.reachedPatient)).slice(-1)[0]?.reachedPatient === 'No-show'
+                          ? obsDateStatus(patient).kind === 'missed'
                             ? '⚠️ Missed OBS appointment — call to reschedule'
+                            : obsDateStatus(patient).kind === 'requested'
+                            ? '📞 Patient wants to reschedule — call to book the new date'
                             : patient.obsAnticipatedDate
-                            ? `📞 Call to book OBS appointment — anticipated: ${new Date(patient.obsAnticipatedDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
+                            ? '📞 Call to book OBS appointment'
                             : '🔄 Observation — call to discuss scheduling'
                           : patient.MP
                           ? (patient.contactAttempts > 0
@@ -7627,6 +7702,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                                 {[
                                   'Still on track — update anticipated date',
                                   'OBS is now scheduled!',
+                                  OBS_RESCHEDULE_OUTCOME,
                                   'Ready to start treatment! 🎉'
                                 ].map(option => (
                                   <label key={option} style={{display:'block',marginBottom:'4px',cursor:'pointer'}}>
@@ -7842,7 +7918,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       {(!patient.OBS || (!patient.obsApptDate && contactForm.outcome !== 'OBS is now scheduled!' && contactForm.outcome !== 'Ready to start treatment! 🎉')) && contactForm.scheduleType !== 'no_dp' && (
                         <div style={{marginBottom:'12px'}}>
                           <label style={{fontSize:'13px',fontWeight:'500',display:'block',marginBottom:'4px'}}>
-                            Next Touch Date <span style={{color:'#6b7280',fontWeight:'400'}}>(optional — leave blank to auto-calculate)</span>
+                            {patient.OBS && contactForm.outcome === OBS_RESCHEDULE_OUTCOME
+                              ? <>Call back on <span style={{color:'#6b7280',fontWeight:'400'}}>(optional — leave blank for {OBS_RESCHEDULE_CALLBACK_DAYS} days from today)</span></>
+                              : <>Next Touch Date <span style={{color:'#6b7280',fontWeight:'400'}}>(optional — leave blank to auto-calculate)</span></>}
                           </label>
                           <input
                             type="date"
@@ -7885,6 +7963,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           const n = obsMissedCalls(patient) + 1;
                           const nd = addDays(localToday(), OBS_NO_REACH_DAYS[n - 1] || OBS_NO_REACH_REPEAT);
                           return <div style={{marginBottom:'12px',padding:'8px 12px',backgroundColor:'#fff7ed',borderRadius:'6px',fontSize:'12px',color:'#9a3412',fontWeight:'500'}}>📞 Unanswered call #{n} — saving will schedule the next try for {new Date(nd+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}</div>;
+                        }
+                        if (contactForm.reachedPatient === 'Spoke with patient' && contactForm.outcome === OBS_RESCHEDULE_OUTCOME) {
+                          const cb = addDays(localToday(), OBS_RESCHEDULE_CALLBACK_DAYS);
+                          return <div style={{marginBottom:'12px',padding:'8px 12px',backgroundColor:'#fff7ed',borderRadius:'6px',fontSize:'12px',color:'#9a3412',fontWeight:'500'}}>📞 Saving keeps {patient.name} on OBS Scheduling Calls and sets a call back for {new Date(cb+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} to book the new date — or pick a date above</div>;
                         }
                         if (contactForm.outcome === 'OBS is now scheduled!' && contactForm.obsApptDate) {
                           return <div style={{marginBottom:'12px',padding:'8px 12px',backgroundColor:'#dcfce7',borderRadius:'6px',fontSize:'12px',color:'#166534',fontWeight:'500'}}>✅ Saving will book OBS appointment for {new Date(contactForm.obsApptDate+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'})}</div>;
