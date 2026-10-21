@@ -31,6 +31,7 @@ class ErrorBoundary extends Component {
 import { createClient } from '@supabase/supabase-js';
 import GetStarted, { setupStepsDone, PRACTICE_SOFTWARE, cleanTiers, hasAnyBonus, DEFAULT_TEAM_VISIBILITY, TeamVisibilityChoices } from './GetStarted.jsx';
 import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals } from './goals.js';
+import { SERVER_BASE, mergePatientRows, rowsEqual } from './patientMerge.mjs';
 
 
         // ── FEATURE FLAGS ────────────────────────────────────────────────
@@ -115,6 +116,9 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
         // speaks with them. Their real obstacle is kept for reporting.
         const NO_SHOW_CADENCE = [1, 3, 7, 14];
         const MEDICAID_DENIED_OUTCOME = 'Medicaid denied — converting to Pending';
+        // Log Contact outcomes that change the patient's status. They are saved only with the
+        // button that makes the change (Mark Scheduled / Mark Started / Convert to No Treatment).
+        const STATUS_CHANGE_OUTCOMES = ['Ready to schedule! 🎉', 'Medicaid approved — ready to schedule! 🎉', 'Ready to start treatment! 🎉', 'Not interested'];
         // While a patient waits on the Medicaid decision the TC keeps them on her list as a
         // running reminder: a blank Next Touch Date means "remind me again in 14 days".
         const MEDICAID_REMINDER_DAYS = 14;
@@ -1088,6 +1092,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const [loadFailed, setLoadFailed] = useState(false);
   const [pendingSyncCount, setPendingSyncCount] = useState(0); // writes queued in the outbox
   const flushingRef = useRef(false); // guards against overlapping outbox flushes
+  const lastRefreshRef = useRef(0); // when patients were last read from the cloud
+  const [signInExpired, setSignInExpired] = useState(false); // saves are held until they sign in again
 
   const [newPatientForm, setNewPatientForm] = useState({
     name: '', phone: '', age: '', npeDate: localToday(), location: '', dp: '', contractAmount: '', financedMonths: '', treatmentMonths: '', thirdPartyFinancing: false, tc: '', status: '',
@@ -1136,6 +1142,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // dashboard card hands over when it's showing a past month), or a calendar month 'YYYY-MM'.
   const [ontimeMonthFilter, setOntimeMonthFilter] = useState('last30');
   const [followupTCFilter, setFollowupTCFilter] = useState('All');
+  const [showCallsFinished, setShowCallsFinished] = useState(false); // "Calls Finished" section open
   const [bonusTCSelect, setBonusTCSelect] = useState('All');
   const [ontimeTCFilter, setOntimeTCFilter] = useState('All');
   // Which obstacle group is expanded in the dashboard's "Who's Stuck" card (null = all collapsed).
@@ -1255,6 +1262,61 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   const setGoals = (yearGoals) => setGoalsStore(st => withYearGoals(st, goalsEditYear, yearGoals));
   const [goalsSaveMsg, setGoalsSaveMsg] = useState('');
 
+  // A database row as the patient object the screens use. It remembers the row it came
+  // from (SERVER_BASE), so a later save can tell what this screen changed and leave the
+  // rest of the stored row alone — see patientMerge.mjs.
+  const rowToPatient = (r) => {
+    const p = {
+      id: r.id, name: r.name, phone: r.phone || '', age: r.age || null,
+      npeDate: r.npe_date, location: r.location,
+      dp: r.dp, contractAmount: r.contract_amount || '', tc: r.tc || '',
+      // '' means "not recorded". 0 is a real answer (paid in full) and has to
+      // survive the round trip as 0, not collapse into '' — hence ?? not ||.
+      financedMonths: r.financed_months ?? '', treatmentMonths: r.treatment_months ?? '',
+      thirdPartyFinancing: r.third_party_financing || false,
+      BR: r.br, INV: r.inv, PH1: r.ph1, PH2: r.ph2, LTD: r.ltd,
+      'R+': r.r_plus, 'W+': r.w_plus, PIF: r.pif,
+      ST: r.st, SCH: r.sch, PEN: r.pen, OBS: r.obs, MP: r.mp, NOTX: r.notx, DBRETS: r.dbrets || false,
+      obstacle: r.obstacle || '', notes: r.notes || '', obsApptDate: r.obs_appt_date || '', obsAnticipatedDate: r.obs_anticipated_date || '',
+      bondDate: r.bond_date || '',
+      startDate: r.start_date || '',
+      contactAttempts: r.contact_attempts || 0,
+      nextTouchDate: r.next_touch_date || '',
+      lastContactDate: r.last_contact_date || '',
+      contact_log: r.contact_log || [],
+      fromPending: r.from_pending || false,
+      insuranceWorkflow: r.insurance_workflow || null,
+      medicaidPipeline: r.medicaid_pipeline || false,
+      isMedicaid: r.is_medicaid || false,
+      addonSkipReason: r.addon_skip_reason || ''
+    };
+    p[SERVER_BASE] = buildPatientRow(p);
+    return p;
+  };
+  // A change waiting in the device queue, as a patient. It keeps the row it was based on,
+  // so sending it later still merges instead of overwriting.
+  const queuedToPatient = (entry, loaded) => {
+    const { _base, _failed, ...row } = entry;
+    const p = rowToPatient(row);
+    p[SERVER_BASE] = _base || (loaded ? loaded[SERVER_BASE] : null);
+    return p;
+  };
+  // Shows changes still waiting in the device queue on top of what the cloud sent, so a
+  // reload never makes an unsaved call look lost (and nobody logs it twice).
+  const withQueuedChanges = (list) => {
+    const queued = readPending();
+    if (!queued.length) return list;
+    const byId = new Map(queued.map(q => [q.id, q]));
+    const shown = list.map(p => {
+      const q = byId.get(p.id);
+      if (!q) return p;
+      byId.delete(p.id);
+      return queuedToPatient(q, p);
+    });
+    // New patients that have not reached the cloud yet
+    return [...[...byId.values()].map(q => queuedToPatient(q, null)), ...shown];
+  };
+
   // ── Load patients from Supabase (or localStorage fallback) ──────────
   useEffect(() => {
     let cancelled = false;
@@ -1290,32 +1352,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           return;
         }
         setLoadFailed(false);
-        if (data) {
-          setPatients(data.map(r => ({
-            id: r.id, name: r.name, phone: r.phone || '', age: r.age || null,
-            npeDate: r.npe_date, location: r.location,
-            dp: r.dp, contractAmount: r.contract_amount || '', tc: r.tc || '',
-            // '' means "not recorded". 0 is a real answer (paid in full) and has to
-            // survive the round trip as 0, not collapse into '' — hence ?? not ||.
-            financedMonths: r.financed_months ?? '', treatmentMonths: r.treatment_months ?? '',
-            thirdPartyFinancing: r.third_party_financing || false,
-            BR: r.br, INV: r.inv, PH1: r.ph1, PH2: r.ph2, LTD: r.ltd,
-            'R+': r.r_plus, 'W+': r.w_plus, PIF: r.pif,
-            ST: r.st, SCH: r.sch, PEN: r.pen, OBS: r.obs, MP: r.mp, NOTX: r.notx, DBRETS: r.dbrets || false,
-            obstacle: r.obstacle || '', notes: r.notes || '', obsApptDate: r.obs_appt_date || '', obsAnticipatedDate: r.obs_anticipated_date || '',
-            bondDate: r.bond_date || '',
-            startDate: r.start_date || '',
-            contactAttempts: r.contact_attempts || 0,
-            nextTouchDate: r.next_touch_date || '',
-            lastContactDate: r.last_contact_date || '',
-            contact_log: r.contact_log || [],
-            fromPending: r.from_pending || false,
-            insuranceWorkflow: r.insurance_workflow || null,
-            medicaidPipeline: r.medicaid_pipeline || false,
-            isMedicaid: r.is_medicaid || false,
-            addonSkipReason: r.addon_skip_reason || ''
-          })));
-        }
+        lastRefreshRef.current = Date.now();
+        setPatients(withQueuedChanges(data.map(rowToPatient)));
       } else {
         const saved = localStorage.getItem(`npe-patients-${currentUser.practiceId}`);
         if (!cancelled && saved) setPatients(JSON.parse(saved));
@@ -1550,17 +1588,65 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+  // The patient's row as the database has it right now (row: null when it is not there
+  // yet). Never throws.
+  const fetchStoredRow = async (id) => {
+    try {
+      const { data, error } = await supabase.from('patients').select('*')
+        .eq('id', id).eq('practice_id', managedPracticeId || currentUser.practiceId).maybeSingle();
+      if (error) return { ok: false, error };
+      return { ok: true, row: data ? buildPatientRow(rowToPatient(data)) : null };
+    } catch (error) {
+      return { ok: false, error };
+    }
+  };
+
+  // What to send: this screen's changes laid over the row as stored now, so calls and edits
+  // saved from other screens since this copy was loaded are kept (patientMerge.mjs).
+  // Without a base (a new patient) or when the stored row can't be read, the row as is.
+  const mergeWithStored = async (row, base) => {
+    if (!base) return row;
+    const stored = await fetchStoredRow(row.id);
+    return stored.ok ? mergePatientRows(base, row, stored.row) : row;
+  };
+
+  // After a save lands, the row sent becomes the copy later saves compare against — and if
+  // the merge brought in other screens' changes, the screen shows them too. Left alone if
+  // the patient was changed again on this screen meanwhile (that save does its own merge).
+  const markSaved = (id, localRow, sentRow) => {
+    setPatients(prev => prev.map(p => {
+      if (p.id !== id || !rowsEqual(buildPatientRow(p), localRow)) return p;
+      return rowsEqual(sentRow, localRow) ? { ...p, [SERVER_BASE]: sentRow } : rowToPatient(sentRow);
+    }));
+  };
+
+  // A refused save with no live sign-in behind it: the 12-hour sign-in ran out, and the
+  // request went out without a login. Signing in again is the fix, not a retry.
+  const signInHasExpired = async () => {
+    try {
+      if (USE_COGNITO) return !(await (await cognitoAuth).accessToken());
+      const { data } = await supabase.auth.getSession();
+      return !data?.session;
+    } catch {
+      return false;
+    }
+  };
+
   /**
    * Write a patient to the cloud, retrying transient network failures.
-   * Returns true if the row is confirmed in Supabase, false if it was queued locally.
-   * Never throws — callers use the return value to decide what to tell the user.
+   * Returns true if the row is confirmed in the cloud, false if it is held in the device
+   * queue (every failed save is, so nothing lives only in memory). Never throws — callers
+   * use the return value to decide what to tell the user.
    */
   const dbUpsert = async (patient) => {
     if (!supabase || currentUser?.id === 'demo') return true;
     // Consultants and location owners read only; the database would refuse the write and the
     // offline queue would retry it forever, so it is never sent.
     if (isViewOnly) { setSaveToast('👀 View-only login: changes are not saved'); setTimeout(() => setSaveToast(''), 3000); return true; }
-    const row = buildPatientRow(patient);
+    const localRow = buildPatientRow(patient);
+    const base = patient[SERVER_BASE] || null;
+    const merged = await mergeWithStored(localRow, base);
+    const row = { ...merged };
 
     const backoffs = [400, 1200, 3000];
     let last = null;
@@ -1570,6 +1656,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       if (last.ok) {
         dequeuePending(patient.id);
         clearSaveFailure(patient.id);
+        markSaved(patient.id, localRow, merged);
         if (dropped.length) {
           setSaveError(`⚠️ ${patient.name} saved, but ${dropped.join(', ')} could not be stored — database update pending. Please use Report Issue to let us know.`);
           setTimeout(() => setSaveError(''), 15000);
@@ -1593,14 +1680,21 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const error = last.error || {};
     console.error('Supabase upsert error:', error);
 
+    // Hold the change on this device whatever went wrong. It survives a reload, shows on
+    // screen, and is sent again (merged with whatever is stored by then) every minute, when
+    // the connection returns and after signing back in. A refused save used to live only in
+    // memory and was gone at the next reload.
+    enqueuePending({ ...localRow, _base: base });
+
     if (isTransientNetworkError(error)) {
-      // Still offline after retries. Hold the full payload — nothing needs re-entry,
-      // the flusher will replay it as soon as the connection is back.
-      enqueuePending(row);
       setSaveError('📥 ' + patient.name + ' saved on this device — waiting to sync. Do not re-enter.');
       setTimeout(() => setSaveError(''), 12000);
+    } else if (await signInHasExpired()) {
+      // Not a bug to report: the fix is signing in again (the banner says so).
+      setSignInExpired(true);
+      return false;
     } else {
-      setSaveError('⚠️ Cloud save failed for ' + patient.name + ' — ' + (error.message || error.code || 'unknown error') + '. Saved locally only.');
+      setSaveError('⚠️ Cloud save failed for ' + patient.name + ' — ' + (error.message || error.code || 'unknown error') + '. The change is held on this device and will be retried automatically. Do not re-enter it.');
       setTimeout(() => setSaveError(''), 15000);
     }
 
@@ -1635,7 +1729,11 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       const rows = readPending();
       if (rows.length === 0) return;
       let synced = 0;
-      for (const row of rows) {
+      for (const entry of rows) {
+        const { _base, _failed, ...queued } = entry;
+        // Merged with what is stored now, so a change held for hours can't wipe the
+        // calls logged on other screens in the meantime.
+        const row = await mergeWithStored(queued, _base || null);
         let { ok, error } = await attemptUpsert(row);
         // Same schema-drift tolerance as dbUpsert: a queued patient must not be thrown
         // away because a column landed in the app before it landed in the database.
@@ -1646,18 +1744,21 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
           ({ ok, error } = await attemptUpsert(rest));
         }
         if (ok) {
-          dequeuePending(row.id, row); // only if a fresher edit hasn't replaced it
-          clearSaveFailure(row.id);
+          dequeuePending(entry.id, entry); // only if a fresher edit hasn't replaced it
+          clearSaveFailure(entry.id);
+          markSaved(entry.id, queued, row);
           synced++;
         } else if (isTransientNetworkError(error)) {
           // Still offline — leave it queued for the next pass and stop here rather
           // than grinding through the rest against a connection that is down.
           break;
+        } else if (await signInHasExpired()) {
+          setSignInExpired(true);
+          break; // everything is refused until they sign in again
         } else {
-          // A hard rejection will never succeed on replay. Drop it from the queue but
-          // leave the patient flagged so it is not silently forgotten.
-          console.error('Dropping unsyncable queued write for', row.id, error);
-          dequeuePending(row.id, row);
+          // Kept, not dropped: the change still isn't stored anywhere else. It is tried
+          // again on every pass and the patient stays flagged.
+          console.error('Queued write still refused for', entry.id, error);
         }
       }
       if (synced > 0 && readPending().length === 0) {
@@ -1682,6 +1783,49 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       clearInterval(timer);
     };
   }, [currentUser?.practiceId, managedPracticeId]);
+
+  // Read in what other screens have saved. Patients used to load once at sign-in, so a
+  // screen left open all day kept showing — and saving on top of — its morning copy.
+  // A patient changed on this screen and not yet confirmed saved keeps this screen's copy.
+  const refreshPatients = async () => {
+    if (!supabase || currentUser?.id === 'demo' || !currentUser?.practiceId) return;
+    lastRefreshRef.current = Date.now();
+    let q = supabase.from('patients').select('*').eq('practice_id', currentUser.practiceId);
+    if (currentUser.locationScope) q = q.eq('location', currentUser.locationScope);
+    let data = null, error = null;
+    try {
+      ({ data, error } = await q.order('npe_date', { ascending: false }));
+    } catch (e) {
+      error = e;
+    }
+    if (error || !data) return; // keep what is on screen; the next refresh tries again
+    const fresh = withQueuedChanges(data.map(rowToPatient));
+    const freshIds = new Set(fresh.map(p => p.id));
+    const unsaved = (p) => !p[SERVER_BASE] || !rowsEqual(buildPatientRow(p), p[SERVER_BASE]);
+    setPatients(prev => {
+      const mine = new Map(prev.map(p => [p.id, p]));
+      return [
+        ...prev.filter(p => !freshIds.has(p.id) && unsaved(p)), // added here, still saving
+        ...fresh.map(f => { const m = mine.get(f.id); return m && unsaved(m) ? m : f; }),
+      ];
+    });
+  };
+
+  // Refresh when someone comes back to the tab (at most once a minute) and every 5 minutes
+  // while it is on screen.
+  useEffect(() => {
+    if (!supabase || !currentUser?.practiceId || currentUser.id === 'demo' || loading || loadFailed) return;
+    const soon = () => { if (Date.now() - lastRefreshRef.current > 60000) refreshPatients(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') soon(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', soon);
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') refreshPatients(); }, 5 * 60000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', soon);
+      clearInterval(timer);
+    };
+  }, [currentUser?.practiceId, currentUser?.locationScope, managedPracticeId, loading, loadFailed]);
 
   // Returns null when the patient was deleted, otherwise the reason (shown to the user, and the
   // patient stays on screen). Only admins, and Office Managers with the "delete patients"
@@ -2936,6 +3080,29 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
 
   const selectedDayPatients = [...selectedOBSCheckins, ...selectedBondCheckins, ...selectedFollowUps];
 
+  // Pending patients whose scheduled calls are all made (next touch '__MAX__'). They used to
+  // leave the queue for good while still Pending; now they wait on today's list under
+  // "Calls Finished" until someone decides: another call date, schedule/start, or No Treatment.
+  // Longest since the last contact first. Not counted in the day totals.
+  const callsFinished = selectedWeekDay !== today ? [] : patients
+    .filter(p => p.PEN && !p.MP && p.nextTouchDate === '__MAX__' && (followupTCFilter === 'All' || p.tc === followupTCFilter))
+    .sort((a, b) => (a.lastContactDate || '').localeCompare(b.lastContactDate || ''));
+  const shownCallsFinished = showCallsFinished ? callsFinished : [];
+  const callsFinishedHeader = callsFinished.length > 0 && (
+    <div style={{display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap',margin:'8px 0 12px'}}>
+      <span style={{padding:'4px 12px',backgroundColor:'#f3f4f6',border:'1px solid #d1d5db',borderRadius:'20px',fontSize:'16px',fontWeight:'700',color:'#374151'}}>
+        📋 Calls Finished — Needs a Decision ({callsFinished.length})
+      </span>
+      <button onClick={() => setShowCallsFinished(v => !v)}
+        style={{padding:'5px 14px',backgroundColor:'white',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',fontWeight:'600',color:'#374151',cursor:'pointer'}}>
+        {showCallsFinished ? 'Hide' : 'Show'}
+      </button>
+      <span style={{flexBasis:'100%',fontSize:'13px',color:'#6b7280'}}>
+        Still Pending, but every scheduled call has been made. Pick another call date (Push Date), schedule or start them, or move them to No Treatment.
+      </span>
+    </div>
+  );
+
   const getWeekMonday = (offset) => {
     const d = new Date();
     const dayOfWeek = d.getDay();
@@ -3319,6 +3486,12 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       alert('Please select whether you reached the patient before saving.');
       return;
     }
+    // These outcomes change the patient's status; logging them as a plain call left the
+    // patient Pending while the end-of-day note said they scheduled, started or declined.
+    if (STATUS_CHANGE_OUTCOMES.includes(contactForm.outcome)) {
+      alert('This outcome changes the patient\'s status — use the button for it (Mark Scheduled, Mark Started or Convert to No Treatment), or pick a different outcome.');
+      return;
+    }
     if (contactForm.outcome === MEDICAID_DENIED_OUTCOME && (!contactForm.obstacle || contactForm.obstacle === 'Waiting to Hear from Medicaid')) {
       alert("Pick the patient's new obstacle (why they still need time) before saving — it sets their follow-up calls.");
       return;
@@ -3472,6 +3645,33 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     setShowContactLog(null);
     setContactForm({ reachedPatient: '', outcome: '', sentText: false, notes: '', recap: '', nextTouchDate: '', obstacle: '', obsApptDate: '', obsAnticipatedDate: '', scheduledBondDate: '', scheduleType: '' });
     saveToastFor(saveOk, '✅ ' + (updatedPatient?.name || '') + ' moved to No Treatment', 3000);
+  };
+
+  // "Calls Finished" → No Treatment, for a patient who never answered (Convert to No
+  // Treatment in Log Contact needs "Spoke with patient → Not interested"). Not a call, so
+  // the entry is kept out of the call and on-time counts (noCount).
+  const handleCallsFinishedToNotx = async (patient) => {
+    const todayStr = localToday();
+    const n = cadenceFor(patient).length;
+    const logEntry = {
+      date: todayStr,
+      time: '',
+      scheduledDate: '',
+      reachedPatient: 'No response',
+      outcome: `All ${n} follow-up calls made — moved to No Treatment`,
+      sentText: false,
+      notes: '',
+      recap: `No treatment — no decision after ${n} follow-up calls${patient.obstacle ? ` (${patient.obstacle})` : ''}. `.trim(),
+      dispo: 'notx',
+      noCount: true,
+      logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
+    };
+    // obstacle is kept — it's historical reporting data
+    const updatedPatient = { ...patient, PEN: false, MP: false, OBS: false, NOTX: true, nextTouchDate: '',
+      contact_log: [...(patient.contact_log || []), logEntry] };
+    setPatients(prev => prev.map(p => p.id === patient.id ? updatedPatient : p));
+    const saveOk = await dbUpsert(updatedPatient);
+    saveToastFor(saveOk, `✅ ${patient.name} moved to No Treatment`, 3000);
   };
 
   const handlePushDate = async (patientId) => {
@@ -4247,6 +4447,17 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         </div>
       )}
 
+      {/* Sign-in ran out: saves are refused until they sign in again. Stays up until then. */}
+      {signInExpired && (
+        <div style={{backgroundColor:'#991b1b',color:'white',padding:'12px 16px',display:'flex',alignItems:'center',justifyContent:'center',gap:'16px',flexWrap:'wrap',fontWeight:'600',fontSize:'14px'}}>
+          <span>🔒 Your sign-in has expired, so changes can't be saved right now. {pendingSyncCount > 0 ? `${pendingSyncCount === 1 ? '1 change is' : `${pendingSyncCount} changes are`} held on this device and will be sent once you sign back in` : 'Sign in again to keep working'} — do not re-enter them.</span>
+          <button onClick={onSignOut}
+            style={{padding:'6px 16px',backgroundColor:'white',color:'#991b1b',border:'none',borderRadius:'6px',fontWeight:'800',fontSize:'13px',cursor:'pointer'}}>
+            Sign in again
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <header style={{backgroundColor:'#202020',padding:'14px 16px',boxShadow:'0 2px 8px rgba(0,0,0,0.25)'}}>
         <div style={{maxWidth:'1400px',margin:'0 auto',display:'flex',alignItems:'center',gap:'0'}}>
@@ -4306,8 +4517,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                     <div style={{fontWeight:'700',fontSize:'14px',color:'#991b1b'}}>⚠️ These saves have not reached the cloud yet</div>
                     <div style={{fontSize:'12px',color:'#b91c1c',marginTop:'4px'}}>
                       {pendingSyncCount > 0
-                        ? 'Their information is saved on this device and will sync automatically when the connection is back. Do NOT re-enter them — that would create duplicates.'
-                        : 'These could not be saved to the cloud and were not queued. Check with support before re-entering, so you do not create a duplicate.'}
+                        ? 'Their changes are held on this device and are sent automatically (every minute, when the connection is back, and after signing back in). Do NOT re-enter them — that would create duplicates.'
+                        : 'These could not be saved to the cloud. Check with support before re-entering, so you do not create a duplicate.'}
                     </div>
                   </div>
                   <ul style={{margin:0,padding:'8px 0',listStyle:'none'}}>
@@ -7090,7 +7301,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         {currentView === 'followup' && (
           <div style={{display:'flex',flexDirection:'column',gap:'24px'}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'12px'}}>
-              <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',display:'flex',alignItems:'center',gap:'4px',margin:0}}>Follow-Up Queue <HelpTip id="followup-queue" tip={"This is where you spend most of your day. Every patient who didn't start same-day is here.\n\nPriority labels:\n• NEW = NPE within the last 7 days\n• ACTIVE = 8–21 days\n• OVERDUE = 22+ days (needs immediate attention)\n\nThe system auto-schedules who's due today based on their obstacle. Work through every patient on today's list before the day ends."} /></h2>
+              <h2 style={{fontSize:'28px',fontWeight:'bold',color:'#202020',display:'flex',alignItems:'center',gap:'4px',margin:0}}>Follow-Up Queue <HelpTip id="followup-queue" tip={"This is where you spend most of your day. Every patient who didn't start same-day is here.\n\nPending patients whose scheduled calls are all made wait under 'Calls Finished' at the bottom of today until you decide what's next.\n\nPriority labels:\n• NEW = NPE within the last 7 days\n• ACTIVE = 8–21 days\n• OVERDUE = 22+ days (needs immediate attention)\n\nThe system auto-schedules who's due today based on their obstacle. Work through every patient on today's list before the day ends."} /></h2>
               {tcNames.length > 1 && (
                 <select value={followupTCFilter} onChange={e => setFollowupTCFilter(e.target.value)}
                   style={{padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:'6px',fontSize:'13px',color:'#374151',backgroundColor:'white'}}>
@@ -7480,9 +7691,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               )}
 
               {/* FOLLOW-UP CONTACTS */}
-              {selectedFollowUps.length > 0 && (
+              {(selectedFollowUps.length > 0 || shownCallsFinished.length > 0) && (
                 <div>
-                  {[...selectedOBSCalls, ...selectedRegularFollowUps].map((patient, idx) => {
+                  {[...selectedOBSCalls, ...selectedRegularFollowUps, ...shownCallsFinished].map((patient, idx) => {
                     const npeDateSafe = patient.npeDate || today;
                     const daysOld = Math.floor((new Date() - new Date(npeDateSafe + 'T12:00:00')) / 86400000);
                     const priority = daysOld <= 7 ? 'NEW' : daysOld <= 21 ? 'ACTIVE' : 'OVERDUE';
@@ -7493,6 +7704,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       ? <h4 style={{fontSize:'16px',fontWeight:'700',color:'#166534',marginBottom:'12px',display:'flex',alignItems:'center',gap:'8px'}}>
                           <span style={{padding:'4px 12px',backgroundColor:'#dcfce7',border:'1px solid #86efac',borderRadius:'20px'}}>📞 OBS Scheduling Calls ({selectedOBSCalls.length})</span>
                         </h4>
+                      : idx === selectedFollowUps.length
+                      ? callsFinishedHeader
                       : idx === selectedOBSCalls.length && (selectedOBSCalls.length > 0 || selectedOBSCheckins.length > 0 || selectedBondCheckins.length > 0)
                       ? <h4 style={{fontSize:'16px',fontWeight:'700',color:'#1e40af',marginBottom:'12px',display:'flex',alignItems:'center',gap:'8px'}}>
                           <span style={{padding:'4px 12px',backgroundColor:'#dbeafe',border:'1px solid #93c5fd',borderRadius:'20px'}}>🔔 Follow-Up Contacts ({selectedRegularFollowUps.length})</span>
@@ -7564,8 +7777,10 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                           ? (patient.contactAttempts > 0
                               ? '🏥 Medicaid follow-up — still waiting on the decision. Leave Next Touch Date blank for a reminder in 14 days, or pick a date.'
                               : '🏥 Medicaid check-in call (2 days after exam) — then a reminder every 14 days until the decision comes back')
+                          : patient.contactAttempts >= cadenceFor(patient).length
+                          ? `✅ All ${cadenceFor(patient).length} scheduled calls made — decide the next step`
                           : `${inNoShowMode(patient) ? '⚠️ Missed bond — ' : ''}🎯 Attempt #${patient.contactAttempts + 1} of ${cadenceFor(patient).length}: ${patient.contactAttempts === 0 ? 'Initial follow-up' : patient.contactAttempts === 1 ? 'Check-in call' : patient.contactAttempts === 2 ? 'Week follow-up — identify obstacles' : 'Final attempt'}`}
-                        {!patient.OBS && !patient.MP && patient.contactAttempts >= 4 && <span style={{marginLeft:'8px',padding:'2px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}}>⚠️ Max Attempts Reached</span>}
+                        {!patient.OBS && !patient.MP && patient.contactAttempts >= cadenceFor(patient).length && <span style={{marginLeft:'8px',padding:'2px 8px',backgroundColor:'#fee2e2',color:'#991b1b',borderRadius:'4px',fontSize:'12px',fontWeight:'700'}}>⚠️ Max Attempts Reached</span>}
                         {patient.OBS && !patient.obsApptDate && obsMissedCalls(patient) > 0 && obsMissedCalls(patient) < OBS_NO_REACH_DAYS.length && (
                           <span style={{marginLeft:'8px',fontSize:'12px',color:'#92400e',fontWeight:'600'}}>{obsMissedCalls(patient)} call{obsMissedCalls(patient) !== 1 ? 's' : ''} unanswered</span>
                         )}
@@ -7577,7 +7792,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         </div>
                       )}
                       {/* FINAL ATTEMPT warning banner */}
-                      {!patient.OBS && patient.contactAttempts === 3 && (
+                      {!patient.OBS && patient.contactAttempts === 3 && patient.contactAttempts < cadenceFor(patient).length && (
                         <div style={{marginTop:'8px',padding:'8px 12px',backgroundColor:'#fef2f2',border:'1px solid #fca5a5',borderRadius:'6px',display:'flex',alignItems:'center',gap:'8px'}}>
                           <span style={{fontSize:'16px'}}>⚠️</span>
                           <span style={{fontSize:'13px',fontWeight:'700',color:'#991b1b'}}>FINAL ATTEMPT — if no response, consider converting to No Treatment.</span>
@@ -7979,13 +8194,24 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         return null;
                       })()}
 
+                      {STATUS_CHANGE_OUTCOMES.includes(contactForm.outcome) && (
+                        <div style={{marginBottom:'10px',fontSize:'12px',color:'#6b7280'}}>
+                          {/schedule/.test(contactForm.outcome) && !contactForm.scheduleType
+                            ? 'Answer the down payment question above to finish.'
+                            : 'This outcome changes their status, so it is saved with the button below. Not ready for that? Pick a different outcome.'}
+                        </div>
+                      )}
                       <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+                        {/* Hidden when the outcome needs a status change — saving it as a plain
+                            call kept the patient Pending under a "scheduled"/"no treatment" note. */}
+                        {!STATUS_CHANGE_OUTCOMES.includes(contactForm.outcome) && (
                         <button
                           onClick={() => handleSaveContact(patient.id)}
                           style={{padding:'10px 20px',backgroundColor:'#10b981',color:'white',border:'none',borderRadius:'6px',fontWeight:'600',cursor:'pointer'}}
                         >
                           💾 Save Contact
                         </button>
+                        )}
                         {/* Mark Started: collecting DP (scheduleType=dp) OR OBS ready to start — needs down payment sub-answer */}
                         {((contactForm.outcome === 'Ready to schedule! 🎉' && contactForm.scheduleType === 'dp') ||
                           (contactForm.outcome === 'Medicaid approved — ready to schedule! 🎉' && contactForm.scheduleType === 'dp') ||
@@ -8058,6 +8284,14 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       >
                         📅 Push Date
                       </button>
+                      {patient.PEN && patient.nextTouchDate === '__MAX__' && (
+                        <button
+                          onClick={() => { if (confirm(`Move ${patient.name} to No Treatment? All ${cadenceFor(patient).length} scheduled calls have been made. They will leave the follow-up queue.`)) handleCallsFinishedToNotx(patient); }}
+                          style={{padding:'8px 16px',backgroundColor:'#6b7280',color:'white',border:'none',borderRadius:'6px',cursor:'pointer',fontSize:'14px'}}
+                        >
+                          🚫 No Treatment
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -8068,7 +8302,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                         📅 Push follow-up reminder to a later date
                       </div>
                       <div style={{fontSize:'12px',color:'#92400e',marginBottom:'10px'}}>
-                        Current: <strong>{patient.nextTouchDate ? new Date(patient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'}) : '—'}</strong>
+                        Current: <strong>{patient.nextTouchDate === '__MAX__' ? 'none — all scheduled calls made' : patient.nextTouchDate ? new Date(patient.nextTouchDate + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'}) : '—'}</strong>
                       </div>
                       <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
                         <input
@@ -8103,13 +8337,16 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                 </div>
               )}
 
-              {selectedDayPatients.length === 0 && (
+              {selectedDayPatients.length === 0 && shownCallsFinished.length === 0 && (
                 <div style={{backgroundColor:'white',padding:'48px',borderRadius:'8px',textAlign:'center'}}>
                   <div style={{fontSize:'48px',marginBottom:'16px'}}>✅</div>
                   <h4 style={{fontSize:'20px',fontWeight:'bold',color:'#202020',marginBottom:'8px'}}>All Clear!</h4>
                   <p style={{color:'#6b7280'}}>No follow-ups scheduled for {selectedWeekDay === today ? 'today' : 'this day'}</p>
                 </div>
               )}
+
+              {/* Collapsed: just the heading (open, it heads its cards in the list above) */}
+              {!showCallsFinished && callsFinishedHeader}
             </div>
 
           </div>
