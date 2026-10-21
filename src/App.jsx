@@ -103,6 +103,13 @@ import { normalizeGoals, goalsForYear, withYearGoals, monthGoal, monthGoalTotals
           'Scheduling / Logistics':              [2, 7, 14],
         };
         const DEFAULT_CADENCE = [1, 3, 7, 14];
+        // Record on the newest log entry the next call date it left the patient with, so the
+        // End-of-Day report shows each entry's own date (not a later one from the same day).
+        const stampNextTouch = (p) => {
+          const log = p.contact_log || [];
+          if (!log.length) return p;
+          return { ...p, contact_log: [...log.slice(0, -1), { ...log[log.length - 1], nextTouchSet: p.nextTouchDate || '' }] };
+        };
         // Missed initial bond → back to Pending on this cadence (call today, then +3, +7, +14
         // after each attempt) instead of the patient's obstacle cadence, until someone actually
         // speaks with them. Their real obstacle is kept for reporting.
@@ -2907,52 +2914,110 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // Composes a smart draft recap line from what the app already knows.
   // The TC edits/finishes it; the result is stored on the contact_log entry
   // and rolled up in the "Today's Activity" (End-of-Day) view.
+  // "$5,200"; blank for a missing or $0 amount so the note never says "$0 down"
   const recapMoney = (v) => {
-    const n = String(v || '').replace(/[^0-9.]/g, '');
-    return n ? '$' + n.replace(/\.00$/, '') : '';
+    const n = parseFloat(String(v || '').replace(/[^0-9.]/g, ''));
+    return n ? '$' + n.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '';
   };
   const recapAddons = (o) => {
     const parts = [];
     if (o && o['R+']) parts.push('rets');
     if (o && o['W+']) parts.push('zoom');
-    if (o && o.PIF) parts.push('PIF');
     return parts.length ? ` w/${parts.join(' + ')}` : '';
   };
   const recapMdy = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) : '';
-  // dispo: 'start' | 'future' | 'pending' | 'notx' | 'contact'
+  // Suggested notes say what happened and what's next. The End-of-Day line already leads
+  // with Reached / Left voicemail / No answer (+ text), files observation patients under their
+  // own heading and adds the next follow-up date, so the notes don't repeat any of that.
+  // dispo: 'start' | 'future' | 'pending' | 'notx'
   const composeRecapDraft = (dispo, o = {}) => {
     const dp = recapMoney(o.dp);
     const add = recapAddons(o);
     if (dispo === 'start') {
       const lbl = o.sameDay === false ? 'Start' : 'SDS';
-      // A scheduled (future-dated) start with a DP still lists its bond date.
-      const bond = (o.sameDay === false && o.bondDate) ? ` — bond ${recapMdy(o.bondDate)}` : '';
-      return `${lbl}${add}${bond}${dp ? ` ${dp} down` : ''}`.trim();
+      const paid = o.PIF ? `paid in full${(recapMoney(o.contractAmount) || dp) ? ` ${recapMoney(o.contractAmount) || dp}` : ''}` : dp ? `${dp} down` : '';
+      // A start recorded before its (future) bond still lists the bond date.
+      const bond = (o.sameDay === false && o.bondDate) ? `, bonds ${recapMdy(o.bondDate)}` : '';
+      return `${lbl}${paid ? ` — ${paid}` : ''}${add}${bond}`;
     }
     if (dispo === 'future') {
       // The DP on a scheduled patient is the amount agreed, not money collected.
       return `Future start — scheduled ${recapMdy(o.bondDate) || '(date)'}${dp ? `, ${dp} DP due` : ''}. `;
     }
-    if (dispo === 'pending') {
-      return `Pending${o.obstacle ? ` — ${o.obstacle}` : ''}. `;
-    }
-    if (dispo === 'notx') {
-      return `No treatment${o.obstacle ? ` — ${o.obstacle}` : ''}. `;
-    }
-    return `${o.outcome || 'Follow-up'}. `;
+    if (dispo === 'pending') return `Pending${o.obstacle ? ` — ${o.obstacle}` : ''}. `;
+    if (dispo === 'notx') return `No treatment${o.obstacle ? ` — ${o.obstacle}` : ''}. `;
+    return '';
   };
-  // Suggested note for an OBS (observation) patient's Log Contact — they aren't Pending,
-  // so the draft speaks to the observation booking / recheck instead.
+  // Suggested note for an observation patient's Log Contact (booking / recheck calls).
   const composeObsRecapDraft = (p, f) => {
-    const ad = f.obsAnticipatedDate || p.obsAnticipatedDate;
-    if (f.reachedPatient === 'Left voicemail') return `OBS — left voicemail to book observation appt${ad ? ` (due ~${recapMdy(ad)})` : ''}. `;
-    if (f.reachedPatient === 'No answer') return `OBS — no answer on observation booking call. `;
+    if (!f.reachedPatient) return '';
+    if (OBS_UNREACHED.includes(f.reachedPatient)) {
+      if (p.obsApptDate) return `Call about the ${recapMdy(p.obsApptDate)} OBS appt. `;
+      const lastCall = (p.contact_log || []).filter(l => !OBS_UNREACHED.includes(l.reachedPatient)).slice(-1)[0];
+      const aim = lastCall?.reachedPatient === 'No-show' && p.obsAnticipatedDate ? `to rebook missed ${recapMdy(p.obsAnticipatedDate)} appt`
+        : p.obsAnticipatedDate ? `target ~${recapMdy(p.obsAnticipatedDate)}` : 'no target date yet';
+      return `Booking call #${obsMissedCalls(p) + 1} — ${aim}. `;
+    }
+    if (f.reachedPatient !== 'Spoke with patient') return '';
     if (f.outcome === 'OBS is now scheduled!') return `OBS appt scheduled ${recapMdy(f.obsApptDate) || '(date)'}. `;
-    if (f.outcome === 'Still on track — update anticipated date') return `OBS — still observing${ad ? `, next recheck ~${recapMdy(ad)}` : ''}. `;
-    if (f.outcome === 'Not ready yet — will recheck after appointment') return `OBS — not ready yet, recheck after appt. `;
-    if (/Ready to start/.test(f.outcome || '')) return `OBS — ready to start treatment! `;
-    return `OBS — observation follow-up. `;
+    if (f.outcome === 'Still on track — update anticipated date') {
+      if (f.obsAnticipatedDate && f.obsAnticipatedDate !== p.obsAnticipatedDate) return `Still observing — new target ~${recapMdy(f.obsAnticipatedDate)}. `;
+      return `Still observing${p.obsAnticipatedDate ? ` — target ~${recapMdy(p.obsAnticipatedDate)}` : ''}. `;
+    }
+    if (f.outcome === 'Not ready yet — will recheck after appointment') return 'Not ready yet — recheck after appt. ';
+    if (/Ready to start/.test(f.outcome || '')) return 'Ready to start treatment! ';
+    return 'Spoke — observation follow-up. ';
   };
+  // Suggested note for Log Contact on any follow-up card
+  const contactRecapDraft = (p, f) => {
+    if (p.OBS) return composeObsRecapDraft(p, f);
+    const reached = f.reachedPatient;
+    const obstacle = f.obstacle || p.obstacle;
+    if (!reached) return '';
+    if (reached === "Waiting on Medicaid — didn't call") return 'Waiting on Medicaid — no call today. ';
+    const startOrFuture = () => f.scheduleType === 'dp' ? composeRecapDraft('start', { dp: p.dp, sameDay: false })
+      : f.scheduleType === 'no_dp' ? composeRecapDraft('future', { dp: p.dp, bondDate: f.scheduledBondDate })
+      : 'Ready to schedule. ';
+    if (p.MP) {
+      if (reached !== 'Spoke with patient') return 'Medicaid check-in call. ';
+      if (f.outcome === MEDICAID_DENIED_OUTCOME) return `Medicaid denied — now Pending${f.obstacle && f.obstacle !== 'Waiting to Hear from Medicaid' ? ` (${f.obstacle})` : ''}. `;
+      if (f.outcome === 'Medicaid approved — ready to schedule! 🎉') return f.scheduleType ? `Medicaid approved: ${startOrFuture()}` : 'Medicaid approved — ready to schedule. ';
+      if (f.outcome === 'Still waiting on Medicaid approval') return 'Still waiting on the Medicaid decision. ';
+      return 'Spoke — waiting on Medicaid. ';
+    }
+    if (reached !== 'Spoke with patient') {
+      if (p.PEN && inNoShowMode(p)) return 'Missed bond — trying to rebook. ';
+      const n = (p.contactAttempts || 0) + 1, total = cadenceFor(p).length;
+      return `Attempt ${n}${n <= total ? ` of ${total}` : ''}${obstacle ? ` — ${obstacle}` : ''}. `;
+    }
+    if (f.outcome === 'Getting a second opinion') return 'Getting a second opinion. ';
+    if (f.outcome === 'Addressed their concerns') return `Addressed their concerns${obstacle ? ` (${obstacle})` : ''} — still deciding. `;
+    if (f.outcome === 'Ready to schedule! 🎉') return startOrFuture();
+    if (f.outcome === 'Not interested') return composeRecapDraft('notx', { obstacle });
+    return `Spoke${obstacle ? ` — ${obstacle}` : ''}. `;
+  };
+  // Suggested note when adding a new patient
+  const newPatientRecapDraft = (f) => {
+    const st = f.status;
+    if (st === 'SDS' || st === 'ST') return composeRecapDraft('start', { dp: f.dp, contractAmount: f.contractAmount, sameDay: st === 'SDS', 'R+': f['R+'], 'W+': f['W+'], PIF: f.PIF });
+    if (st === 'SCH') return composeRecapDraft('future', { dp: f.dp, bondDate: f.bondDate });
+    if (st === 'PEN') return composeRecapDraft('pending', { obstacle: f.obstacle });
+    if (st === 'MP') return 'Medicaid pending. ';
+    if (st === 'NOTX') return composeRecapDraft('notx', { obstacle: f.obstacle });
+    if (st === 'OBS') return f.obsApptDate ? `Observation — appt booked ${recapMdy(f.obsApptDate)}. `
+      : f.obsAnticipatedDate ? `Observation — target ~${recapMdy(f.obsAnticipatedDate)}. ` : 'Observation — no target date yet. ';
+    if (st === 'DBRETS') return 'DB / retainers. ';
+    return '';
+  };
+  // Suggested note in the Mark Started window
+  const startedRecapDraft = (patient, f) => composeRecapDraft('start', {
+    dp: f.dp, contractAmount: f.contractAmount,
+    sameDay: f.startDate ? f.startDate === patient.npeDate : (!patient.SCH && patient.npeDate === localToday()),
+    bondDate: patient.SCH && patient.bondDate > localToday() ? patient.bondDate : '',
+    'R+': f['R+'], 'W+': f['W+'], PIF: f.PIF,
+  });
+  // The note a form saves: the suggestion, unless the TC has typed their own
+  const recapToSave = (form, draft) => (form.recapEdited ? (form.recap || '') : (draft || '')).trim();
   // Log entries that record a missed appointment rather than a call.
   const RECAP_MISSED = ['Missed appointment', 'No-show'];
   // Fine-grained outcome of a Today's Activity entry: start | future | pending | notx | other.
@@ -3015,26 +3080,32 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // textarea keeps focus across keystrokes. This is the single notes box used
   // throughout the app — whatever is typed here is the patient note AND the
   // line that appears on the consultant's end-of-day report.
-  const renderRecapField = (value, onChange, draft) => (
+  // The box shows the suggested note itself (and keeps it up to date as answers change)
+  // until the TC types; from then on it's their text. `form` holds recap + recapEdited.
+  const renderRecapField = (form, setRecap, draft) => {
+    const edited = !!form.recapEdited;
+    const value = edited ? (form.recap || '') : (draft || '');
+    return (
     <div style={{marginBottom:'12px',backgroundColor:'#fffbeb',border:'1px solid #fde68a',borderRadius:'8px',padding:'10px 12px'}}>
       <label style={{fontSize:'13px',fontWeight:700,display:'block',marginBottom:'4px',color:'#92400e'}}>
-        📋 Notes <span style={{fontWeight:400,color:'#b45309'}}>— goes to the consultant's end-of-day report</span>
+        📋 Notes <span style={{fontWeight:400,color:'#b45309'}}>— goes to the consultant's end-of-day report{!edited && draft ? ' · suggested, edit as needed' : ''}</span>
       </label>
       <textarea
-        value={value || ''}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={draft || 'e.g. dad wanted to talk to mom — will follow up tomorrow'}
+        value={value}
+        onChange={(e) => setRecap(e.target.value, true)}
+        placeholder="e.g. dad wanted to talk to mom — will follow up tomorrow"
         rows={2}
         style={{width:'100%',padding:'8px',border:'1px solid #fcd34d',borderRadius:'4px',fontSize:'14px',backgroundColor:'white',boxSizing:'border-box'}}
       />
-      {draft && (value || '') !== draft && (
-        <button type="button" onClick={() => onChange(draft)}
+      {edited && draft && value !== draft && (
+        <button type="button" onClick={() => setRecap('', false)}
           style={{marginTop:'6px',padding:'3px 10px',fontSize:'12px',fontWeight:600,backgroundColor:'#fef3c7',color:'#92400e',border:'1px solid #fcd34d',borderRadius:'6px',cursor:'pointer'}}>
           ✨ Use suggestion: “{draft.length > 44 ? draft.slice(0, 44) + '…' : draft}”
         </button>
       )}
     </div>
-  );
+    );
+  };
   // ── End-of-Day report builder + consultant email ─────────────────────
   // End-of-Day report sections, in display order. Every start leads the report;
   // "Today's Consults" holds the rest of today's consults (its count includes the
@@ -3103,7 +3174,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
   // non-pending entries or when no follow-up is scheduled (__MAX__ / empty).
   const recapNextTouch = (e) => {
     if (recapDispoOf(e) !== 'pending') return '';
-    const d = e.patientNextTouch;
+    // The date this entry set; entries saved before 2026-10-21 only have the patient's current one
+    const d = e.nextTouchSet !== undefined ? e.nextTouchSet : e.patientNextTouch;
     if (!d || d === '__MAX__') return '';
     return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' });
   };
@@ -3195,6 +3267,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       // Still waiting on the decision (reached, or skipped without calling)
       const stillWaitingOnMedicaid = p.MP && !isMedicaidDenied && (isSkipMedicaid || contactForm.outcome === 'Still waiting on Medicaid approval');
       const isObsScheduling = p.OBS && contactForm.outcome === 'OBS is now scheduled!';
+      const noteText = recapToSave(contactForm, contactRecapDraft(p, contactForm));
       const isObsAnticipatedUpdate = p.OBS && !p.obsApptDate && contactForm.outcome === 'Still on track — update anticipated date';
       const isObsUnreached = p.OBS && !p.obsApptDate && OBS_UNREACHED.includes(contactForm.reachedPatient);
       const obsRetry = isObsUnreached ? obsMissedCalls(p) + 1 : 0;
@@ -3206,8 +3279,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         reachedPatient: contactForm.reachedPatient,
         outcome: contactForm.outcome,
         sentText: contactForm.sentText,
-        notes: contactForm.recap || '',
-        recap: contactForm.recap || '',
+        notes: noteText,
+        recap: noteText,
         dispo: isObsScheduling ? 'other' : 'pending',
         ...(p.OBS ? { obs: true } : {}),
         ...(isObsUnreached ? { obsRetry } : {}),
@@ -3277,7 +3350,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             patientContactedDate: w.patientContactedDate || todayStr, patientDecision: 'needs_time', completedDate: todayStr },
         };
       }
-      updatedPatient = result;
+      updatedPatient = result = stampNextTouch(result);
       return result;
     });
     setPatients(updated);
@@ -3304,8 +3377,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
         reachedPatient: contactForm.reachedPatient,
         outcome: 'Not interested — converted to No Treatment',
         sentText: contactForm.sentText,
-        notes: contactForm.recap || '',
-        recap: contactForm.recap || '',
+        notes: recapToSave(contactForm, contactRecapDraft(p, contactForm)),
+        recap: recapToSave(contactForm, contactRecapDraft(p, contactForm)),
         dispo: 'notx',
         logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (p.tc || '')
       };
@@ -3395,11 +3468,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       PH1: patient.PH1 || false, PH2: patient.PH2 || false, LTD: patient.LTD || false,
       'R+': patient['R+'] || false, 'W+': patient['W+'] || false, PIF: patient.PIF || false,
       addonSkipReason: patient.addonSkipReason || '',
-      recap: composeRecapDraft('start', {
-        dp: patient.dp, sameDay: !patient.SCH && patient.npeDate === localToday(),
-        bondDate: patient.SCH && patient.bondDate > localToday() ? patient.bondDate : '',
-        'R+': patient['R+'], 'W+': patient['W+'], PIF: patient.PIF
-      })
+      recap: '', recapEdited: false,
     });
     setShowStartedAddonPrompt(false);
     setShowStartedModal(patient);
@@ -3445,7 +3514,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       outcome: patient.PEN || patient.MP || patient.SCH || patient.fromPending ? 'Converted — started treatment' : 'Same-day start',
       sentText: false,
       notes: '',
-      recap: [(startedForm.recap || '').trim(),
+      recap: [recapToSave(startedForm, startedRecapDraft(patient, startedForm)),
               startNoAddons && (startedForm.addonSkipReason || '').trim()
                 ? `No add-ons — ${(startedForm.addonSkipReason || '').trim()}` : ''
              ].filter(Boolean).join(' — '),
@@ -3499,8 +3568,8 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       reachedPatient: contactForm.reachedPatient,
       outcome: `Scheduled — no down payment collected. Bond date: ${new Date(bondDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
       sentText: contactForm.sentText,
-      notes: contactForm.notes,
-      recap: contactForm.recap || '',
+      notes: recapToSave(contactForm, contactRecapDraft(patient, contactForm)),
+      recap: recapToSave(contactForm, contactRecapDraft(patient, contactForm)),
       dispo: 'future',
       logged_by: currentUser?.role === 'tc' ? (currentUser?.name || '') : (patient.tc || '')
     };
@@ -3610,7 +3679,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       contactAttempts: 0,
       nextTouchDate: skipWeekend(todayStr),
       lastContactDate: todayStr,
-      contact_log: [...(patient.contact_log || []), logEntry]
+      contact_log: [...(patient.contact_log || []), { ...logEntry, nextTouchSet: skipWeekend(todayStr) }]
     };
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
     const saveOk = await dbUpsert(updatedPatient);
@@ -3633,7 +3702,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       ...patient,
       bondDate: newBondDate,
       nextTouchDate: newCheckDate,
-      contact_log: [...(patient.contact_log || []), logEntry]
+      contact_log: [...(patient.contact_log || []), { ...logEntry, nextTouchSet: newCheckDate || '' }]
     };
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
     await dbUpsert(updatedPatient);
@@ -3662,7 +3731,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       obsApptDate: '',
       nextTouchDate: nextDate,
       lastContactDate: todayStr,
-      contact_log: [...(patient.contact_log || []), logEntry]
+      contact_log: [...(patient.contact_log || []), { ...logEntry, nextTouchSet: nextDate }]
     };
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
     const saveOk = await dbUpsert(updatedPatient);
@@ -3693,7 +3762,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       obsAnticipatedDate: patient.obsAnticipatedDate || patient.obsApptDate,
       nextTouchDate: nextDate,
       lastContactDate: todayStr,
-      contact_log: [...(patient.contact_log || []), logEntry]
+      contact_log: [...(patient.contact_log || []), { ...logEntry, nextTouchSet: nextDate }]
     };
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
     const saveOk = await dbUpsert(updatedPatient);
@@ -3720,7 +3789,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
       ...patient,
       obsApptDate: newApptDate,
       nextTouchDate: newCheckDate || '',
-      contact_log: [...(patient.contact_log || []), logEntry]
+      contact_log: [...(patient.contact_log || []), { ...logEntry, nextTouchSet: newCheckDate || '' }]
     };
     setPatients(patients.map(p => p.id === patient.id ? updatedPatient : p));
     await dbUpsert(updatedPatient);
@@ -3923,7 +3992,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
     const addonSkipNote = (addonsEligible && noAddonsSelected && newPatientForm.addonSkipReason.trim())
       ? `No add-ons — ${newPatientForm.addonSkipReason.trim()}`
       : '';
-    const combinedRecap = [(newPatientForm.recap || '').trim(), addonSkipNote].filter(Boolean).join(' — ');
+    const combinedRecap = [recapToSave(newPatientForm, newPatientRecapDraft(newPatientForm)), addonSkipNote].filter(Boolean).join(' — ');
     const addRecapEntry = {
       date: localToday(),
       time: '',
@@ -7761,15 +7830,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                       </label>
 
                       {renderRecapField(
-                        contactForm.recap,
-                        (val) => setContactForm({...contactForm, recap: val}),
-                        patient.OBS ? composeObsRecapDraft(patient, contactForm) : composeRecapDraft(
-                          contactForm.scheduleType === 'dp' ? 'start'
-                            : /schedul/i.test(contactForm.outcome || '') ? 'future'
-                            : /converted to No Treatment|Not interested/i.test(contactForm.outcome || '') ? 'notx'
-                            : 'pending',
-                          { dp: patient.dp, sameDay: false, obstacle: contactForm.obstacle || patient.obstacle, outcome: contactForm.outcome, bondDate: contactForm.scheduledBondDate }
-                        )
+                        contactForm,
+                        (val, edited) => setContactForm({...contactForm, recap: val, recapEdited: edited}),
+                        contactRecapDraft(patient, contactForm)
                       )}
 
                       {/* Single Notes box above (renderRecapField). No separate Notes textarea —
@@ -8577,22 +8640,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
                   types here becomes both the patient note and the End-of-Day line.
                   Only shown once a status is chosen so the suggested draft is meaningful. */}
               {newPatientForm.status && renderRecapField(
-                newPatientForm.recap,
-                (val) => setNewPatientForm({...newPatientForm, recap: val}),
-                composeRecapDraft(
-                  ['SDS','ST'].includes(newPatientForm.status) ? 'start'
-                    : newPatientForm.status === 'SCH' ? 'future'
-                    : ['PEN','MP'].includes(newPatientForm.status) ? 'pending'
-                    : newPatientForm.status === 'NOTX' ? 'notx' : 'contact',
-                  {
-                    dp: newPatientForm.dp,
-                    sameDay: newPatientForm.status === 'SDS',
-                    obstacle: newPatientForm.obstacle,
-                    bondDate: newPatientForm.bondDate,
-                    'R+': newPatientForm['R+'], 'W+': newPatientForm['W+'], PIF: newPatientForm.PIF,
-                    outcome: 'New patient added'
-                  }
-                )
+                newPatientForm,
+                (val, edited) => setNewPatientForm({...newPatientForm, recap: val, recapEdited: edited}),
+                newPatientRecapDraft(newPatientForm)
               )}
 
               {/* Next Touch Override — only PEN/MP, moved to bottom */}
@@ -9124,7 +9174,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               const n = medicaidDecisionAttempts(patient) + 1;
               const entry = { date: day, time, reachedPatient: reached, outcome: `Medicaid decision call (${result}) — not reached, attempt ${n}`,
                 sentText: false, notes, recap: notes, dispo: 'pending', medicaidDecisionCall: true, logged_by };
-              const updated = { ...patient, lastContactDate: day, contact_log: [...(patient.contact_log || []), entry] };
+              const updated = { ...patient, lastContactDate: day, contact_log: [...(patient.contact_log || []), { ...entry, nextTouchSet: patient.nextTouchDate || '' }] };
               setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
               const ok = await dbUpsert(updated);
               setMedWfModal(null); setMedWfForm({});
@@ -9145,7 +9195,7 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
               : d === 'needs_time'
                 ? { PEN: true, MP: false, obstacle: f.obstacle, contactAttempts: 0, nextTouchDate: calcNextTouchDate(day, f.obstacle, 0, ''), insuranceWorkflow: doneWorkflow }
                 : { NOTX: true, MP: false, PEN: false, nextTouchDate: '', insuranceWorkflow: doneWorkflow };
-            const updated = { ...patient, ...changes, medicaidPipeline: false, lastContactDate: day, contact_log: [...(patient.contact_log || []), entry] };
+            const updated = { ...patient, ...changes, medicaidPipeline: false, lastContactDate: day, contact_log: [...(patient.contact_log || []), { ...entry, nextTouchSet: changes.nextTouchDate || '' }] };
             setPatients(prev => prev.map(p => p.id === patient.id ? updated : p));
             const ok = await dbUpsert(updated);
             setMedWfModal(null); setMedWfForm({});
@@ -14727,13 +14777,9 @@ const NPEDashboard = ({ currentUser, onUserChange, onSignOut }) => {
             )}
 
             {renderRecapField(
-              startedForm.recap,
-              (val) => setStartedForm({...startedForm, recap: val}),
-              composeRecapDraft('start', {
-                dp: startedForm.dp,
-                sameDay: startedForm.startDate === showStartedModal.npeDate,
-                'R+': startedForm['R+'], 'W+': startedForm['W+'], PIF: startedForm.PIF
-              })
+              startedForm,
+              (val, edited) => setStartedForm({...startedForm, recap: val, recapEdited: edited}),
+              startedRecapDraft(showStartedModal, startedForm)
             )}
 
             <div style={{display:'flex',gap:'12px'}}>
